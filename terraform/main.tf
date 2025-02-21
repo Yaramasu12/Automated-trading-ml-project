@@ -58,10 +58,28 @@ resource "aws_security_group" "kafka_sg" {
 resource "aws_s3_bucket" "trading_data_lake" {
   bucket = "nse-bse-trading-data-lake"
 
-  acl    = "private"
-
   tags = {
     Name        = "TradingDataLake"
     Environment = "Dev"
   }
+}
+
+resource "aws_s3_bucket_policy" "bucket_policy" {
+  bucket = aws_s3_bucket.trading_data_lake.id
+  policy = jsonencode({
+    Version = "2012-10-17",
+    Statement = [
+      {
+        Effect    = "Allow",
+        Principal = {
+          AWS = "arn:aws:iam::897722703799:role/trading-s3-role"
+        },
+        Action    = "s3:*",
+        Resource  = [
+          "arn:aws:s3:::nse-bse-trading-data-lake",
+          "arn:aws:s3:::nse-bse-trading-data-lake/*"
+        ]
+      }
+    ]
+  })
 }
