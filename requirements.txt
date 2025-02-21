@@ -1,0 +1,7 @@
+kiteconnect
+kafka-python
+pandas
+numpy
+asyncio
+fastapi
+uvicorn
