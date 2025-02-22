@@ -3,10 +3,24 @@ provider "aws" {
 }
 
 resource "aws_instance" "kafka_ec2" {
-  ami           = "ami-0fc5d935ebf8bc3bc"
+  ami           = "ami-0cb91c7de36eed2cb"   # Use your existing AMI
   instance_type = "t2.micro"
-
   vpc_security_group_ids = [aws_security_group.kafka_sg.id]
+  key_name      = "trading-key-pair-new"
+
+  tags = {
+    Name = "trading system"  # Match existing tag
+  }
+
+  lifecycle {
+    prevent_destroy = true
+    ignore_changes  = [
+      ami,
+      tags,
+      vpc_security_group_ids
+    ]
+  }
+}
 
   user_data = <<-EOF
               #!/bin/bash
@@ -27,11 +41,15 @@ resource "aws_instance" "kafka_ec2" {
   tags = {
     Name = "Kafka-EC2"
   }
-}
 
 resource "aws_security_group" "kafka_sg" {
   name        = "kafka_sg"
   description = "Allow SSH and Kafka access"
+
+  lifecycle {
+    create_before_destroy = true
+    prevent_destroy        = false
+  }
 
   ingress {
     from_port   = 22
