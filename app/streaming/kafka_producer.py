@@ -1,5 +1,8 @@
 import json
 import logging
+from datetime import time
+
+from app.services.live_data_ingestion import fetch_live_ticks
 from kafka import KafkaProducer
 from kiteconnect import KiteTicker
 from kite_auth import KiteAuth
@@ -26,6 +29,31 @@ def get_access_token():
     except Exception as e:
         logging.error(f"Error reading access token: {e}")
         raise
+
+def start_kafka_producer(symbols, topic='market_data', bootstrap_servers='localhost:9092'):
+    """
+    Starts a Kafka producer that streams tick-by-tick data in real-time.
+    Args:
+        symbols (list): List of stock symbols to simulate.
+        topic (str): Kafka topic to publish the data.
+        bootstrap_servers (str): Kafka server address.
+    """
+    producer = KafkaProducer(
+        bootstrap_servers=bootstrap_servers,
+        value_serializer=lambda v: json.dumps(v).encode('utf-8')
+    )
+
+    print(f"[Kafka Producer] Started producing to topic '{topic}'...")
+    ticks = fetch_live_ticks(symbols, tick_count=20)
+
+    for tick in ticks:
+        producer.send(topic, tick)
+        print(f"[Kafka Producer] Sent: {tick}")
+        time.sleep(0.05)  # Simulate real-time stream
+
+    producer.flush()
+    print("[Kafka Producer] Finished streaming data.")
+
 
 def main():
     access_token = get_access_token()

@@ -1,8 +1,20 @@
-kiteconnect
-kafka-python
+requests
 pandas
 numpy
-asyncio
-fastapi
-uvicorn
-boto3
+websocket-client
+kiteconnect
+psycopg2-binary
+pymongo
+redis
+rq
+flask
+gunicorn
+python-dotenv
+scipy
+arch #For GARCH
+TA-Lib  # Technical Analysis.
+tensorflow #AI
+scikit-learn #AI
+python-multipart #For multipart requests.
+transformers #Hugging face.
+Flask-Cors
