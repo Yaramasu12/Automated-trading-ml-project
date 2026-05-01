@@ -27,6 +27,8 @@ class Settings:
     angel_one_client_code: str
     angel_one_pin: str
     angel_one_totp_secret: str
+    angel_one_instrument_master_url: str
+    angel_one_instrument_cache_path: str
     aws_region: str
 
     @property
@@ -63,6 +65,13 @@ def load_settings() -> Settings:
         angel_one_client_code=os.getenv("ANGEL_ONE_CLIENT_CODE", ""),
         angel_one_pin=os.getenv("ANGEL_ONE_PIN", ""),
         angel_one_totp_secret=os.getenv("ANGEL_ONE_TOTP_SECRET", ""),
+        angel_one_instrument_master_url=os.getenv(
+            "ANGEL_ONE_INSTRUMENT_MASTER_URL",
+            "https://margincalculator.angelone.in/OpenAPI_File/files/OpenAPIScripMaster.json",
+        ),
+        angel_one_instrument_cache_path=os.getenv(
+            "ANGEL_ONE_INSTRUMENT_CACHE_PATH",
+            "data/processed/angel_one_instruments.json",
+        ),
         aws_region=os.getenv("AWS_REGION", "ap-south-1"),
     )
-

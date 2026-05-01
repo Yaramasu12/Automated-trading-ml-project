@@ -75,3 +75,11 @@ Live trading requires:
 4. Add real historical data ingestion and model training.
 5. Add AWS deployment once local/paper stability is proven.
 
+## Local Data Endpoints
+
+- `GET /data/status`: reports Angel One instrument cache state and credential readiness.
+- `POST /data/instruments/refresh`: downloads Angel One OpenAPI instrument master and reloads the runtime universe.
+- `POST /data/instruments/load-cache`: loads the cached instrument master without network access.
+- `POST /data/candles`: retrieves authenticated Angel One historical candles for a known symbol.
+
+Historical candles require Angel One credentials. Instrument refresh uses Angel One's public OpenAPI instrument master.

@@ -11,6 +11,17 @@ export async function runBacktest(payload) {
   });
 }
 
+export async function getDataStatus() {
+  return request('/data/status');
+}
+
+export async function refreshInstruments() {
+  return request('/data/instruments/refresh', {
+    method: 'POST',
+    body: JSON.stringify({}),
+  });
+}
+
 export async function armLive(armed) {
   return request('/live/arm', {
     method: 'POST',
@@ -36,4 +47,3 @@ async function request(path, options = {}) {
   }
   return response.json();
 }
-

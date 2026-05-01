@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { buildStatusModel, modeCopy, MODES } from '../src/components/Dashboard.js';
+import { buildDataStatusModel, buildStatusModel, modeCopy, MODES } from '../src/components/Dashboard.js';
 
 assert.deepEqual(MODES, ['BACKTEST', 'PAPER', 'LIVE']);
 assert.equal(modeCopy('BACKTEST'), 'Backtest mode');
@@ -25,5 +25,15 @@ assert.equal(model.killSwitch, true);
 assert.equal(model.drawdownLimit, 0.1);
 assert.equal(model.statusText, 'Live locked');
 
-console.log('dashboard tests passed');
+const dataModel = buildDataStatusModel({
+  instrument_cache_exists: true,
+  current_universe_count: 100403,
+  angel_one_configured: false,
+  instrument_cache_path: 'data/processed/angel_one_instruments.json',
+});
 
+assert.equal(dataModel.cacheReady, true);
+assert.equal(dataModel.universeCount, 100403);
+assert.equal(dataModel.angelOneConfigured, false);
+
+console.log('dashboard tests passed');

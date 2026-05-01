@@ -168,7 +168,7 @@ def _add_derivatives(universe: dict[str, Instrument], as_of: date, underlyings: 
             universe[future_symbol] = Instrument(
                 symbol=future_symbol,
                 name=f"{underlying} Future {expiry.isoformat()}",
-                exchange=Exchange.NSE,
+                exchange=Exchange.NFO,
                 segment=Segment.FUTURES,
                 asset_class=AssetClass.INDEX if is_index else AssetClass.EQUITY,
                 instrument_type=InstrumentType.FUTURE,
@@ -192,7 +192,7 @@ def _add_derivatives(universe: dict[str, Instrument], as_of: date, underlyings: 
                     universe[option_symbol] = Instrument(
                         symbol=option_symbol,
                         name=f"{underlying} {strike:g} {option_type.value} {expiry.isoformat()}",
-                        exchange=Exchange.NSE,
+                        exchange=Exchange.NFO,
                         segment=Segment.OPTIONS,
                         asset_class=AssetClass.INDEX if is_index else AssetClass.EQUITY,
                         instrument_type=InstrumentType.OPTION,

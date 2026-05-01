@@ -23,6 +23,8 @@ class RuntimeTests(unittest.TestCase):
                 angel_one_client_code="",
                 angel_one_pin="",
                 angel_one_totp_secret="",
+                angel_one_instrument_master_url="https://example.invalid/OpenAPIScripMaster.json",
+                angel_one_instrument_cache_path="data/processed/test_angel_instruments.json",
                 aws_region="ap-south-1",
             )
         )
@@ -54,7 +56,14 @@ class RuntimeTests(unittest.TestCase):
         self.assertTrue(result["should_retrain"])
         self.assertEqual(result["reason"], "sentiment_precision_below_threshold")
 
+    def test_data_status_reports_cache_and_credentials(self):
+        runtime = TradingRuntime()
+        status = runtime.data_status()
+
+        self.assertEqual(status["instrument_source"], "angel_one")
+        self.assertIn("instrument_cache_exists", status)
+        self.assertFalse(status["angel_one_configured"])
+
 
 if __name__ == "__main__":
     unittest.main()
-

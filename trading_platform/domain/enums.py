@@ -12,6 +12,8 @@ class ExecutionMode(str, Enum):
 class Exchange(str, Enum):
     NSE = "NSE"
     BSE = "BSE"
+    NFO = "NFO"
+    BFO = "BFO"
 
 
 class Segment(str, Enum):
@@ -66,4 +68,3 @@ class OrderStatus(str, Enum):
     PARTIALLY_FILLED = "PARTIALLY_FILLED"
     REJECTED = "REJECTED"
     CANCELLED = "CANCELLED"
-

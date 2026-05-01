@@ -1,4 +1,4 @@
-import { armLive, getHealth, runBacktest, setKillSwitch } from '../services/api.js';
+import { armLive, getDataStatus, getHealth, refreshInstruments, runBacktest, setKillSwitch } from '../services/api.js';
 
 export const MODES = ['BACKTEST', 'PAPER', 'LIVE'];
 
@@ -25,12 +25,22 @@ export function buildStatusModel(health) {
   };
 }
 
+export function buildDataStatusModel(dataStatus) {
+  return {
+    cacheReady: Boolean(dataStatus?.instrument_cache_exists),
+    universeCount: Number(dataStatus?.current_universe_count || 0),
+    angelOneConfigured: Boolean(dataStatus?.angel_one_configured),
+    cachePath: dataStatus?.instrument_cache_path || '-',
+  };
+}
+
 export function renderDashboard(root) {
   if (!root) {
     return;
   }
   const state = {
     status: null,
+    dataStatus: null,
     backtest: null,
     error: '',
     loading: false,
@@ -51,10 +61,13 @@ export function renderDashboard(root) {
         <article><span>Live</span><strong data-role="live">-</strong></article>
         <article><span>Kill Switch</span><strong data-role="kill">-</strong></article>
         <article><span>Drawdown Limit</span><strong data-role="drawdown">-</strong></article>
+        <article><span>Instrument Cache</span><strong data-role="cache">-</strong></article>
+        <article><span>Universe</span><strong data-role="universe">-</strong></article>
       </section>
 
       <section class="controls">
         <button data-action="refresh">Refresh</button>
+        <button data-action="refresh-instruments">Refresh Instruments</button>
         <button data-action="backtest">Run 1M Backtest</button>
         <button data-action="arm">Arm Live</button>
         <button data-action="disarm">Disarm</button>
@@ -68,11 +81,14 @@ export function renderDashboard(root) {
 
   const paint = () => {
     const model = buildStatusModel(state.status);
+    const dataModel = buildDataStatusModel(state.dataStatus);
     root.querySelector('[data-role="mode"]').textContent = model.statusText;
     root.querySelector('[data-role="broker"]').textContent = model.broker;
     root.querySelector('[data-role="live"]').textContent = model.liveArmed ? 'Armed' : 'Locked';
     root.querySelector('[data-role="kill"]').textContent = model.killSwitch ? 'Active' : 'Clear';
     root.querySelector('[data-role="drawdown"]').textContent = `${(model.drawdownLimit * 100).toFixed(1)}%`;
+    root.querySelector('[data-role="cache"]').textContent = dataModel.cacheReady ? 'Ready' : 'Missing';
+    root.querySelector('[data-role="universe"]').textContent = dataModel.universeCount.toLocaleString('en-IN');
     root.querySelector('[data-role="error"]').textContent = state.error;
     const result = root.querySelector('[data-role="result"]');
     if (state.backtest) {
@@ -93,7 +109,9 @@ export function renderDashboard(root) {
   const load = async () => {
     state.error = '';
     try {
-      state.status = await getHealth();
+      const [health, dataStatus] = await Promise.all([getHealth(), getDataStatus()]);
+      state.status = health;
+      state.dataStatus = dataStatus;
     } catch (error) {
       state.error = error.message;
     }
@@ -101,6 +119,16 @@ export function renderDashboard(root) {
   };
 
   root.querySelector('[data-action="refresh"]').addEventListener('click', load);
+  root.querySelector('[data-action="refresh-instruments"]').addEventListener('click', async () => {
+    state.error = '';
+    try {
+      await refreshInstruments();
+      state.dataStatus = await getDataStatus();
+    } catch (error) {
+      state.error = error.message;
+    }
+    paint();
+  });
   root.querySelector('[data-action="backtest"]').addEventListener('click', async () => {
     state.error = '';
     try {
@@ -153,4 +181,3 @@ function formatCurrency(value) {
 function formatPct(value) {
   return `${((value || 0) * 100).toFixed(2)}%`;
 }
-

@@ -54,6 +54,35 @@ def universe():
     return runtime.universe()
 
 
+@app.get("/data/status")
+def data_status():
+    return runtime.data_status()
+
+
+@app.post("/data/instruments/refresh")
+def refresh_instruments():
+    try:
+        return runtime.refresh_angel_one_instruments()
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/data/instruments/load-cache")
+def load_cached_instruments():
+    try:
+        return runtime.load_cached_angel_one_instruments()
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/data/candles")
+def historical_candles(payload: dict):
+    try:
+        return runtime.historical_candles(payload)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 @app.post("/backtests/run")
 def run_backtest(payload: dict):
     try:

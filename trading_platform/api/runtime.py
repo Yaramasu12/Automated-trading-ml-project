@@ -8,6 +8,8 @@ from trading_platform.backtesting.engine import BacktestConfig, BacktestEngine
 from trading_platform.broker.angel_one import AngelOneBrokerClient
 from trading_platform.broker.simulated import SimulatedBrokerClient
 from trading_platform.config import Settings, load_settings
+from trading_platform.data.angel_one_history import AngelOneHistoricalDataProvider
+from trading_platform.data.angel_one_instruments import AngelOneInstrumentMasterProvider
 from trading_platform.data.instrument_master import build_default_universe
 from trading_platform.domain.enums import ExecutionMode
 from trading_platform.portfolio.ledger import PortfolioLedger
@@ -27,6 +29,8 @@ class TradingRuntime:
     def __init__(self, settings: Settings | None = None):
         self.settings = settings or load_settings()
         self.instrument_master = build_default_universe()
+        self.angel_one_instruments = AngelOneInstrumentMasterProvider(self.settings)
+        self.angel_one_history = AngelOneHistoricalDataProvider(self.settings)
         self.backtest_engine = BacktestEngine(self.instrument_master)
         self.portfolio = PortfolioLedger(self.settings.initial_capital)
         self.risk_engine = RiskEngine(
@@ -93,6 +97,65 @@ class TradingRuntime:
         return result.to_dict()
 
     def universe(self) -> list[dict]:
+        return self._serialize_universe(self.instrument_master)
+
+    def data_status(self) -> dict:
+        cache_path = self.angel_one_instruments.cache_path
+        return {
+            "instrument_source": "angel_one",
+            "instrument_cache_path": str(cache_path),
+            "instrument_cache_exists": cache_path.exists(),
+            "current_universe_count": len(self.instrument_master.instruments),
+            "current_universe_source": "runtime",
+            "historical_data_requires_credentials": True,
+            "angel_one_configured": self.settings.angel_one_configured,
+        }
+
+    def refresh_angel_one_instruments(self) -> dict:
+        result = self.angel_one_instruments.refresh()
+        self.instrument_master = self.angel_one_instruments.load_cached()
+        self.backtest_engine = BacktestEngine(self.instrument_master)
+        return {
+            "source": result.source,
+            "cache_path": result.cache_path,
+            "raw_count": result.raw_count,
+            "parsed_count": result.parsed_count,
+            "skipped_count": result.skipped_count,
+        }
+
+    def load_cached_angel_one_instruments(self) -> dict:
+        self.instrument_master = self.angel_one_instruments.load_cached()
+        self.backtest_engine = BacktestEngine(self.instrument_master)
+        return {
+            "cache_path": str(self.angel_one_instruments.cache_path),
+            "parsed_count": len(self.instrument_master.instruments),
+        }
+
+    def historical_candles(self, payload: dict) -> dict:
+        symbol = str(payload["symbol"])
+        instrument = self.instrument_master.get(symbol)
+        from_dt = datetime.fromisoformat(str(payload["from"]).replace("Z", "+00:00"))
+        to_dt = datetime.fromisoformat(str(payload["to"]).replace("Z", "+00:00"))
+        interval = str(payload.get("interval", "ONE_DAY"))
+        bars = self.angel_one_history.get_candles(instrument, from_dt, to_dt, interval)
+        return {
+            "symbol": symbol,
+            "interval": interval,
+            "count": len(bars),
+            "bars": [
+                {
+                    "timestamp": bar.timestamp.isoformat(),
+                    "open": bar.open,
+                    "high": bar.high,
+                    "low": bar.low,
+                    "close": bar.close,
+                    "volume": bar.volume,
+                }
+                for bar in bars
+            ],
+        }
+
+    def _serialize_universe(self, instrument_master) -> list[dict]:
         return [
             {
                 "symbol": instrument.symbol,
@@ -105,7 +168,7 @@ class TradingRuntime:
                 "option_type": instrument.option_type.value if instrument.option_type else None,
                 "lot_size": instrument.lot_size,
             }
-            for instrument in self.instrument_master.all()
+            for instrument in instrument_master.all()
         ]
 
     def retraining_decision(self, payload: dict) -> dict:
