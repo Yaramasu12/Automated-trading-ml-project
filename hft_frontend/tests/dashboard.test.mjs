@@ -1,5 +1,11 @@
 import assert from 'node:assert/strict';
-import { buildDataStatusModel, buildStatusModel, modeCopy, MODES } from '../src/components/Dashboard.js';
+import {
+  buildAccountStatusModel,
+  buildDataStatusModel,
+  buildStatusModel,
+  modeCopy,
+  MODES,
+} from '../src/components/Dashboard.js';
 
 assert.deepEqual(MODES, ['BACKTEST', 'PAPER', 'LIVE']);
 assert.equal(modeCopy('BACKTEST'), 'Backtest mode');
@@ -35,5 +41,15 @@ const dataModel = buildDataStatusModel({
 assert.equal(dataModel.cacheReady, true);
 assert.equal(dataModel.universeCount, 100403);
 assert.equal(dataModel.angelOneConfigured, false);
+
+const accountModel = buildAccountStatusModel({
+  read_only_available: true,
+  live_orders_possible: false,
+  live_armed: false,
+});
+
+assert.equal(accountModel.readOnlyAvailable, true);
+assert.equal(accountModel.liveOrdersPossible, false);
+assert.equal(accountModel.liveArmed, false);
 
 console.log('dashboard tests passed');

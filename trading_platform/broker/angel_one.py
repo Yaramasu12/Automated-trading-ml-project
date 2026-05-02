@@ -17,6 +17,7 @@ class AngelOneBrokerClient(BrokerClient):
         self._smart_api: Any | None = None
         self._auth_token: str | None = None
         self._feed_token: str | None = None
+        self._refresh_token: str | None = None
 
     def is_ready(self) -> bool:
         return self.settings.can_submit_live_orders
@@ -42,7 +43,13 @@ class AngelOneBrokerClient(BrokerClient):
         data = session["data"]
         self._smart_api = smart_api
         self._auth_token = data.get("jwtToken")
+        self._refresh_token = data.get("refreshToken")
         self._feed_token = smart_api.getfeedToken()
+
+    def ensure_logged_in(self) -> Any:
+        if self._smart_api is None:
+            self.login()
+        return self._smart_api
 
     def submit_order(self, intent: OrderIntent) -> BrokerResult:
         submitted_at = datetime.now(timezone.utc)
@@ -55,8 +62,7 @@ class AngelOneBrokerClient(BrokerClient):
                 acknowledged_at=datetime.now(timezone.utc),
                 message="live_trading_not_ready",
             )
-        if self._smart_api is None:
-            self.login()
+        self.ensure_logged_in()
         params = self._to_angel_order(intent)
         response = self._smart_api.placeOrderFullResponse(params)
         acknowledged_at = datetime.now(timezone.utc)
@@ -82,10 +88,46 @@ class AngelOneBrokerClient(BrokerClient):
         )
 
     def positions(self) -> list[dict]:
-        if self._smart_api is None:
-            return []
-        response = self._smart_api.position()
+        response = self._read_only_call("position")
         return response.get("data") or []
+
+    def profile(self) -> dict:
+        smart_api = self.ensure_logged_in()
+        if not self._refresh_token:
+            raise RuntimeError("Angel One refresh token is missing after login")
+        return smart_api.getProfile(self._refresh_token)
+
+    def rms_limits(self) -> dict:
+        return self._read_only_call("rmsLimit")
+
+    def holdings(self) -> dict:
+        return self._read_only_call("holding")
+
+    def all_holdings(self) -> dict:
+        return self._read_only_call("allholding")
+
+    def order_book(self) -> dict:
+        return self._read_only_call("orderBook")
+
+    def trade_book(self) -> dict:
+        return self._read_only_call("tradeBook")
+
+    def read_only_snapshot(self) -> dict:
+        return {
+            "profile": self.profile(),
+            "rms": self.rms_limits(),
+            "holdings": self.holdings(),
+            "all_holdings": self.all_holdings(),
+            "positions": {"status": True, "data": self.positions()},
+            "orders": self.order_book(),
+            "trades": self.trade_book(),
+        }
+
+    def _read_only_call(self, method_name: str) -> dict:
+        smart_api = self.ensure_logged_in()
+        method = getattr(smart_api, method_name)
+        response = method()
+        return response if isinstance(response, dict) else {"status": True, "data": response}
 
     def _to_angel_order(self, intent: OrderIntent) -> dict[str, str]:
         instrument = intent.instrument

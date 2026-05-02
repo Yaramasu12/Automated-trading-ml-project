@@ -7,6 +7,7 @@ from trading_platform.ai.agents import (
     ModelPerformance,
     ModelSelectionAgent,
     RetrainingAgent,
+    RiskSupervisorAgent,
     StrategySelectionAgent,
 )
 from trading_platform.ai.features import FeatureSnapshot
@@ -53,7 +54,28 @@ class AgentTests(unittest.TestCase):
         self.assertTrue(should_retrain)
         self.assertEqual(reason, "iv_coverage_below_threshold")
 
+    def test_risk_supervisor_can_only_reduce_or_halt(self):
+        decision = RiskSupervisorAgent().decide(
+            drawdown=0.07,
+            daily_loss_pct=0.0,
+            rejection_rate=0.0,
+            stale_market_data=False,
+        )
+
+        self.assertEqual(decision.action, "REDUCE")
+        self.assertLessEqual(decision.max_allocation_multiplier, 1.0)
+
+    def test_risk_supervisor_halts_on_stale_data(self):
+        decision = RiskSupervisorAgent().decide(
+            drawdown=0.0,
+            daily_loss_pct=0.0,
+            rejection_rate=0.0,
+            stale_market_data=True,
+        )
+
+        self.assertEqual(decision.action, "HALT")
+        self.assertEqual(decision.max_allocation_multiplier, 0.0)
+
 
 if __name__ == "__main__":
     unittest.main()
-

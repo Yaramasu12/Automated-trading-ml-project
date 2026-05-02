@@ -119,8 +119,26 @@ dd {
   font-weight: 800;
 }
 
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 14px;
+}
+
+th,
+td {
+  border-bottom: 1px solid #d8dde6;
+  padding: 10px 8px;
+  text-align: left;
+}
+
+th {
+  color: #667386;
+  font-size: 12px;
+  text-transform: uppercase;
+}
+
 .error {
   margin-top: 12px;
   color: #a61616;
 }
-

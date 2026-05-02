@@ -67,6 +67,51 @@ class RiskEngineTests(unittest.TestCase):
         self.assertFalse(decision.approved)
         self.assertEqual(decision.reason, "max_drawdown_breached")
 
+    def test_rejects_strategy_loss_breach(self):
+        instrument = self.master.get("RELIANCE")
+        intent = self._intent(instrument, Side.BUY, 1, 2800)
+
+        decision = RiskEngine(RiskLimits(max_loss_per_strategy_pct=0.01)).evaluate(
+            intent,
+            self.snapshot,
+            datetime(2026, 1, 5, 10, 0),
+            ExecutionMode.BACKTEST,
+            strategy_daily_pnl=-11_000,
+        )
+
+        self.assertFalse(decision.approved)
+        self.assertEqual(decision.reason, "max_strategy_loss_breached")
+
+    def test_rejects_near_expiry_gamma_breach(self):
+        option = self.master.select_option("NIFTY", date(2026, 1, 8), 22500, OptionType.CE)
+        intent = self._intent(option, Side.BUY, 1, 120)
+
+        decision = RiskEngine(RiskLimits(max_gamma_near_expiry=0.02)).evaluate(
+            intent,
+            self.snapshot,
+            datetime(2026, 1, 8, 10, 0),
+            ExecutionMode.BACKTEST,
+            gamma_exposure=0.03,
+        )
+
+        self.assertFalse(decision.approved)
+        self.assertEqual(decision.reason, "near_expiry_gamma_exceeds_limit")
+
+    def test_rejects_correlated_exposure_breach(self):
+        instrument = self.master.get("RELIANCE")
+        intent = self._intent(instrument, Side.BUY, 1, 2800)
+
+        decision = RiskEngine(RiskLimits(max_correlated_exposure_pct=0.20)).evaluate(
+            intent,
+            self.snapshot,
+            datetime(2026, 1, 5, 10, 0),
+            ExecutionMode.BACKTEST,
+            correlated_exposure_pct=0.22,
+        )
+
+        self.assertFalse(decision.approved)
+        self.assertEqual(decision.reason, "correlated_exposure_exceeds_limit")
+
     def _intent(self, instrument, side, quantity, price):
         signal = Signal("test", instrument.symbol, side, 0.9, price, "unit test", datetime.now(timezone.utc))
         return OrderIntent(signal, instrument, quantity, OrderType.MARKET, ProductType.INTRADAY)

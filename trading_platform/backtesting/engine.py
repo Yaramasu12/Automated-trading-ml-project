@@ -25,6 +25,7 @@ class BacktestConfig:
     days: int = 30
     underlyings: tuple[str, ...] = ("NIFTY", "BANKNIFTY", "MIDCPNIFTY", "RELIANCE", "TCS")
     max_drawdown: float = 0.10
+    strategy_names: tuple[str, ...] | None = None
 
 
 @dataclass(frozen=True)
@@ -92,7 +93,7 @@ class BacktestEngine:
                     continue
                 features = self.feature_engine.compute(bars)
                 regime = self.regime_agent.classify(features)
-                strategy_names = self.strategy_agent.choose(regime, underlying)
+                strategy_names = list(config.strategy_names or self.strategy_agent.choose(regime, underlying))
                 selected[underlying] = strategy_names
                 for strategy_name in strategy_names[:2]:
                     instrument = self._select_instrument(strategy_name, underlying, bars[-1], now.date())
@@ -152,9 +153,10 @@ class BacktestEngine:
         return BacktestResult(config=config, metrics=metrics, reports=reports, selected_strategies=selected)
 
     def _select_instrument(self, strategy_name: str, underlying: str, bar: MarketBar, as_of: date):
-        if strategy_name == "futures_trend":
+        strategy = self.strategy_factory.get(strategy_name)
+        if strategy.family == "futures":
             return self.instrument_master.select_future(underlying, as_of)
-        if "option" in strategy_name:
+        if strategy.family == "options":
             option_type = OptionType.CE if bar.close >= bar.open else OptionType.PE
             return self.instrument_master.select_option(underlying, as_of, bar.close, option_type)
         instrument = self.instrument_master.get(underlying)

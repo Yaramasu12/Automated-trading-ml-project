@@ -17,6 +17,13 @@ class ModelPerformance:
     feature_drift_score: float = 0.0
 
 
+@dataclass(frozen=True)
+class SupervisorDecision:
+    action: str
+    reason: str
+    max_allocation_multiplier: float
+
+
 class MarketRegimeAgent:
     def classify(self, features: FeatureSnapshot) -> str:
         if features.realized_volatility > 0.025:
@@ -83,3 +90,28 @@ class RetrainingAgent:
             return True, "risk_adjusted_performance_degraded"
         return False, "healthy"
 
+
+class RiskSupervisorAgent:
+    """Can reduce or halt trading, never raise limits beyond the configured risk engine."""
+
+    def decide(
+        self,
+        drawdown: float,
+        daily_loss_pct: float,
+        rejection_rate: float,
+        stale_market_data: bool,
+        model_performance: ModelPerformance | None = None,
+    ) -> SupervisorDecision:
+        if stale_market_data:
+            return SupervisorDecision("HALT", "stale_market_data", 0.0)
+        if drawdown >= 0.10:
+            return SupervisorDecision("HALT", "max_drawdown_reached", 0.0)
+        if daily_loss_pct <= -0.02:
+            return SupervisorDecision("HALT", "daily_loss_limit_reached", 0.0)
+        if rejection_rate > 0.10:
+            return SupervisorDecision("REDUCE", "order_rejection_rate_high", 0.25)
+        if model_performance and (model_performance.profit_factor < 1.0 or model_performance.sharpe < 0):
+            return SupervisorDecision("REDUCE", "model_performance_degraded", 0.50)
+        if drawdown > 0.06:
+            return SupervisorDecision("REDUCE", "drawdown_elevated", 0.50)
+        return SupervisorDecision("ALLOW", "healthy", 1.0)
