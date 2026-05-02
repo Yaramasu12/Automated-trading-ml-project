@@ -6,6 +6,8 @@ from datetime import date, datetime, timezone
 from trading_platform.ai.agents import ModelPerformance, RetrainingAgent, RiskSupervisorAgent
 from trading_platform.ai.feature_store import FeatureStore
 from trading_platform.ai.models import GARCHForecaster, MetaModel, ModelRegistry, RegimeClassifier, SentimentAnalyzer, VolatilityForecaster
+from trading_platform.data.live_feed import LiveTickFeed
+from trading_platform.data.persistence import TradingDatabase
 from trading_platform.backtesting.charges import ChargesModel
 from trading_platform.backtesting.engine import BacktestConfig, BacktestEngine
 from trading_platform.backtesting.evaluator import StrategyEvaluator, WalkForwardEvaluator
@@ -79,6 +81,8 @@ class TradingRuntime:
         self.synthetic_data = SyntheticDataProvider()
         self.charges_model = ChargesModel()
         self.monitor = OperationalMonitor()
+        self.db = TradingDatabase()
+        self.live_feed = LiveTickFeed(self.settings)
         self.monitor.record_event(
             "runtime_started",
             "Trading runtime initialized",
@@ -322,7 +326,17 @@ class TradingRuntime:
         report = router.submit(intent, now, mark_prices)
         self.monitor.record_order(self._serialize_order(report.order))
         self.monitor.record_event("paper_order", f"Paper order {report.order.status.value}", metadata={"symbol": intent.instrument.symbol})
+        if report.trade:
+            self.db.save_trade(report.trade, execution_mode="PAPER")
         snapshot = self.portfolio.mark_to_market(now, mark_prices)
+        self.db.save_snapshot(snapshot, execution_mode="PAPER")
+        self.db.save_risk_event(
+            event_type="order_evaluated",
+            reason=report.risk_decision.reason,
+            symbol=intent.instrument.symbol,
+            risk_score=report.risk_decision.risk_score,
+            approved=report.risk_decision.approved,
+        )
         return {
             "mode": self.execution_mode.value,
             "order": self._serialize_order(report.order),
@@ -981,6 +995,55 @@ class TradingRuntime:
         score = float(payload["score"])
         self.meta_model.update(regime, strategy_name, score)
         return {"updated": True, "regime": regime, "strategy_name": strategy_name, "score": score}
+
+    # ------------------------------------------------------------------
+    # Live tick feed
+    # ------------------------------------------------------------------
+
+    def start_live_feed(self, symbols: list[str] | None = None) -> dict:
+        symbols = symbols or [inst.symbol for inst in self.instrument_master.all() if not inst.is_derivative]
+        self.live_feed.register_instruments(self.instrument_master.all())
+        self.live_feed.subscribe(symbols)
+        self.live_feed.start()
+        self.monitor.record_event("live_feed_started", f"Live tick feed started for {len(symbols)} symbols")
+        return {"started": True, "symbols": symbols}
+
+    def stop_live_feed(self) -> dict:
+        self.live_feed.stop()
+        self.monitor.record_event("live_feed_stopped", "Live tick feed stopped")
+        return {"stopped": True}
+
+    def live_feed_snapshot(self) -> dict:
+        return self.live_feed.snapshot()
+
+    def latest_tick(self, symbol: str) -> dict:
+        tick = self.live_feed.latest_tick(symbol.upper())
+        if tick is None:
+            return {"symbol": symbol.upper(), "available": False}
+        return {"available": True, **tick.to_dict()}
+
+    # ------------------------------------------------------------------
+    # Database
+    # ------------------------------------------------------------------
+
+    def db_summary(self) -> dict:
+        return self.db.summary()
+
+    def db_trades(self, symbol: str | None = None, execution_mode: str | None = None, limit: int = 100) -> dict:
+        trades = self.db.trades(symbol=symbol, execution_mode=execution_mode, limit=limit)
+        return {"count": len(trades), "trades": trades}
+
+    def db_equity_curve(self, execution_mode: str | None = None, limit: int = 200) -> dict:
+        curve = self.db.equity_curve(execution_mode=execution_mode, limit=limit)
+        return {"count": len(curve), "curve": curve}
+
+    def db_daily_pnl(self, limit: int = 30) -> dict:
+        history = self.db.daily_pnl_history(limit=limit)
+        return {"count": len(history), "history": history}
+
+    def db_risk_events(self, limit: int = 50) -> dict:
+        events = self.db.recent_risk_events(limit=limit)
+        return {"count": len(events), "events": events}
 
     def health(self) -> dict:
         return {

@@ -1,15 +1,36 @@
 from __future__ import annotations
 
+import asyncio
+import json
+from datetime import datetime, timezone
+
 from trading_platform.api.runtime import TradingRuntime
 
 try:
-    from fastapi import FastAPI, HTTPException
+    from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
     from fastapi.middleware.cors import CORSMiddleware
 except ImportError as exc:  # pragma: no cover - exercised only without optional API deps
     raise RuntimeError("Install API dependencies with: pip install -r requirements.txt") from exc
 
 
 runtime = TradingRuntime()
+
+# Registry of active WebSocket connections for push broadcasting
+_ws_clients: list[WebSocket] = []
+
+
+async def _broadcast(message: dict) -> None:
+    """Push a JSON message to all connected dashboard clients."""
+    dead: list[WebSocket] = []
+    text = json.dumps(message)
+    for ws in list(_ws_clients):
+        try:
+            await ws.send_text(text)
+        except Exception:
+            dead.append(ws)
+    for ws in dead:
+        _ws_clients.remove(ws)
+
 
 app = FastAPI(
     title="AI Trading Platform",
@@ -324,3 +345,105 @@ def meta_model_update(payload: dict):
         return runtime.meta_model_update(payload)
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+# ---------------------------------------------------------------------------
+# WebSocket — real-time dashboard push
+# ---------------------------------------------------------------------------
+
+
+@app.websocket("/ws/dashboard")
+async def ws_dashboard(websocket: WebSocket):
+    """Persistent WebSocket connection for the React dashboard.
+
+    The server pushes a snapshot every second. The client can also send
+    JSON commands: {"action": "kill_switch", "active": true/false}
+    """
+    await websocket.accept()
+    _ws_clients.append(websocket)
+    try:
+        while True:
+            # Push current runtime snapshot every second
+            snapshot = {
+                "type": "snapshot",
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "state": runtime.state_payload(),
+                "monitoring": runtime.monitoring_metrics(),
+                "live_feed": runtime.live_feed_snapshot(),
+                "db": runtime.db_summary(),
+            }
+            await websocket.send_text(json.dumps(snapshot))
+
+            # Non-blocking receive — handle inbound commands if sent
+            try:
+                raw = await asyncio.wait_for(websocket.receive_text(), timeout=1.0)
+                cmd = json.loads(raw)
+                if cmd.get("action") == "kill_switch":
+                    runtime.set_kill_switch(bool(cmd.get("active", True)))
+                elif cmd.get("action") == "execution_mode":
+                    runtime.set_execution_mode(str(cmd.get("mode", "BACKTEST")))
+            except asyncio.TimeoutError:
+                pass
+    except WebSocketDisconnect:
+        pass
+    finally:
+        if websocket in _ws_clients:
+            _ws_clients.remove(websocket)
+
+
+# ---------------------------------------------------------------------------
+# Database endpoints
+# ---------------------------------------------------------------------------
+
+
+@app.get("/db/summary")
+def db_summary():
+    return runtime.db_summary()
+
+
+@app.get("/db/trades")
+def db_trades(symbol: str | None = None, execution_mode: str | None = None, limit: int = 100):
+    return runtime.db_trades(symbol=symbol, execution_mode=execution_mode, limit=limit)
+
+
+@app.get("/db/equity-curve")
+def db_equity_curve(execution_mode: str | None = None, limit: int = 200):
+    return runtime.db_equity_curve(execution_mode=execution_mode, limit=limit)
+
+
+@app.get("/db/daily-pnl")
+def db_daily_pnl(limit: int = 30):
+    return runtime.db_daily_pnl(limit=limit)
+
+
+@app.get("/db/risk-events")
+def db_risk_events(limit: int = 50):
+    return runtime.db_risk_events(limit=limit)
+
+
+# ---------------------------------------------------------------------------
+# Live tick feed endpoints
+# ---------------------------------------------------------------------------
+
+
+@app.post("/feed/start")
+def feed_start(payload: dict):
+    try:
+        return runtime.start_live_feed(payload.get("symbols", []))
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/feed/stop")
+def feed_stop():
+    return runtime.stop_live_feed()
+
+
+@app.get("/feed/snapshot")
+def feed_snapshot():
+    return runtime.live_feed_snapshot()
+
+
+@app.get("/feed/tick/{symbol}")
+def feed_tick(symbol: str):
+    return runtime.latest_tick(symbol)
