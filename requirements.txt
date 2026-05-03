@@ -1,20 +1,9 @@
-requests
-pandas
-numpy
-websocket-client
-kiteconnect
-psycopg2-binary
-pymongo
-redis
-rq
-flask
-gunicorn
-python-dotenv
-scipy
-arch #For GARCH
-TA-Lib  # Technical Analysis.
-tensorflow #AI
-scikit-learn #AI
-python-multipart #For multipart requests.
-transformers #Hugging face.
-Flask-Cors
+fastapi>=0.110
+uvicorn[standard]>=0.27
+websockets>=12.0
+smartapi-python>=1.5
+pyotp>=2.9
+websocket-client>=1.7
+logzero>=1.7
+scikit-learn>=1.4
+

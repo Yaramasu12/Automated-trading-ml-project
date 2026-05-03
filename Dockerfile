@@ -1,12 +1,28 @@
-# Dockerfile
-FROM ubuntu:latest
+FROM python:3.12-slim
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    python3 python3-pip git redis-server
-#Install the packages
 WORKDIR /app
+
+# System deps for smartapi-python websocket client
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gcc \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Python dependencies first (layer-cached unless requirements change)
 COPY requirements.txt .
-RUN pip3 install --no-cache-dir -r requirements.txt
-COPY . .  # Copy all the files
-EXPOSE 8000 #Set the port.
-CMD ["python3", "main.py"]
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy source
+COPY trading_platform/ ./trading_platform/
+COPY scripts/ ./scripts/
+COPY .env.example .env.example
+
+# Create data directories
+RUN mkdir -p data/feature_store backtest_results
+
+# Non-root user for security
+RUN useradd -m -u 1000 trader && chown -R trader:trader /app
+USER trader
+
+EXPOSE 8000
+
+CMD ["uvicorn", "trading_platform.api.app:app", "--host", "0.0.0.0", "--port", "8000"]

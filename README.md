@@ -1,50 +1,102 @@
-# Real-Time Trading Infrastructure with AWS, Kafka & Zerodha Kite API
+# AI Trading Platform for Indian Markets
 
-## 🚀 Project Overview
-- **Phase 1:** AWS infrastructure setup with Kafka and Docker.
-- **Phase 2:** Integration of live NSE/BSE data from Zerodha Kite API into Kafka for real-time streaming.
+Local-first automated trading platform for NSE/BSE equities, futures, and options with a shared pipeline for backtesting, paper trading, and Angel One live trading.
 
-## ⚡ Technologies Used
-- **Cloud:** AWS EC2, S3
-- **Streaming:** Apache Kafka
-- **API:** Zerodha Kite API
-- **Python Libraries:** FastAPI, kafka-python, pandas, numpy
-- **DevOps:** Terraform (IaC), GitHub Actions (CI/CD)
+## Execution Modes
 
-## 🛠️ Steps to Run
+- `BACKTEST`: deterministic one-month simulations with slippage, charges, risk gates, expiry handling, and portfolio metrics.
+- `PAPER`: live-like execution against a simulated broker.
+- `LIVE`: Angel One SmartAPI execution, guarded by explicit arming, credentials, risk checks, and kill switch state.
 
-# AI-Powered Trading System for NSE/BSE  
-*Real-time automated trading platform with AI/ML decision-making*  
-[![AWS Free Tier](https://img.shields.io/badge/AWS-Free%20Tier-orange)](https://aws.amazon.com/free/)
-[![Python 3.10](https://img.shields.io/badge/Python-3.10-blue)](https://python.org)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow)](LICENSE)
+The mode toggle only changes the broker adapter. Strategy, AI, expiry, risk, portfolio, and metrics logic stay shared across modes.
 
-## 🚀 Features
-- **Real-time trading** for equities & options (NSE/BSE)
-- **AI-driven strategies** (LSTM, GARCH, BERT models)
-- **Dynamic risk management** (10% max drawdown enforcement)
-- **AWS Free Tier optimized** infrastructure
-- **Multi-leg options strategies** with auto-hedging
+## Architecture
 
-## 🏗 Architecture
-```plantuml
-@startuml
-node "AWS EC2 t2.micro" {
-  component Kafka
-  component FastAPI
-  component LSTM_Model
-  component Risk_Engine
-}
+```text
+Dashboard
+  -> FastAPI Control API
+    -> Market Universe + Expiry Engine
+    -> Contract Selector + Option Chain + Greeks
+    -> Feature Engine
+    -> AI Agents
+    -> Model Layer
+    -> Strategy Factory
+    -> Target-Aware Portfolio Engine
+    -> Risk Engine
+    -> Execution Router
+       -> Backtest Broker
+       -> Paper Broker
+       -> Angel One Live Broker
+```
 
-database PostgreSQL
-database MongoDB
-cloud AWS_S3
+## Local Commands
 
-[Zerodha Kite API] --> Kafka : Market Data
-Kafka --> FastAPI : Process
-FastAPI --> PostgreSQL : Store Trades
-LSTM_Model --> FastAPI : Predictions
-FastAPI --> [Zerodha] : Execute Orders
-Risk_Engine --> FastAPI : Monitor
-AWS_S3 --> LSTM_Model : Historical Data
-@enduml
+```bash
+python3 -m unittest discover -s tests
+npm --prefix hft_frontend test
+```
+
+Optional API run after installing requirements:
+
+```bash
+pip install -r requirements.txt
+uvicorn trading_platform.api.app:app --reload
+```
+
+## Data Setup
+
+Refresh Angel One's public instrument master:
+
+```bash
+curl -X POST http://127.0.0.1:8000/data/instruments/refresh
+```
+
+Historical candles require Angel One credentials in `.env`.
+
+Read-only account checks:
+
+```bash
+curl http://127.0.0.1:8000/account/status
+curl http://127.0.0.1:8000/account/snapshot
+```
+
+`/account/snapshot` fetches profile, RMS/funds, holdings, positions, orders, and trades. It does not place orders.
+
+Core architecture checks:
+
+```bash
+curl http://127.0.0.1:8000/strategies/catalog
+curl -X POST http://127.0.0.1:8000/strategies/evaluate -H 'Content-Type: application/json' -d '{"days":30}'
+curl -X POST http://127.0.0.1:8000/signals/scan -H 'Content-Type: application/json' -d '{"days":30,"underlyings":["NIFTY","RELIANCE"]}'
+curl -X POST http://127.0.0.1:8000/shadow/run -H 'Content-Type: application/json' -d '{"days":30,"underlyings":["RELIANCE"],"strategy_names":["equity_momentum"]}'
+curl http://127.0.0.1:8000/monitoring/metrics
+curl http://127.0.0.1:8000/monitoring/events
+curl http://127.0.0.1:8000/models/catalog
+curl -X POST http://127.0.0.1:8000/models/volatility-forecast -H 'Content-Type: application/json' -d '{"symbol":"NIFTY","days":30,"model_name":"garch_baseline"}'
+curl -X POST http://127.0.0.1:8000/models/sentiment -H 'Content-Type: application/json' -d '{"text":"Bank reports strong profit growth"}'
+curl http://127.0.0.1:8000/derivatives/expiries/NIFTY
+curl "http://127.0.0.1:8000/derivatives/option-chain/NIFTY?spot_price=22500"
+curl -X POST http://127.0.0.1:8000/portfolio/target-progress -H 'Content-Type: application/json' -d '{}'
+curl -X POST http://127.0.0.1:8000/execution-mode -H 'Content-Type: application/json' -d '{"mode":"PAPER"}'
+curl -X POST http://127.0.0.1:8000/orders/preview -H 'Content-Type: application/json' -d '{"symbol":"RELIANCE","side":"BUY","quantity":1,"price":2800}'
+curl -X POST http://127.0.0.1:8000/orders/paper -H 'Content-Type: application/json' -d '{"symbol":"RELIANCE","side":"BUY","quantity":1,"price":2800}'
+```
+
+## Live Safety
+
+Live trading requires all of the following:
+
+- `EXECUTION_MODE=LIVE`
+- `LIVE_TRADING_ENABLED=true`
+- Angel One credentials in environment variables
+- frontend/API arming request
+- risk engine healthy
+- no kill switch
+- market data freshness checks passing
+- explicit confirmation phrase: `I_ACCEPT_REAL_MONEY_LIVE_ORDERS`
+
+## Environment
+
+See [.env.example](.env.example).
+
+Put real credentials in `.env.local` or `.env`, never in `.env.example` or source code. Both local env files are ignored by Git.

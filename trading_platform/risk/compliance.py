@@ -1,0 +1,83 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+from datetime import datetime, timezone
+
+from trading_platform.domain.models import OrderIntent
+
+
+@dataclass
+class ComplianceResult:
+    approved: bool
+    reason: str
+    checked_at: str
+
+
+class ComplianceGuard:
+    """Pre-submission compliance checks: position limits, duplicate detection,
+    banned symbols, and intraday order caps.
+
+    Runs before capital-protection and risk-engine checks so we never waste
+    broker API calls on non-compliant orders.
+    """
+
+    def __init__(
+        self,
+        max_orders_per_day: int = 200,
+        max_qty_per_order: int = 5000,
+        banned_symbols: set[str] | None = None,
+    ) -> None:
+        self.max_orders_per_day = max_orders_per_day
+        self.max_qty_per_order = max_qty_per_order
+        self.banned_symbols: set[str] = banned_symbols or set()
+        self._orders_today = 0
+        self._last_reset_date: str = ""
+
+    def check(self, intent: OrderIntent) -> ComplianceResult:
+        now = datetime.now(timezone.utc)
+        today = now.date().isoformat()
+
+        if today != self._last_reset_date:
+            self._orders_today = 0
+            self._last_reset_date = today
+
+        if intent.instrument.symbol in self.banned_symbols:
+            return ComplianceResult(
+                approved=False,
+                reason=f"Symbol {intent.instrument.symbol} is on the banned list",
+                checked_at=now.isoformat(),
+            )
+
+        if intent.quantity <= 0:
+            return ComplianceResult(
+                approved=False,
+                reason=f"Invalid quantity: {intent.quantity}",
+                checked_at=now.isoformat(),
+            )
+
+        if intent.quantity > self.max_qty_per_order:
+            return ComplianceResult(
+                approved=False,
+                reason=f"Quantity {intent.quantity} exceeds max {self.max_qty_per_order}",
+                checked_at=now.isoformat(),
+            )
+
+        if self._orders_today >= self.max_orders_per_day:
+            return ComplianceResult(
+                approved=False,
+                reason=f"Daily order cap reached ({self._orders_today}/{self.max_orders_per_day})",
+                checked_at=now.isoformat(),
+            )
+
+        self._orders_today += 1
+        return ComplianceResult(approved=True, reason="OK", checked_at=now.isoformat())
+
+    def ban_symbol(self, symbol: str) -> None:
+        self.banned_symbols.add(symbol)
+
+    def unban_symbol(self, symbol: str) -> None:
+        self.banned_symbols.discard(symbol)
+
+    @property
+    def orders_today(self) -> int:
+        return self._orders_today

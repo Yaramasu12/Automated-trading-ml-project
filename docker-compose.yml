@@ -1,0 +1,55 @@
+version: "3.9"
+
+services:
+  trading-api:
+    build: .
+    container_name: trading-api
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    volumes:
+      # Persist database and feature store outside the container
+      - ./data:/app/data
+      - ./backtest_results:/app/backtest_results
+    env_file:
+      - .env
+    environment:
+      - PYTHONUNBUFFERED=1
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+
+  # Scheduler runs daily tasks (instrument refresh, EOD square-off, daily report)
+  scheduler:
+    build: .
+    container_name: trading-scheduler
+    restart: unless-stopped
+    command: ["python", "scripts/daily_scheduler.py"]
+    volumes:
+      - ./data:/app/data
+    env_file:
+      - .env
+    environment:
+      - PYTHONUNBUFFERED=1
+    depends_on:
+      trading-api:
+        condition: service_healthy
+
+  # React frontend dev server (only needed locally — replace with nginx in prod)
+  frontend:
+    image: node:20-alpine
+    container_name: trading-frontend
+    working_dir: /app
+    command: ["sh", "-c", "npm install && npm run build && npx serve -s build -l 3000"]
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./hft_frontend:/app
+    environment:
+      - REACT_APP_API_URL=http://localhost:8000
+      - REACT_APP_WS_URL=ws://localhost:8000/ws/dashboard
+    profiles:
+      - frontend
