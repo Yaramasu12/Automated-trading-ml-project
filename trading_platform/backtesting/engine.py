@@ -10,6 +10,7 @@ from trading_platform.backtesting.metrics import PerformanceMetrics, calculate_m
 from trading_platform.broker.simulated import SimulatedBrokerClient
 from trading_platform.data.instrument_master import InstrumentMaster, build_default_universe
 from trading_platform.data.market_data import SyntheticDataProvider
+from trading_platform.derivatives.engine import ImpliedVolatilityCalculator
 from trading_platform.domain.enums import ExecutionMode, InstrumentType, OptionType, OrderType, ProductType, Segment, Side
 from trading_platform.domain.models import MarketBar, OrderIntent, Signal
 from trading_platform.execution.router import ExecutionReport, ExecutionRouter
@@ -63,6 +64,15 @@ class BacktestEngine:
         self.regime_agent = MarketRegimeAgent()
         self.strategy_agent = StrategySelectionAgent()
         self.charges_model = ChargesModel()
+        # Cache default-universe instrument masters keyed by config.start to
+        # avoid rebuilding the same expiry-aware universe on every backtest
+        # call (N4). Only used when this engine was constructed without an
+        # explicit instrument_master, since explicit masters belong to the
+        # caller and we must not mutate them.
+        self._default_master_cache: dict[date, InstrumentMaster] = {}
+        if self._uses_default_master:
+            self._default_master_cache[date.today()] = self.instrument_master
+        self._iv_calculator = ImpliedVolatilityCalculator()
 
     def run(
         self,
@@ -83,7 +93,11 @@ class BacktestEngine:
         and filled at that same close, which is a peek-at-close lookahead.
         """
         if self._uses_default_master:
-            self.instrument_master = build_default_universe(config.start)
+            cached = self._default_master_cache.get(config.start)
+            if cached is None:
+                cached = build_default_universe(config.start)
+                self._default_master_cache[config.start] = cached
+            self.instrument_master = cached
         bars_by_underlying = self.data_provider.generate_many(config.underlyings, config.start, config.days)
         portfolio = PortfolioLedger(config.starting_capital)
         risk = RiskEngine(RiskLimits(max_drawdown=config.max_drawdown))
@@ -96,6 +110,10 @@ class BacktestEngine:
         )
         reports: list[ExecutionReport] = []
         selected: dict[str, list[str]] = {}
+        # symbol -> (entry_underlying_spot, entry_option_price, entry_date) for
+        # fitting an IV at exit time. Populated only when a trade actually
+        # fills on an OPTION instrument.
+        entry_context: dict[str, tuple[float, float, date]] = {}
 
         # NOTE: signals at decision-time `t` look at bars[: t] (exclusive of
         # the current bar), and orders are filled at bars[t].open. This avoids
@@ -147,7 +165,19 @@ class BacktestEngine:
                     charges = self.charges_model.estimate(intent, fill_reference_price)
                     report = router.submit(intent, now, {**marks, instrument.symbol: fill_reference_price}, charges)
                     reports.append(report)
-            portfolio.mark_to_market(now, self._with_position_marks(portfolio, marks))
+                    if (
+                        report.trade is not None
+                        and instrument.instrument_type == InstrumentType.OPTION
+                        and instrument.symbol not in entry_context
+                    ):
+                        underlying_at_entry = marks.get(instrument.underlying or instrument.symbol)
+                        if underlying_at_entry is not None and underlying_at_entry > 0:
+                            entry_context[instrument.symbol] = (
+                                underlying_at_entry,
+                                report.trade.price,
+                                now.date(),
+                            )
+            portfolio.mark_to_market(now, self._with_position_marks(portfolio, marks, entry_context))
 
         final_underlying_marks = {
             symbol: bars[-1].close
@@ -158,7 +188,13 @@ class BacktestEngine:
         for symbol, position in list(portfolio.positions.items()):
             if position.quantity == 0:
                 continue
-            mark_price = self._mark_price_for_instrument(position.instrument, final_underlying_marks, position.average_price)
+            mark_price = self._mark_price_for_instrument(
+                position.instrument,
+                final_underlying_marks,
+                position.average_price,
+                entry_context=entry_context,
+                as_of=final_time.date(),
+            )
             exit_side = Side.SELL if position.quantity > 0 else Side.BUY
             exit_signal = Signal(
                 strategy_name="forced_backtest_exit",
@@ -179,7 +215,10 @@ class BacktestEngine:
             )
             charges = self.charges_model.estimate(intent, mark_price)
             reports.append(router.submit(intent, final_time, {**final_underlying_marks, symbol: mark_price}, charges))
-        portfolio.mark_to_market(final_time, self._with_position_marks(portfolio, final_underlying_marks))
+        portfolio.mark_to_market(
+            final_time,
+            self._with_position_marks(portfolio, final_underlying_marks, entry_context, as_of=final_time.date()),
+        )
 
         equity_values = [value for _, value in portfolio.equity_curve]
         metrics = calculate_metrics(config.starting_capital, equity_values, portfolio.trades)
@@ -202,14 +241,89 @@ class BacktestEngine:
         lot_notional = max(price * instrument.lot_size, 1)
         return max(1, int(budget / lot_notional))
 
-    def _mark_price_for_instrument(self, instrument, underlying_marks: dict[str, float], fallback: float) -> float:
+    def _mark_price_for_instrument(
+        self,
+        instrument,
+        underlying_marks: dict[str, float],
+        fallback: float,
+        entry_context: dict[str, tuple[float, float, date]] | None = None,
+        as_of: date | None = None,
+    ) -> float:
+        """Best-effort mark for the given instrument.
+
+        For an OPTION we replace the previous flat `underlying * 0.015`
+        heuristic with a Black-Scholes price (N8). Algorithm:
+
+        1. Look up the underlying spot for `as_of`.
+        2. If the option has expired (`expiry <= as_of`), return its intrinsic
+           value clipped to the tick floor.
+        3. Otherwise, if we recorded the entry context (underlying spot,
+           option price paid, entry date), fit an implied volatility from
+           that (entry_spot, entry_option_price, entry_days_to_expiry) and
+           re-price the option at (current_spot, current_days_to_expiry).
+        4. If we have no entry context (e.g., position was constructed
+           outside `run`), fall back to BS at a flat 25% IV — still bounded
+           and principled, vs. the legacy 1.5%-of-spot heuristic.
+        """
         underlying = instrument.underlying or instrument.symbol
         underlying_price = underlying_marks.get(underlying, fallback)
-        if instrument.instrument_type == InstrumentType.OPTION:
-            return max(1.0, underlying_price * 0.015)
-        return underlying_price
+        if instrument.instrument_type != InstrumentType.OPTION:
+            return underlying_price
 
-    def _with_position_marks(self, portfolio: PortfolioLedger, underlying_marks: dict[str, float]) -> dict[str, float]:
+        strike = instrument.strike
+        option_type = instrument.option_type
+        expiry = instrument.expiry
+        if strike is None or option_type is None:
+            # Not enough metadata to price properly — degrade gracefully.
+            return max(1.0, underlying_price * 0.015)
+
+        as_of = as_of or date.today()
+        # Intrinsic value at/after expiry is the exact correct exit price.
+        if expiry is not None and expiry <= as_of:
+            if option_type == OptionType.CE:
+                intrinsic = max(0.0, underlying_price - strike)
+            else:
+                intrinsic = max(0.0, strike - underlying_price)
+            # Use a tick-size floor so quantity arithmetic doesn't trip on 0.
+            return max(intrinsic, instrument.tick_size or 0.05)
+
+        days_to_expiry = max(1, (expiry - as_of).days) if expiry is not None else 30
+        sigma = 0.25  # baseline 25% IV — used when no entry context is known.
+        ctx = (entry_context or {}).get(instrument.symbol)
+        if ctx is not None:
+            entry_spot, entry_option_price, entry_date = ctx
+            entry_dte = max(1, (expiry - entry_date).days) if expiry is not None else 30
+            try:
+                sigma = self._iv_calculator.calculate(
+                    market_price=max(0.05, entry_option_price),
+                    spot=max(0.01, entry_spot),
+                    strike=strike,
+                    days_to_expiry=entry_dte,
+                    option_type=option_type,
+                )
+            except Exception:
+                sigma = 0.25
+        try:
+            t = days_to_expiry / 365.0
+            price = self._iv_calculator._bs_price(
+                spot=max(0.01, underlying_price),
+                strike=strike,
+                t=t,
+                sigma=max(0.005, sigma),
+                option_type=option_type,
+                r=0.06,
+            )
+        except Exception:
+            price = underlying_price * 0.015
+        return max(price, instrument.tick_size or 0.05)
+
+    def _with_position_marks(
+        self,
+        portfolio: PortfolioLedger,
+        underlying_marks: dict[str, float],
+        entry_context: dict[str, tuple[float, float, date]] | None = None,
+        as_of: date | None = None,
+    ) -> dict[str, float]:
         marks = dict(underlying_marks)
         for symbol, position in portfolio.positions.items():
             if position.quantity != 0:
@@ -217,5 +331,7 @@ class BacktestEngine:
                     position.instrument,
                     underlying_marks,
                     position.average_price,
+                    entry_context=entry_context,
+                    as_of=as_of,
                 )
         return marks

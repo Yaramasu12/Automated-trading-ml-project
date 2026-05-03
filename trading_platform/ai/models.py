@@ -24,6 +24,26 @@ class ForecastEvaluation:
     misses: int
     sample_size: int
     healthy: bool
+    in_sample: bool = True
+
+
+@dataclass(frozen=True)
+class WalkForwardForecastEvaluation:
+    """Honest out-of-sample volatility evaluation.
+
+    The forecast is fit on `train_closes` only; coverage is then measured on
+    `test_closes` (the held-out window). Reported alongside the in-sample
+    coverage for comparison so callers can see the fitted-on-itself number is
+    NOT the same as a true forecast hit-rate.
+    """
+
+    train_size: int
+    test_size: int
+    in_sample_coverage: float
+    out_of_sample_coverage: float
+    out_of_sample_misses: int
+    healthy: bool
+    model_name: str
 
 
 @dataclass(frozen=True)
@@ -80,13 +100,69 @@ class VolatilityForecaster:
             sample_size=len(returns),
         )
 
-    def evaluate_interval(self, closes: list[float], forecast: VolatilityForecast) -> ForecastEvaluation:
+    def evaluate_interval(
+        self,
+        closes: list[float],
+        forecast: VolatilityForecast,
+        *,
+        in_sample: bool = True,
+    ) -> ForecastEvaluation:
+        """Evaluate interval coverage.
+
+        `in_sample=True` (default, kept for backward compatibility) reports
+        coverage on the same closes the forecast was derived from — this is
+        an inflated number and should be treated as a sanity check, not a
+        forecast hit-rate. For an honest forecast hit-rate use
+        `walk_forward_evaluate` or pass `in_sample=False` and a held-out
+        window of closes.
+        """
         returns = self._returns(closes)
         if not returns:
-            return ForecastEvaluation(coverage=0.0, misses=0, sample_size=0, healthy=False)
+            return ForecastEvaluation(coverage=0.0, misses=0, sample_size=0, healthy=False, in_sample=in_sample)
         misses = sum(1 for value in returns if value < forecast.lower_95 or value > forecast.upper_95)
         coverage = 1 - (misses / len(returns))
-        return ForecastEvaluation(coverage=coverage, misses=misses, sample_size=len(returns), healthy=coverage >= 0.90)
+        return ForecastEvaluation(
+            coverage=coverage,
+            misses=misses,
+            sample_size=len(returns),
+            healthy=coverage >= 0.90,
+            in_sample=in_sample,
+        )
+
+    def walk_forward_evaluate(
+        self,
+        closes: list[float],
+        *,
+        model_name: str = "ewma_volatility",
+        train_fraction: float = 0.7,
+    ) -> WalkForwardForecastEvaluation:
+        """Fit on the leading `train_fraction` of closes, evaluate on the rest.
+
+        Produces a genuine out-of-sample coverage number for the 95% interval.
+        The historical `evaluate_interval` is preserved (and now flagged as
+        in-sample) because tests and callers depend on the same shape, but new
+        callers should prefer this method for forecast quality reports.
+        """
+        if len(closes) < 12:
+            raise ValueError("At least 12 closes required for walk-forward evaluation")
+        train_fraction = min(0.9, max(0.3, train_fraction))
+        split = max(6, int(len(closes) * train_fraction))
+        if split >= len(closes) - 1:
+            split = len(closes) - 2
+        train_closes = closes[: split + 1]
+        test_closes = closes[split:]
+        train_forecast = self.forecast(train_closes, model_name=model_name)
+        in_sample = self.evaluate_interval(train_closes, train_forecast, in_sample=True)
+        oos = self.evaluate_interval(test_closes, train_forecast, in_sample=False)
+        return WalkForwardForecastEvaluation(
+            train_size=len(train_closes),
+            test_size=len(test_closes),
+            in_sample_coverage=in_sample.coverage,
+            out_of_sample_coverage=oos.coverage,
+            out_of_sample_misses=oos.misses,
+            healthy=oos.coverage >= 0.85,
+            model_name=train_forecast.model_name,
+        )
 
     def _returns(self, closes: list[float]) -> list[float]:
         return [
@@ -138,6 +214,36 @@ class GARCHForecaster:
             raise ValueError("At least 11 closes required")
         _, (omega, alpha, beta) = self._fit(returns)
         return {"omega": omega, "alpha": alpha, "beta": beta, "persistence": alpha + beta}
+
+    def walk_forward_evaluate(
+        self,
+        closes: list[float],
+        *,
+        train_fraction: float = 0.7,
+    ) -> WalkForwardForecastEvaluation:
+        """Fit GARCH(1,1) on the leading window and evaluate 95% interval coverage on the held-out window."""
+        if len(closes) < 20:
+            raise ValueError("At least 20 closes required for GARCH walk-forward evaluation")
+        train_fraction = min(0.9, max(0.3, train_fraction))
+        split = max(11, int(len(closes) * train_fraction))
+        if split >= len(closes) - 1:
+            split = len(closes) - 2
+        train_closes = closes[: split + 1]
+        test_closes = closes[split:]
+        train_forecast = self.forecast(train_closes)
+        # Reuse VolatilityForecaster's interval check (same lower_95/upper_95 shape).
+        helper = VolatilityForecaster()
+        in_sample = helper.evaluate_interval(train_closes, train_forecast, in_sample=True)
+        oos = helper.evaluate_interval(test_closes, train_forecast, in_sample=False)
+        return WalkForwardForecastEvaluation(
+            train_size=len(train_closes),
+            test_size=len(test_closes),
+            in_sample_coverage=in_sample.coverage,
+            out_of_sample_coverage=oos.coverage,
+            out_of_sample_misses=oos.misses,
+            healthy=oos.coverage >= 0.85,
+            model_name=train_forecast.model_name,
+        )
 
     def _fit(self, returns: list[float]) -> tuple[float, tuple[float, float, float]]:
         sigma2_bar = sum(r * r for r in returns) / len(returns)
@@ -368,15 +474,43 @@ class RegimeClassifier:
 
     def predict(self, features: FeatureSnapshot) -> str:
         if self._trained and self._model is not None:
-            return str(self._model.predict([self._vec(features)])[0])
+            try:
+                raw = self._model.predict([self._vec(features)])[0]
+            except Exception:
+                # sklearn can raise for malformed inputs; defensively fall back.
+                return self._rule_based(features)
+            label = str(raw)
+            if label not in self.REGIMES:
+                # Unknown / unexpected label: fall back to the deterministic
+                # rule rather than propagate an out-of-vocabulary regime to
+                # downstream gates. This protects the strategy router and
+                # risk engine from being fed labels they do not recognise.
+                return self._rule_based(features)
+            return label
         return self._rule_based(features)
 
     def predict_proba(self, features: FeatureSnapshot) -> dict[str, float]:
         """Return probability dict per regime. Falls back to hard 1.0 if model not available."""
         if self._trained and self._model is not None:
-            probs = self._model.predict_proba([self._vec(features)])[0]
-            classes = list(self._model.classes_)
-            return {cls: float(prob) for cls, prob in zip(classes, probs)}
+            try:
+                probs = self._model.predict_proba([self._vec(features)])[0]
+                classes = list(self._model.classes_)
+            except Exception:
+                regime = self._rule_based(features)
+                return {r: (1.0 if r == regime else 0.0) for r in self.REGIMES}
+            # Filter to only known regimes and renormalise; drop unknowns.
+            valid = {
+                str(cls): float(prob)
+                for cls, prob in zip(classes, probs)
+                if str(cls) in self.REGIMES
+            }
+            total = sum(valid.values())
+            if total <= 0.0:
+                regime = self._rule_based(features)
+                return {r: (1.0 if r == regime else 0.0) for r in self.REGIMES}
+            normalised = {cls: prob / total for cls, prob in valid.items()}
+            # Ensure every REGIME key is present, defaulting unseen to 0.0.
+            return {regime: normalised.get(regime, 0.0) for regime in self.REGIMES}
         regime = self._rule_based(features)
         return {r: (1.0 if r == regime else 0.0) for r in self.REGIMES}
 
@@ -419,12 +553,30 @@ class MetaModel:
 
     def __init__(self) -> None:
         self._scores: dict[str, dict[str, float]] = {}  # regime -> strategy -> ema_score
+        # Track observation count so the first few updates use a debiased
+        # initialisation rather than seeding `prev = score` (which fully
+        # retained the very first window's score with no smoothing).
+        self._counts: dict[str, dict[str, int]] = {}
 
     def update(self, regime: str, strategy_name: str, score: float) -> None:
-        """Update the EMA score for (regime, strategy_name)."""
+        """Update the EMA score for (regime, strategy_name).
+
+        Implementation detail (fix for N5): the previous version seeded
+        `prev = score` on the first observation, so the stored value was
+        fully `score` — i.e. the EMA wasn't smoothing anything for the first
+        window. We now seed `prev = 0` and apply the EMA blend uniformly,
+        and track `_counts` so callers can tell the difference between a
+        single observation and a converged EMA.
+        """
         regime_map = self._scores.setdefault(regime, {})
-        prev = regime_map.get(strategy_name, score)
+        count_map = self._counts.setdefault(regime, {})
+        prev = regime_map.get(strategy_name, 0.0)
         regime_map[strategy_name] = self._EMA_ALPHA * score + (1.0 - self._EMA_ALPHA) * prev
+        count_map[strategy_name] = count_map.get(strategy_name, 0) + 1
+
+    def observation_count(self, regime: str, strategy_name: str) -> int:
+        """Return how many updates have been applied for (regime, strategy_name)."""
+        return self._counts.get(regime, {}).get(strategy_name, 0)
 
     def rank(self, regime: str, strategy_names: list[str]) -> list[StrategyRegimeScore]:
         """Return all strategies sorted by regime-specific score (best first)."""

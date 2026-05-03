@@ -1086,19 +1086,30 @@ class TradingRuntime:
     def volatility_forecast(self, payload: dict | None = None) -> dict:
         payload = payload or {}
         closes = self._closes_from_payload(payload)
-        forecast = self.volatility_forecaster.forecast(
-            closes,
-            model_name=str(payload.get("model_name", "ewma_volatility")),
+        model_name = str(payload.get("model_name", "ewma_volatility"))
+        forecast = self.volatility_forecaster.forecast(closes, model_name=model_name)
+        in_sample_eval = self.volatility_forecaster.evaluate_interval(
+            closes[-min(len(closes), 20):], forecast, in_sample=True
         )
-        evaluation = self.volatility_forecaster.evaluate_interval(closes[-min(len(closes), 20):], forecast)
-        return {
+        result = {
             "forecast": asdict(forecast),
-            "interval_evaluation": asdict(evaluation),
+            "interval_evaluation": asdict(in_sample_eval),
             "policy": {
-                "promotion_gate": "Candidate volatility models must keep interval coverage above 90% before live use.",
+                "promotion_gate": "Candidate volatility models must keep OUT-OF-SAMPLE interval coverage above 85% before live use.",
                 "current_use": "baseline risk sizing and IV sanity checks",
+                "interval_evaluation_note": (
+                    "interval_evaluation.in_sample=True; this number is computed on the same "
+                    "closes the forecast was derived from. Use walk_forward_evaluation for an "
+                    "honest forecast hit-rate."
+                ),
             },
         }
+        try:
+            wf = self.volatility_forecaster.walk_forward_evaluate(closes, model_name=model_name)
+            result["walk_forward_evaluation"] = asdict(wf)
+        except ValueError as exc:
+            result["walk_forward_evaluation"] = {"error": str(exc)}
+        return result
 
     def sentiment(self, payload: dict) -> dict:
         text = str(payload.get("text", ""))
@@ -1150,13 +1161,25 @@ class TradingRuntime:
         payload = payload or {}
         closes = self._closes_from_payload(payload)
         forecast = self.garch_forecaster.forecast(closes)
-        evaluation = self.volatility_forecaster.evaluate_interval(closes[-min(len(closes), 20):], forecast)
+        in_sample_eval = self.volatility_forecaster.evaluate_interval(
+            closes[-min(len(closes), 20):], forecast, in_sample=True
+        )
         params = self.garch_forecaster.fitted_params(closes)
-        return {
+        result = {
             "forecast": asdict(forecast),
             "garch_params": params,
-            "interval_evaluation": asdict(evaluation),
+            "interval_evaluation": asdict(in_sample_eval),
+            "interval_evaluation_note": (
+                "in_sample=True — fitted-on-itself coverage. Use walk_forward_evaluation for a "
+                "genuine out-of-sample forecast hit-rate."
+            ),
         }
+        try:
+            wf = self.garch_forecaster.walk_forward_evaluate(closes)
+            result["walk_forward_evaluation"] = asdict(wf)
+        except ValueError as exc:
+            result["walk_forward_evaluation"] = {"error": str(exc)}
+        return result
 
     # ------------------------------------------------------------------
     # IV surface

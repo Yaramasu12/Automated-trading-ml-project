@@ -1,9 +1,13 @@
-fastapi>=0.110
-uvicorn[standard]>=0.27
-websockets>=12.0
-smartapi-python>=1.5
-pyotp>=2.9
-websocket-client>=1.7
-logzero>=1.7
-scikit-learn>=1.4
-
+# Direct runtime dependencies (pinned for reproducibility).
+# For a fully reproducible environment, install with the lock file too:
+#   pip install -r requirements.txt -c constraints.lock
+fastapi==0.136.1
+uvicorn[standard]==0.46.0
+websockets==16.0
+smartapi-python==1.5.5
+pyotp==2.9.0
+websocket-client==1.9.0
+logzero==1.7.0
+scikit-learn==1.8.0
+numpy==2.4.4
+scipy==1.17.1

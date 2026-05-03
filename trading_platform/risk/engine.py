@@ -75,16 +75,24 @@ class RiskEngine:
         if otr > self.limits.max_order_to_trade_ratio:
             return RiskDecision(False, "order_to_trade_ratio_too_high", 0.9)
 
+        # Position-growing checks only apply to orders that open / increase a
+        # position. Closing orders (`opens_position=False`) reduce risk by
+        # construction, so the position-size, symbol, correlation, and
+        # options-short caps must not block them — otherwise a forced exit at
+        # end-of-backtest (or any stop-out) would be silently rejected, leaving
+        # the position open and the demo backtest's win/loss metrics empty.
+        is_opening = intent.signal.metadata.get("opens_position", True)
         position_pct = intent.notional_value / portfolio.equity
-        if position_pct > self.limits.max_position_pct:
-            return RiskDecision(False, "position_size_exceeds_limit", min(1.0, position_pct))
-        if (symbol_exposure_pct if symbol_exposure_pct is not None else position_pct) > self.limits.max_symbol_exposure_pct:
-            return RiskDecision(False, "symbol_exposure_exceeds_limit", 0.9)
-        if correlated_exposure_pct > self.limits.max_correlated_exposure_pct:
-            return RiskDecision(False, "correlated_exposure_exceeds_limit", 0.9)
+        if is_opening:
+            if position_pct > self.limits.max_position_pct:
+                return RiskDecision(False, "position_size_exceeds_limit", min(1.0, position_pct))
+            if (symbol_exposure_pct if symbol_exposure_pct is not None else position_pct) > self.limits.max_symbol_exposure_pct:
+                return RiskDecision(False, "symbol_exposure_exceeds_limit", 0.9)
+            if correlated_exposure_pct > self.limits.max_correlated_exposure_pct:
+                return RiskDecision(False, "correlated_exposure_exceeds_limit", 0.9)
 
         instrument = intent.instrument
-        if options_short_exposure > portfolio.equity * self.limits.max_options_short_exposure_pct:
+        if is_opening and options_short_exposure > portfolio.equity * self.limits.max_options_short_exposure_pct:
             return RiskDecision(False, "options_short_exposure_exceeds_limit", 0.9)
         if (
             self.limits.block_naked_option_selling
@@ -105,9 +113,9 @@ class RiskEngine:
             ):
                 return RiskDecision(False, "expiry_day_open_cutoff", 0.85)
             if instrument.option_type in {OptionType.CE, OptionType.PE} and days_to_expiry <= 1:
-                if abs(gamma_exposure) > self.limits.max_gamma_near_expiry:
+                if is_opening and abs(gamma_exposure) > self.limits.max_gamma_near_expiry:
                     return RiskDecision(False, "near_expiry_gamma_exceeds_limit", 0.9)
-                if position_pct > self.limits.max_position_pct / 2:
+                if is_opening and position_pct > self.limits.max_position_pct / 2:
                     return RiskDecision(False, "near_expiry_option_size_too_large", 0.85)
 
         risk_score = min(0.99, position_pct / max(self.limits.max_position_pct, 0.0001))
