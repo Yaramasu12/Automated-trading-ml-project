@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import date, datetime, time, timedelta
 
 from trading_platform.ai.agents import MarketRegimeAgent, StrategySelectionAgent
@@ -64,7 +64,24 @@ class BacktestEngine:
         self.strategy_agent = StrategySelectionAgent()
         self.charges_model = ChargesModel()
 
-    def run(self, config: BacktestConfig) -> BacktestResult:
+    def run(
+        self,
+        config: BacktestConfig,
+        signal_filter=None,
+    ) -> BacktestResult:
+        """Run a backtest.
+
+        `signal_filter` is an optional callable `(signal) -> bool` that the
+        WalkForwardEvaluator passes in after fitting on the train window.
+        Signals are dropped before order construction when the filter rejects
+        them. This is what makes train→test "predict" step real instead of
+        just running two disjoint backtests.
+
+        Lookahead fix: signals are computed on bars `0 .. t-1` (i.e. NOT
+        peeking at bar `t`'s close), and the resulting order is filled at the
+        bar `t` open. Previously the engine computed features through bar `t`
+        and filled at that same close, which is a peek-at-close lookahead.
+        """
         if self._uses_default_master:
             self.instrument_master = build_default_universe(config.start)
         bars_by_underlying = self.data_provider.generate_many(config.underlyings, config.start, config.days)
@@ -80,6 +97,10 @@ class BacktestEngine:
         reports: list[ExecutionReport] = []
         selected: dict[str, list[str]] = {}
 
+        # NOTE: signals at decision-time `t` look at bars[: t] (exclusive of
+        # the current bar), and orders are filled at bars[t].open. This avoids
+        # the close-of-bar peek bias that would let a signal trade at the same
+        # close it was generated from.
         for bar_index in range(21, config.days):
             marks = {
                 symbol: bars[min(bar_index, len(bars) - 1)].close
@@ -88,20 +109,32 @@ class BacktestEngine:
             }
             now = datetime.combine(config.start + timedelta(days=bar_index), time(10, 0))
             for underlying in config.underlyings:
-                bars = bars_by_underlying[underlying][: bar_index + 1]
-                if len(bars) < 21:
+                full_bars = bars_by_underlying[underlying]
+                if bar_index >= len(full_bars):
                     continue
-                features = self.feature_engine.compute(bars)
+                # Signal-generation bars are bar_index-exclusive (no peek).
+                history_bars = full_bars[:bar_index]
+                if len(history_bars) < 21:
+                    continue
+                features = self.feature_engine.compute(history_bars)
                 regime = self.regime_agent.classify(features)
                 strategy_names = list(config.strategy_names or self.strategy_agent.choose(regime, underlying))
                 selected[underlying] = strategy_names
+                # The bar we will fill against (today's open).
+                execution_bar = full_bars[bar_index]
                 for strategy_name in strategy_names[:2]:
-                    instrument = self._select_instrument(strategy_name, underlying, bars[-1], now.date())
+                    instrument = self._select_instrument(strategy_name, underlying, history_bars[-1], now.date())
                     strategy = self.strategy_factory.get(strategy_name)
-                    signal = strategy.generate_signal(instrument, bars, now)
+                    signal = strategy.generate_signal(instrument, history_bars, now)
                     if signal is None or signal.confidence < 0.55:
                         continue
-                    quantity = self._position_quantity(config.starting_capital, instrument, signal.price)
+                    if signal_filter is not None and not signal_filter(signal):
+                        continue
+                    # Force execution at next bar's open price (no close lookahead),
+                    # regardless of the strategy's referenced "signal price".
+                    fill_reference_price = execution_bar.open
+                    signal = replace(signal, price=fill_reference_price)
+                    quantity = self._position_quantity(config.starting_capital, instrument, fill_reference_price)
                     if quantity <= 0:
                         continue
                     intent = OrderIntent(
@@ -111,8 +144,8 @@ class BacktestEngine:
                         order_type=OrderType.MARKET,
                         product_type=ProductType.INTRADAY,
                     )
-                    charges = self.charges_model.estimate(intent, signal.price)
-                    report = router.submit(intent, now, {**marks, instrument.symbol: signal.price}, charges)
+                    charges = self.charges_model.estimate(intent, fill_reference_price)
+                    report = router.submit(intent, now, {**marks, instrument.symbol: fill_reference_price}, charges)
                     reports.append(report)
             portfolio.mark_to_market(now, self._with_position_marks(portfolio, marks))
 

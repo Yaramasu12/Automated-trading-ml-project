@@ -1256,11 +1256,13 @@ class TradingRuntime:
             from trading_platform.ai.features import FeatureEngine
             features = FeatureEngine().compute(bars)
 
-        if not self.regime_classifier.is_trained:
-            records = self.feature_store.all_records()
-            if records:
-                self.regime_classifier.train(records)
-
+        # We deliberately do NOT auto-train on FeatureStore records here:
+        # those records are labelled by the rule-based regime agent, and
+        # fitting sklearn to its own teacher's labels has no validation
+        # value (see RegimeClassifier.train docstring). The classifier
+        # therefore stays in deterministic rule mode unless an external
+        # caller invokes `regime_classifier.train(records, label_source=...)`
+        # with non-rule labels.
         regime = self.regime_classifier.predict(features)
         proba = self.regime_classifier.predict_proba(features)
         return {
@@ -1268,6 +1270,8 @@ class TradingRuntime:
             "regime": regime,
             "probabilities": proba,
             "classifier_trained": self.regime_classifier.is_trained,
+            "label_source": self.regime_classifier.label_source,
+            "training_metrics": self.regime_classifier.last_train_metrics,
             "features": asdict(features),
         }
 
