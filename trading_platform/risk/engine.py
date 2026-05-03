@@ -56,7 +56,7 @@ class RiskEngine:
     ) -> RiskDecision:
         if kill_switch_active:
             return RiskDecision(False, "kill_switch_active", 1.0)
-        if execution_mode == ExecutionMode.LIVE and not live_armed:
+        if execution_mode.value.startswith("LIVE") and not live_armed:
             return RiskDecision(False, "live_mode_not_armed", 1.0)
         if portfolio.drawdown >= self.limits.max_drawdown:
             return RiskDecision(False, "max_drawdown_breached", 1.0)

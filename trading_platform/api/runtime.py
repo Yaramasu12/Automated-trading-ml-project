@@ -12,6 +12,7 @@ from trading_platform.backtesting.charges import ChargesModel
 from trading_platform.backtesting.engine import BacktestConfig, BacktestEngine
 from trading_platform.backtesting.evaluator import StrategyEvaluator, WalkForwardEvaluator
 from trading_platform.broker.angel_one import AngelOneBrokerClient
+from trading_platform.broker.capability_registry import BrokerCapabilityRegistry
 from trading_platform.broker.simulated import SimulatedBrokerClient
 from trading_platform.config import Settings, load_settings
 from trading_platform.data.angel_one_history import AngelOneHistoricalDataProvider
@@ -20,13 +21,32 @@ from trading_platform.data.instrument_master import build_default_universe
 from trading_platform.data.market_data import SyntheticDataProvider
 from trading_platform.decision.pipeline import DecisionPipeline
 from trading_platform.derivatives.engine import ContractSelector, ExpiryCalendar, GreeksCalculator, IVSurfaceBuilder, OptionChainBuilder, RolloverPlanner
-from trading_platform.domain.enums import ExecutionMode, OptionType, OrderType, ProductType, Side
+from trading_platform.domain.enums import ExecutionMode, OptionType, OrderPriority, OrderType, ProductType, Side
 from trading_platform.domain.models import OrderIntent, Signal
+from trading_platform.event_bus import InMemoryEventBus
+from trading_platform.execution.emergency_square_off import EmergencySquareOff
+from trading_platform.execution.fill_processor import FillProcessor
+from trading_platform.execution.lock_manager import InstrumentLockManager
+from trading_platform.execution.multi_leg_manager import MultiLegOrderManager
+from trading_platform.execution.oms_store import OMSEventStore
+from trading_platform.execution.rate_limiter import TokenBucketRateLimiter
+from trading_platform.execution.reconciliation import PositionReconciliation
 from trading_platform.execution.router import ExecutionRouter
+from trading_platform.execution.scheduler import ExecutionScheduler
+from trading_platform.exit.exit_manager import ExitManager
+from trading_platform.exit.exit_plan import ExitPlan
+from trading_platform.goal.governance import GoalGovernance
+from trading_platform.goal.scaling import PositionScaler
 from trading_platform.monitoring.metrics import OperationalMonitor
+from trading_platform.news.calendar import EconomicCalendar
+from trading_platform.news.intelligence import NewsIntelligence
 from trading_platform.portfolio.target import AnnualTargetTracker
 from trading_platform.portfolio.ledger import PortfolioLedger
+from trading_platform.risk.capital_protection import CapitalProtection
+from trading_platform.risk.compliance import ComplianceGuard
 from trading_platform.risk.engine import RiskEngine, RiskLimits
+from trading_platform.risk.event_risk import EventRiskGuard
+from trading_platform.risk.manual_approval import ManualApprovalGate
 from trading_platform.strategies.factory import StrategyFactory
 
 
@@ -57,6 +77,7 @@ class TradingRuntime:
         self.target_tracker = AnnualTargetTracker()
         self.portfolio = PortfolioLedger(self.settings.initial_capital)
         self.paper_broker = SimulatedBrokerClient()
+        self.broker_capabilities = BrokerCapabilityRegistry()
         self.risk_engine = RiskEngine(
             RiskLimits(
                 max_drawdown=self.settings.max_drawdown,
@@ -83,10 +104,69 @@ class TradingRuntime:
         self.monitor = OperationalMonitor()
         self.db = TradingDatabase()
         self.live_feed = LiveTickFeed(self.settings)
+        self.event_bus = InMemoryEventBus()
+        self.news_intelligence = NewsIntelligence()
+
+        # Async execution layer
+        self.oms = OMSEventStore()
+        self.lock_manager = InstrumentLockManager()
+        self.rate_limiter = TokenBucketRateLimiter()
+        self.fill_processor = FillProcessor(self.portfolio, self.oms)
+        self.reconciliation = PositionReconciliation(self.portfolio, self.oms)
+
+        self.compliance = ComplianceGuard(max_orders_per_day=200)
+        self.manual_approval = ManualApprovalGate(
+            approval_threshold_notional=max(250_000.0, self.settings.initial_capital * 0.10)
+        )
+        self.capital_protection = CapitalProtection(
+            max_position_pct=self.settings.max_position_pct,
+            daily_loss_limit_pct=self.settings.max_daily_loss,
+            drawdown_halt_pct=self.settings.max_drawdown,
+        )
+        self.economic_calendar = EconomicCalendar()
+        self.event_risk = EventRiskGuard(buffer_days=1)
+        self.event_risk.load_from_calendar(self.economic_calendar)
+
+        self.scheduler = ExecutionScheduler(
+            broker=self.paper_broker,
+            oms=self.oms,
+            fill_processor=self.fill_processor,
+            lock_manager=self.lock_manager,
+            rate_limiter=self.rate_limiter,
+            compliance=self.compliance,
+            capital_protection=self.capital_protection,
+            event_risk=self.event_risk,
+            portfolio=self.portfolio,
+            event_bus=self.event_bus,
+        )
+
+        self.exit_manager = ExitManager(
+            enqueue_fn=self.scheduler.enqueue,
+            poll_interval=1.0,
+        )
+        self.multi_leg_manager = MultiLegOrderManager(self.scheduler.enqueue)
+        self.square_off_manager = EmergencySquareOff(self.portfolio, self.scheduler.enqueue)
+
+        # Register fill callback: create exit plan after every entry fill
+        self.scheduler.register_fill_callback(self._on_fill)
+
+        # Goal governance
+        self.goal_governance = GoalGovernance(
+            annual_target_pct=0.40,
+            start_capital=self.settings.initial_capital,
+            drawdown_halt_pct=self.settings.max_drawdown,
+        )
+        self.position_scaler = PositionScaler()
+
         self.monitor.record_event(
             "runtime_started",
             "Trading runtime initialized",
             metadata={"execution_mode": self.execution_mode.value, "broker": self.settings.broker},
+        )
+        self.event_bus.publish(
+            "runtime.started.v1",
+            {"execution_mode": self.execution_mode.value, "broker": self.settings.broker},
+            "control",
         )
         self.decision_pipeline = DecisionPipeline(
             self.instrument_master,
@@ -117,16 +197,19 @@ class TradingRuntime:
         }
 
     def broker_client(self):
-        if self.execution_mode == ExecutionMode.LIVE:
+        if self.execution_mode.value.startswith("LIVE"):
             return AngelOneBrokerClient(self.settings)
         return self.paper_broker
 
     def set_execution_mode(self, mode: str) -> dict:
         next_mode = ExecutionMode(mode.upper())
         self.execution_mode = next_mode
-        if next_mode != ExecutionMode.LIVE:
+        if not next_mode.value.startswith("LIVE"):
             self.live_armed = False
+        # Hot-swap broker in the scheduler so it uses the right client
+        self.scheduler.update_broker(self.broker_client())
         self.monitor.record_event("execution_mode_changed", f"Runtime mode set to {next_mode.value}")
+        self.event_bus.publish("runtime.mode_changed.v1", self.state_payload(), "control")
         return self.state_payload()
 
     def arm_live(self, armed: bool) -> dict:
@@ -141,6 +224,7 @@ class TradingRuntime:
 
     def set_kill_switch(self, active: bool) -> dict:
         self.kill_switch_active = active
+        self.scheduler.kill_switch_active = active
         if active:
             self.live_armed = False
         self.monitor.record_event(
@@ -148,7 +232,63 @@ class TradingRuntime:
             f"Kill switch set to {active}",
             severity="CRITICAL" if active else "INFO",
         )
+        self.event_bus.publish(
+            "kill_switch.triggered.v1" if active else "kill_switch.cleared.v1",
+            {"active": active},
+            "control",
+        )
         return self.state_payload()
+
+    async def _on_fill(self, trade, intent: OrderIntent) -> None:
+        """Fill callback: creates an ExitPlan for every entry fill."""
+        if intent.priority != OrderPriority.ENTRY:
+            return
+        expiry_date = intent.instrument.expiry
+        plan = ExitPlan.from_trade(
+            trade,
+            instrument=intent.instrument,
+            stop_loss_pct=0.015,
+            target_pct=0.025,
+            trailing_pct=0.010,
+            expiry_date=expiry_date,
+        )
+        self.exit_manager.register(plan)
+        broker_name = getattr(self.broker_client(), "name", self.settings.broker)
+        capabilities = self.broker_capabilities.get(broker_name)
+        self.oms.append(
+            event_type="exit_plan_created",
+            order_id=intent.idempotency_key,
+            symbol=intent.instrument.symbol,
+            metadata={
+                **plan.to_dict(),
+                "broker": broker_name,
+                "gtt_mode": "broker_side" if capabilities.supports_gtt else "system_side",
+                "oco_mode": "broker_side" if capabilities.supports_oco else "system_side",
+                "trailing_stop_mode": "broker_side" if capabilities.supports_trailing_stop else "system_side",
+            },
+        )
+        self.event_bus.publish(
+            "position.protection_created.v1",
+            {
+                "symbol": plan.symbol,
+                "strategy_name": plan.strategy_name,
+                "gtt_supported": capabilities.supports_gtt,
+                "oco_supported": capabilities.supports_oco,
+            },
+            "positions",
+        )
+
+    async def start_async_services(self) -> None:
+        """Start scheduler and exit manager. Call once from FastAPI lifespan."""
+        await self.scheduler.start()
+        await self.exit_manager.start()
+        self.monitor.record_event("async_services_started", "Scheduler and ExitManager started")
+
+    async def stop_async_services(self) -> None:
+        """Stop scheduler and exit manager gracefully."""
+        await self.scheduler.stop()
+        await self.exit_manager.stop()
+        self.monitor.record_event("async_services_stopped", "Scheduler and ExitManager stopped")
 
     def run_backtest(self, payload: dict | None = None) -> dict:
         payload = payload or {}
@@ -345,6 +485,203 @@ class TradingRuntime:
             "portfolio": asdict(snapshot),
         }
 
+    async def enqueue_order(self, payload: dict) -> dict:
+        intent = self._intent_from_payload(payload)
+        return await self._enqueue_intent_with_controls(intent, payload)
+
+    async def _enqueue_intent_with_controls(self, intent: OrderIntent, payload: dict | None = None) -> dict:
+        payload = payload or {}
+        if self._requires_manual_approval(intent) and not bool(payload.get("manual_approved", False)):
+            expiry_seconds = int(payload.get("approval_expiry_seconds", 300))
+            request = self.manual_approval.submit(intent, expiry_seconds=expiry_seconds)
+            self.oms.append(
+                event_type="manual_approval_requested",
+                order_id=intent.idempotency_key,
+                idempotency_key=intent.idempotency_key,
+                symbol=intent.instrument.symbol,
+                strategy_name=intent.signal.strategy_name,
+                side=intent.signal.side.value,
+                quantity=intent.quantity,
+                price=intent.limit_price or intent.signal.price,
+                priority=int(intent.priority),
+                metadata={"request_id": request.request_id, "expires_at": request.expires_at.isoformat()},
+            )
+            self.event_bus.publish(
+                "order.manual_approval_requested.v1",
+                {
+                    "request_id": request.request_id,
+                    "idempotency_key": intent.idempotency_key,
+                    "symbol": intent.instrument.symbol,
+                    "notional_value": intent.notional_value,
+                },
+                "control",
+            )
+            return {
+                "enqueued": False,
+                "approval_required": True,
+                "approval_request": request.to_dict(),
+                "idempotency_key": intent.idempotency_key,
+            }
+
+        event_id = await self.scheduler.enqueue(intent)
+        return {
+            "enqueued": True,
+            "approval_required": False,
+            "event_id": event_id,
+            "idempotency_key": intent.idempotency_key,
+        }
+
+    def _requires_manual_approval(self, intent: OrderIntent) -> bool:
+        if intent.priority < OrderPriority.ENTRY:
+            return False
+        event_risk_state = self.event_risk.check()
+        return (
+            self.execution_mode == ExecutionMode.LIVE_MANUAL_APPROVAL
+            or self.execution_mode == ExecutionMode.LIVE
+            or event_risk_state.recommended_action == "MANUAL_APPROVAL"
+            or self.manual_approval.requires_approval(intent)
+        )
+
+    def manual_approval_status(self) -> dict:
+        pending = self.manual_approval.pending_requests()
+        return {
+            "pending_count": len(pending),
+            "approval_threshold_notional": self.manual_approval.approval_threshold_notional,
+            "pending": pending,
+        }
+
+    async def approve_order(self, request_id: str, payload: dict | None = None) -> dict:
+        payload = payload or {}
+        request = self.manual_approval.approve(request_id, str(payload.get("approval_reason", "")))
+        if request.intent is None:
+            raise ValueError("Approval request has no order intent")
+        self.oms.append(
+            event_type="manual_approval_approved",
+            order_id=request.intent.idempotency_key,
+            idempotency_key=request.intent.idempotency_key,
+            symbol=request.intent.instrument.symbol,
+            strategy_name=request.intent.signal.strategy_name,
+            metadata={"request_id": request.request_id, "reviewer_note": request.reviewer_note},
+        )
+        self.event_bus.publish(
+            "order.manual_approval_approved.v1",
+            {"request_id": request.request_id, "idempotency_key": request.intent.idempotency_key},
+            "control",
+        )
+        enqueued = await self._enqueue_intent_with_controls(request.intent, {"manual_approved": True})
+        return {"approved": True, "request": request.to_dict(), "enqueue": enqueued}
+
+    def reject_order(self, request_id: str, payload: dict | None = None) -> dict:
+        payload = payload or {}
+        request = self.manual_approval.reject(request_id, str(payload.get("reason", "")))
+        if request.intent is not None:
+            self.oms.append(
+                event_type="manual_approval_rejected",
+                order_id=request.intent.idempotency_key,
+                idempotency_key=request.intent.idempotency_key,
+                symbol=request.intent.instrument.symbol,
+                strategy_name=request.intent.signal.strategy_name,
+                rejection_reason=request.reviewer_note,
+                metadata={"request_id": request.request_id},
+            )
+        self.event_bus.publish(
+            "order.manual_approval_rejected.v1",
+            {"request_id": request.request_id},
+            "control",
+        )
+        return {"rejected": True, "request": request.to_dict()}
+
+    async def submit_multi_leg(self, payload: dict) -> dict:
+        raw_legs = payload.get("legs") or []
+        if len(raw_legs) < 2:
+            raise ValueError("multi-leg order requires at least two legs")
+        strategy_name = str(payload.get("strategy_name", "multi_leg_strategy"))
+        intents = []
+        group_id = str(payload.get("group_id") or f"ml_{datetime.now(timezone.utc).timestamp():.0f}")
+        for index, raw_leg in enumerate(raw_legs, start=1):
+            leg_payload = dict(raw_leg)
+            leg_payload.setdefault("strategy_name", strategy_name)
+            leg_payload.setdefault("priority", "PROTECTIVE_MULTI_LEG" if index == 1 else "HEDGE")
+            metadata = dict(leg_payload.get("metadata") or {})
+            metadata.update({"multi_leg_group": group_id, "leg_index": index})
+            leg_payload["metadata"] = metadata
+            intents.append(self._intent_from_payload(leg_payload))
+
+        combined_notional = sum(intent.notional_value for intent in intents)
+        if self.execution_mode.value.startswith("LIVE") and not bool(payload.get("manual_approved", False)):
+            requests = [
+                self.manual_approval.submit(intent, expiry_seconds=int(payload.get("approval_expiry_seconds", 300)))
+                for intent in intents
+            ]
+            for request in requests:
+                if request.intent:
+                    self.oms.append(
+                        event_type="manual_approval_requested",
+                        order_id=request.intent.idempotency_key,
+                        idempotency_key=request.intent.idempotency_key,
+                        symbol=request.intent.instrument.symbol,
+                        strategy_name=request.intent.signal.strategy_name,
+                        metadata={"request_id": request.request_id, "multi_leg_group": group_id},
+                    )
+            return {
+                "submitted": False,
+                "approval_required": True,
+                "group_id": group_id,
+                "combined_notional": combined_notional,
+                "approval_requests": [request.to_dict() for request in requests],
+            }
+
+        self.oms.append(
+            event_type="multi_leg_created",
+            order_id=group_id,
+            metadata={"strategy_name": strategy_name, "leg_count": len(intents), "combined_notional": combined_notional},
+        )
+        result = await self.multi_leg_manager.submit(intents, strategy_name=strategy_name)
+        self.oms.append(
+            event_type="multi_leg_rolled_back" if result.rolled_back else "multi_leg_completed",
+            order_id=result.order_id,
+            metadata=result.to_dict(),
+        )
+        self.event_bus.publish(
+            "multi_leg.completed.v1",
+            result.to_dict(),
+            "execution",
+        )
+        return {"submitted": True, "approval_required": False, "multi_leg_order": result.to_dict()}
+
+    async def square_off(self, payload: dict | None = None) -> dict:
+        payload = payload or {}
+        from trading_platform.domain.enums import SquareOffScope
+
+        scope = SquareOffScope(str(payload.get("scope", "GLOBAL")).upper())
+        result = await self.square_off_manager.square_off(
+            scope=scope,
+            strategy_name=payload.get("strategy_id") or payload.get("strategy_name"),
+            symbol=str(payload["symbol"]).upper() if payload.get("symbol") else None,
+        )
+        self.oms.append(
+            event_type="square_off_requested",
+            order_id=f"square_off:{result['timestamp']}",
+            metadata={**result, "reason": payload.get("reason", "")},
+        )
+        self.event_bus.publish("square_off.requested.v1", result, "control")
+        return result
+
+    def broker_capability_status(self) -> dict:
+        broker_name = getattr(self.broker_client(), "name", self.settings.broker)
+        return {
+            "active_broker": broker_name,
+            "active_capabilities": self.broker_capabilities.get(broker_name).__dict__,
+            "brokers": self.broker_capabilities.all_brokers(),
+        }
+
+    def event_bus_summary(self) -> dict:
+        return self.event_bus.summary()
+
+    def event_bus_events(self, limit: int = 100, stream: str | None = None) -> dict:
+        events = self.event_bus.recent(limit=limit, stream=stream)
+        return {"count": len(events), "events": events, "stream": stream}
+
     def _intent_from_payload(self, payload: dict) -> OrderIntent:
         symbol = str(payload["symbol"]).upper()
         instrument = self.instrument_master.get(symbol)
@@ -366,6 +703,11 @@ class TradingRuntime:
             created_at=datetime.now(timezone.utc),
             metadata=metadata,
         )
+        priority = payload.get("priority", OrderPriority.ENTRY)
+        if isinstance(priority, str):
+            priority = OrderPriority[priority.upper()] if not priority.isdigit() else OrderPriority(int(priority))
+        elif isinstance(priority, int):
+            priority = OrderPriority(priority)
         return OrderIntent(
             signal=signal,
             instrument=instrument,
@@ -375,6 +717,7 @@ class TradingRuntime:
             limit_price=float(payload["limit_price"]) if payload.get("limit_price") is not None else None,
             stop_loss=float(payload["stop_loss"]) if payload.get("stop_loss") is not None else None,
             target=float(payload["target"]) if payload.get("target") is not None else None,
+            priority=priority,
         )
 
     def _serialize_intent(self, intent: OrderIntent) -> dict:
@@ -390,6 +733,8 @@ class TradingRuntime:
             "order_type": intent.order_type.value,
             "product_type": intent.product_type.value,
             "strategy_name": intent.signal.strategy_name,
+            "priority": intent.priority.name,
+            "idempotency_key": intent.idempotency_key,
         }
 
     def _serialize_trade(self, trade) -> dict:
@@ -428,7 +773,7 @@ class TradingRuntime:
 
     def _can_submit_live_orders(self) -> bool:
         return (
-            self.execution_mode == ExecutionMode.LIVE
+            self.execution_mode.value.startswith("LIVE")
             and self.settings.live_trading_enabled
             and self.settings.live_order_confirmation == "I_ACCEPT_REAL_MONEY_LIVE_ORDERS"
             and self.settings.angel_one_configured
@@ -537,13 +882,23 @@ class TradingRuntime:
             for candidate in scan.candidates:
                 if not candidate.signal or not candidate.risk_decision or not candidate.risk_decision.approved:
                     continue
-                intent = OrderIntent(
+                base_intent = OrderIntent(
                     signal=candidate.signal,
                     instrument=candidate.instrument,
                     quantity=candidate.quantity,
                     order_type=OrderType.MARKET,
                     product_type=ProductType.INTRADAY,
+                    priority=OrderPriority.ENTRY,
                 )
+                snapshot_for_scale = self.portfolio.mark_to_market(
+                    scan.as_of, {candidate.instrument.symbol: candidate.signal.price}
+                )
+                goal_state = self.goal_governance.evaluate(
+                    current_equity=snapshot_for_scale.equity,
+                    drawdown=snapshot_for_scale.drawdown,
+                    as_of=scan.as_of.date() if hasattr(scan.as_of, "date") else scan.as_of,
+                )
+                intent = self.position_scaler.scale(base_intent, goal_state)
                 mark_prices = {
                     scan.underlying: candidate.signal.price,
                     candidate.instrument.symbol: candidate.signal.price,
@@ -1055,5 +1410,215 @@ class TradingRuntime:
                 live_armed=self.live_armed,
                 kill_switch_active=self.kill_switch_active,
             ).status,
+            "scheduler": self.scheduler.stats,
+            "event_bus": self.event_bus.summary(),
+            "manual_approval": self.manual_approval_status(),
+            "broker_capabilities": self.broker_capability_status(),
+            "exit_manager": {
+                "active_plans": self.exit_manager.active_plan_count,
+            },
             "timestamp": datetime.now(timezone.utc).isoformat(),
+        }
+
+    # ------------------------------------------------------------------
+    # Execution scheduler
+    # ------------------------------------------------------------------
+
+    def scheduler_stats(self) -> dict:
+        return self.scheduler.stats
+
+    def oms_events(self, limit: int = 50) -> dict:
+        events = self.oms.recent_events(limit)
+        return {"count": len(events), "events": events}
+
+    def oms_order_events(self, order_id: str) -> dict:
+        events = self.oms.events_for_order(order_id)
+        return {"order_id": order_id, "count": len(events), "events": events}
+
+    # ------------------------------------------------------------------
+    # Exit plans
+    # ------------------------------------------------------------------
+
+    def active_exit_plans(self) -> dict:
+        plans = self.exit_manager.active_plans()
+        return {"count": len(plans), "plans": plans}
+
+    def update_exit_marks(self, prices: dict[str, float]) -> dict:
+        self.exit_manager.update_marks(prices)
+        return {"updated": True, "symbol_count": len(prices)}
+
+    # ------------------------------------------------------------------
+    # Compliance / event risk
+    # ------------------------------------------------------------------
+
+    def compliance_status(self) -> dict:
+        return {
+            "orders_today": self.compliance.orders_today,
+            "max_orders_per_day": self.compliance.max_orders_per_day,
+            "banned_symbols": list(self.compliance.banned_symbols),
+        }
+
+    def event_risk_check(self, as_of: str | None = None) -> dict:
+        from datetime import date as _date
+        as_of_date = _date.fromisoformat(as_of) if as_of else None
+        result = self.event_risk.check(as_of_date)
+        return {
+            "blocked": result.blocked,
+            "reason": result.reason,
+            "nearest_event": result.nearest_event,
+            "days_to_event": result.days_to_event,
+            "recommended_action": result.recommended_action,
+        }
+
+    def economic_calendar_events(self, from_date: str | None = None, days: int = 30) -> dict:
+        from datetime import date as _date
+        start = _date.fromisoformat(from_date) if from_date else _date.today()
+        events = self.economic_calendar.upcoming(start, days)
+        return {
+            "from_date": start.isoformat(),
+            "days": days,
+            "count": len(events),
+            "events": [
+                {"date": e.event_date.isoformat(), "name": e.name, "impact": e.impact, "country": e.country}
+                for e in events
+            ],
+        }
+
+    def news_analyze(self, payload: dict) -> dict:
+        analysis = self.news_intelligence.analyze(payload)
+        if analysis.recommended_action in {"BLOCK_ENTRIES", "MANUAL_APPROVAL", "REDUCE_SIZE"}:
+            self.event_risk.register_temporary_event(
+                reason=analysis.reason,
+                expires_at=analysis.expires_at,
+                recommended_action=analysis.recommended_action,
+            )
+        self.monitor.record_event(
+            "news_event_analyzed",
+            analysis.reason,
+            severity="WARN" if analysis.recommended_action != "MONITOR" else "INFO",
+            metadata={
+                "event_id": analysis.event_id,
+                "recommended_action": analysis.recommended_action,
+                "global_risk_score": analysis.global_risk_score,
+            },
+        )
+        self.event_bus.publish("news.event_received.v1", analysis.to_dict(), "news")
+        return analysis.to_dict()
+
+    def news_events(self, limit: int = 50) -> dict:
+        events = self.news_intelligence.recent_events(limit)
+        return {"count": len(events), "events": events, "features": self.news_intelligence.feature_snapshot()}
+
+    def news_features(self) -> dict:
+        return self.news_intelligence.feature_snapshot()
+
+    def current_regime(self, symbol: str = "NIFTY") -> dict:
+        features_payload = self.regime_classify({"symbol": symbol, "days": 30})
+        news_features = self.news_intelligence.feature_snapshot()
+        action = news_features["recommended_action"]
+        adjusted_regime = features_payload["regime"]
+        if action in {"BLOCK_ENTRIES", "MANUAL_APPROVAL"}:
+            adjusted_regime = "EVENT_RISK"
+        elif action == "REDUCE_SIZE" and adjusted_regime != "HIGH_VOLATILITY":
+            adjusted_regime = f"{adjusted_regime}_EVENT_RISK"
+        return {
+            **features_payload,
+            "adjusted_regime": adjusted_regime,
+            "news_features": news_features,
+        }
+
+    def performance_summary(self, payload: dict | None = None) -> dict:
+        payload = payload or {}
+        days = int(payload.get("days", 30))
+        underlyings = tuple(payload.get("underlyings") or ("NIFTY", "BANKNIFTY", "RELIANCE"))
+        evaluation = self.strategy_evaluator.evaluate(
+            start=date.fromisoformat(str(payload.get("start", "2026-01-01"))),
+            days=days,
+            underlyings=underlyings,
+            starting_capital=float(payload.get("starting_capital", self.settings.initial_capital)),
+            max_drawdown=float(payload.get("max_drawdown", self.settings.max_drawdown)),
+            strategy_names=tuple(payload["strategy_names"]) if payload.get("strategy_names") else None,
+        ).to_dict()
+        quality_scores = []
+        for row in evaluation["leaderboard"]:
+            metrics = row["metrics"]
+            score = float(row["score"])
+            scaling_eligible = (
+                metrics["profit_factor"] >= 1.15
+                and metrics["sharpe_like"] >= 0.25
+                and metrics["max_drawdown"] <= self.settings.max_drawdown
+                and row["rejected_orders"] == 0
+            )
+            quality_scores.append(
+                {
+                    "strategy_id": row["strategy_name"],
+                    "mode": self.execution_mode.value,
+                    "lookback_days": days,
+                    "profit_factor": metrics["profit_factor"],
+                    "sharpe": metrics["sharpe_like"],
+                    "max_drawdown": metrics["max_drawdown"],
+                    "win_rate": metrics["win_rate"],
+                    "score": score,
+                    "scaling_eligible": scaling_eligible,
+                }
+            )
+
+        oms_events = self.oms.recent_events(500)
+        submitted = [event for event in oms_events if event["event_type"] == "broker_submitted"]
+        fills = [event for event in oms_events if event["event_type"] == "broker_filled"]
+        rejects = [event for event in oms_events if event["event_type"] in {"broker_rejected", "compliance_rejected", "capital_check_failed"}]
+        return {
+            "mode": self.execution_mode.value,
+            "lookback_days": days,
+            "best_strategy": evaluation["best_strategy"],
+            "strategy_quality_scores": quality_scores,
+            "execution_quality": {
+                "submitted_orders": len(submitted),
+                "filled_orders": len(fills),
+                "rejected_orders": len(rejects),
+                "rejection_rate": len(rejects) / max(1, len(submitted) + len(rejects)),
+                "oms_event_count": self.oms.event_count(),
+            },
+            "goal": self.goal_state({}),
+            "policy": {
+                "scaling_rule": "Scale only when strategy and execution quality are stable; target gap never overrides risk.",
+            },
+        }
+
+    # ------------------------------------------------------------------
+    # Goal governance
+    # ------------------------------------------------------------------
+
+    def goal_state(self, payload: dict | None = None) -> dict:
+        payload = payload or {}
+        from datetime import date as _date
+        as_of_raw = payload.get("as_of")
+        as_of = _date.fromisoformat(as_of_raw) if as_of_raw else None
+        snapshot = self.portfolio.mark_to_market(datetime.now(timezone.utc), {})
+        state = self.goal_governance.evaluate(
+            current_equity=float(payload.get("current_equity", snapshot.equity)),
+            drawdown=float(payload.get("drawdown", snapshot.drawdown)),
+            as_of=as_of,
+        )
+        return asdict(state)
+
+    # ------------------------------------------------------------------
+    # Position reconciliation
+    # ------------------------------------------------------------------
+
+    def reconcile_positions(self, broker_positions: dict[str, int]) -> dict:
+        results = self.reconciliation.reconcile(broker_positions)
+        return {
+            "count": len(results),
+            "has_drift": any(r.drift != 0 for r in results),
+            "results": [
+                {
+                    "symbol": r.symbol,
+                    "local_qty": r.local_qty,
+                    "broker_qty": r.broker_qty,
+                    "drift": r.drift,
+                    "action_taken": r.action_taken,
+                }
+                for r in results
+            ],
         }

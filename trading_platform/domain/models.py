@@ -10,6 +10,7 @@ from trading_platform.domain.enums import (
     Exchange,
     InstrumentType,
     OptionType,
+    OrderPriority,
     OrderStatus,
     OrderType,
     ProductType,
@@ -80,12 +81,21 @@ class OrderIntent:
     limit_price: float | None = None
     stop_loss: float | None = None
     target: float | None = None
+    priority: OrderPriority = OrderPriority.ENTRY
     idempotency_key: str = field(default_factory=lambda: uuid4().hex)
 
     @property
     def notional_value(self) -> float:
         price = self.limit_price or self.signal.price
         return abs(self.quantity * price * self.instrument.lot_size)
+
+
+@dataclass(order=True)
+class PrioritizedOrderIntent:
+    """Wrapper that makes OrderIntent sortable for asyncio.PriorityQueue."""
+    priority: int
+    seq: int
+    intent: OrderIntent = field(compare=False)
 
 
 @dataclass

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 
 from trading_platform.api.runtime import TradingRuntime
@@ -20,7 +21,6 @@ _ws_clients: list[WebSocket] = []
 
 
 async def _broadcast(message: dict) -> None:
-    """Push a JSON message to all connected dashboard clients."""
     dead: list[WebSocket] = []
     text = json.dumps(message)
     for ws in list(_ws_clients):
@@ -32,10 +32,18 @@ async def _broadcast(message: dict) -> None:
         _ws_clients.remove(ws)
 
 
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    await runtime.start_async_services()
+    yield
+    await runtime.stop_async_services()
+
+
 app = FastAPI(
     title="AI Trading Platform",
-    description="Live-capable trading control API with backtest, paper, and Angel One live modes.",
-    version="0.1.0",
+    description="Async event-driven trading platform with priority execution, exit management, and goal governance.",
+    version="2.0.0",
+    lifespan=lifespan,
 )
 
 app.add_middleware(
@@ -348,50 +356,6 @@ def meta_model_update(payload: dict):
 
 
 # ---------------------------------------------------------------------------
-# WebSocket — real-time dashboard push
-# ---------------------------------------------------------------------------
-
-
-@app.websocket("/ws/dashboard")
-async def ws_dashboard(websocket: WebSocket):
-    """Persistent WebSocket connection for the React dashboard.
-
-    The server pushes a snapshot every second. The client can also send
-    JSON commands: {"action": "kill_switch", "active": true/false}
-    """
-    await websocket.accept()
-    _ws_clients.append(websocket)
-    try:
-        while True:
-            # Push current runtime snapshot every second
-            snapshot = {
-                "type": "snapshot",
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-                "state": runtime.state_payload(),
-                "monitoring": runtime.monitoring_metrics(),
-                "live_feed": runtime.live_feed_snapshot(),
-                "db": runtime.db_summary(),
-            }
-            await websocket.send_text(json.dumps(snapshot))
-
-            # Non-blocking receive — handle inbound commands if sent
-            try:
-                raw = await asyncio.wait_for(websocket.receive_text(), timeout=1.0)
-                cmd = json.loads(raw)
-                if cmd.get("action") == "kill_switch":
-                    runtime.set_kill_switch(bool(cmd.get("active", True)))
-                elif cmd.get("action") == "execution_mode":
-                    runtime.set_execution_mode(str(cmd.get("mode", "BACKTEST")))
-            except asyncio.TimeoutError:
-                pass
-    except WebSocketDisconnect:
-        pass
-    finally:
-        if websocket in _ws_clients:
-            _ws_clients.remove(websocket)
-
-
-# ---------------------------------------------------------------------------
 # Database endpoints
 # ---------------------------------------------------------------------------
 
@@ -447,3 +411,285 @@ def feed_snapshot():
 @app.get("/feed/tick/{symbol}")
 def feed_tick(symbol: str):
     return runtime.latest_tick(symbol)
+
+
+# ---------------------------------------------------------------------------
+# Execution scheduler & OMS
+# ---------------------------------------------------------------------------
+
+
+@app.get("/execution/scheduler/stats")
+def scheduler_stats():
+    return runtime.scheduler_stats()
+
+
+@app.get("/execution/oms/events")
+def oms_events(limit: int = 50):
+    return runtime.oms_events(limit)
+
+
+@app.get("/execution/oms/order/{order_id}")
+def oms_order_events(order_id: str):
+    return runtime.oms_order_events(order_id)
+
+
+@app.post("/execution/enqueue")
+async def enqueue_order(payload: dict):
+    """Enqueue an OrderIntent directly (for testing / manual orders)."""
+    try:
+        return await runtime.enqueue_order(payload)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/execution/manual-approvals")
+def manual_approvals():
+    return runtime.manual_approval_status()
+
+
+@app.post("/execution/manual-approvals/{request_id}/approve")
+async def approve_manual_order(request_id: str, payload: dict | None = None):
+    try:
+        return await runtime.approve_order(request_id, payload or {})
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/execution/manual-approvals/{request_id}/reject")
+def reject_manual_order(request_id: str, payload: dict | None = None):
+    try:
+        return runtime.reject_order(request_id, payload or {})
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/execution/multi-leg")
+async def submit_multi_leg(payload: dict):
+    try:
+        return await runtime.submit_multi_leg(payload)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/execution/multi-leg")
+def multi_leg_orders():
+    return {"orders": runtime.multi_leg_manager.all_orders()}
+
+
+@app.post("/execution/square-off")
+async def square_off(payload: dict):
+    try:
+        return await runtime.square_off(payload)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/execution/broker-capabilities")
+def broker_capabilities():
+    return runtime.broker_capability_status()
+
+
+@app.get("/events/summary")
+def event_summary():
+    return runtime.event_bus_summary()
+
+
+@app.get("/events/recent")
+def event_recent(limit: int = 100, stream: str | None = None):
+    return runtime.event_bus_events(limit, stream)
+
+
+# ---------------------------------------------------------------------------
+# Exit plans
+# ---------------------------------------------------------------------------
+
+
+@app.get("/execution/exit-plans")
+def active_exit_plans():
+    return runtime.active_exit_plans()
+
+
+@app.post("/execution/exit-marks")
+def update_exit_marks(payload: dict):
+    prices = {str(k): float(v) for k, v in payload.items()}
+    return runtime.update_exit_marks(prices)
+
+
+# ---------------------------------------------------------------------------
+# Compliance & event risk
+# ---------------------------------------------------------------------------
+
+
+@app.get("/risk/compliance")
+def compliance_status():
+    return runtime.compliance_status()
+
+
+@app.get("/risk/event-risk")
+def event_risk_check(as_of: str | None = None):
+    return runtime.event_risk_check(as_of)
+
+
+@app.get("/news/calendar")
+def economic_calendar(from_date: str | None = None, days: int = 30):
+    return runtime.economic_calendar_events(from_date, days)
+
+
+@app.post("/news/analyze")
+def analyze_news(payload: dict):
+    try:
+        return runtime.news_analyze(payload)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/news/events")
+def news_events(limit: int = 50):
+    return runtime.news_events(limit)
+
+
+@app.get("/news/features")
+def news_features():
+    return runtime.news_features()
+
+
+@app.get("/regime/current")
+def current_regime(symbol: str = "NIFTY"):
+    return runtime.current_regime(symbol)
+
+
+# ---------------------------------------------------------------------------
+# Goal governance
+# ---------------------------------------------------------------------------
+
+
+@app.post("/goal/state")
+def goal_state(payload: dict):
+    try:
+        return runtime.goal_state(payload)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/performance/summary")
+def performance_summary(days: int = 30):
+    return runtime.performance_summary({"days": days})
+
+
+# ---------------------------------------------------------------------------
+# Position reconciliation
+# ---------------------------------------------------------------------------
+
+
+@app.post("/execution/reconcile")
+def reconcile_positions(payload: dict):
+    broker_positions: dict[str, int] = {str(k): int(v) for k, v in payload.items()}
+    return runtime.reconcile_positions(broker_positions)
+
+
+# ---------------------------------------------------------------------------
+# Versioned API aliases matching the implementation blueprint
+# ---------------------------------------------------------------------------
+
+
+@app.post("/api/v1/mode")
+def api_v1_mode(payload: dict):
+    return execution_mode({"mode": payload.get("mode", "BACKTEST")})
+
+
+@app.get("/api/v1/health")
+def api_v1_health():
+    return health()
+
+
+@app.get("/api/v1/orders")
+def api_v1_orders(limit: int = 100):
+    return runtime.oms_events(limit)
+
+
+@app.post("/api/v1/orders")
+async def api_v1_enqueue_order(payload: dict):
+    return await enqueue_order(payload)
+
+
+@app.post("/api/v1/orders/{request_id}/approve")
+async def api_v1_approve_order(request_id: str, payload: dict | None = None):
+    return await approve_manual_order(request_id, payload or {})
+
+
+@app.post("/api/v1/orders/{request_id}/reject")
+def api_v1_reject_order(request_id: str, payload: dict | None = None):
+    return reject_manual_order(request_id, payload or {})
+
+
+@app.post("/api/v1/square-off")
+async def api_v1_square_off(payload: dict):
+    return await square_off(payload)
+
+
+@app.get("/api/v1/news/events")
+def api_v1_news_events(limit: int = 50):
+    return news_events(limit)
+
+
+@app.post("/api/v1/news/analyze")
+def api_v1_news_analyze(payload: dict):
+    return analyze_news(payload)
+
+
+@app.get("/api/v1/regime")
+def api_v1_regime(symbol: str = "NIFTY"):
+    return current_regime(symbol)
+
+
+@app.get("/api/v1/performance")
+def api_v1_performance(days: int = 30):
+    return performance_summary(days)
+
+
+@app.get("/api/v1/events")
+def api_v1_events(limit: int = 100, stream: str | None = None):
+    return event_recent(limit, stream)
+
+
+# ---------------------------------------------------------------------------
+# WebSocket — real-time dashboard push (updated with scheduler/exit data)
+# ---------------------------------------------------------------------------
+
+
+@app.websocket("/ws/dashboard")
+async def ws_dashboard(websocket: WebSocket):
+    await websocket.accept()
+    _ws_clients.append(websocket)
+    try:
+        while True:
+            snapshot = {
+                "type": "snapshot",
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "state": runtime.state_payload(),
+                "monitoring": runtime.monitoring_metrics(),
+                "live_feed": runtime.live_feed_snapshot(),
+                "db": runtime.db_summary(),
+                "scheduler": runtime.scheduler_stats(),
+                "exit_plans": runtime.exit_manager.active_plan_count,
+                "manual_approvals": runtime.manual_approval_status()["pending_count"],
+                "event_bus": runtime.event_bus_summary(),
+            }
+            await websocket.send_text(json.dumps(snapshot))
+            try:
+                raw = await asyncio.wait_for(websocket.receive_text(), timeout=1.0)
+                cmd = json.loads(raw)
+                if cmd.get("action") == "kill_switch":
+                    runtime.set_kill_switch(bool(cmd.get("active", True)))
+                elif cmd.get("action") == "execution_mode":
+                    runtime.set_execution_mode(str(cmd.get("mode", "BACKTEST")))
+                elif cmd.get("action") == "update_marks":
+                    marks = {str(k): float(v) for k, v in cmd.get("prices", {}).items()}
+                    runtime.update_exit_marks(marks)
+            except asyncio.TimeoutError:
+                pass
+    except WebSocketDisconnect:
+        pass
+    finally:
+        if websocket in _ws_clients:
+            _ws_clients.remove(websocket)

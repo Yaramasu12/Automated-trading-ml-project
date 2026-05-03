@@ -69,7 +69,7 @@ class Settings:
     @property
     def can_submit_live_orders(self) -> bool:
         return (
-            self.execution_mode == ExecutionMode.LIVE
+            self.execution_mode.value.startswith("LIVE")
             and self.live_trading_enabled
             and self.live_order_confirmation == LIVE_ORDER_CONFIRMATION_PHRASE
             and self.angel_one_configured
