@@ -13,7 +13,8 @@ class RiskLimits:
     max_drawdown: float = 0.10
     max_daily_loss: float = 0.02
     max_loss_per_strategy_pct: float = 0.02
-    max_position_pct: float = 0.05
+    max_position_pct: float = 0.05           # options / equity: full notional cap
+    max_futures_margin_pct: float = 0.20     # futures: SPAN margin cap (1 index lot ≈ 12-15%)
     max_margin_utilization: float = 0.60
     max_options_short_exposure_pct: float = 0.10
     max_gamma_near_expiry: float = 0.05
@@ -82,11 +83,24 @@ class RiskEngine:
         # end-of-backtest (or any stop-out) would be silently rejected, leaving
         # the position open and the demo backtest's win/loss metrics empty.
         is_opening = intent.signal.metadata.get("opens_position", True)
-        position_pct = intent.notional_value / portfolio.equity
+        # For futures the capital at risk is the SPAN margin (~12% of notional),
+        # not the full contract notional.  Using full notional always exceeds
+        # position limits for any index lot, so we compare margin against
+        # max_futures_margin_pct (default 20%) rather than max_position_pct (5%).
+        is_future = intent.instrument.instrument_type == InstrumentType.FUTURE
+        if is_future:
+            effective_exposure = intent.notional_value * 0.12
+            applicable_limit = self.limits.max_futures_margin_pct
+        else:
+            effective_exposure = intent.notional_value
+            applicable_limit = self.limits.max_position_pct
+        position_pct = effective_exposure / portfolio.equity
         if is_opening:
-            if position_pct > self.limits.max_position_pct:
+            if position_pct > applicable_limit:
                 return RiskDecision(False, "position_size_exceeds_limit", min(1.0, position_pct))
-            if (symbol_exposure_pct if symbol_exposure_pct is not None else position_pct) > self.limits.max_symbol_exposure_pct:
+            sym_exp = symbol_exposure_pct if symbol_exposure_pct is not None else position_pct
+            sym_exp_limit = applicable_limit * 2 if is_future else self.limits.max_symbol_exposure_pct
+            if sym_exp > sym_exp_limit:
                 return RiskDecision(False, "symbol_exposure_exceeds_limit", 0.9)
             if correlated_exposure_pct > self.limits.max_correlated_exposure_pct:
                 return RiskDecision(False, "correlated_exposure_exceeds_limit", 0.9)
@@ -118,5 +132,5 @@ class RiskEngine:
                 if is_opening and position_pct > self.limits.max_position_pct / 2:
                     return RiskDecision(False, "near_expiry_option_size_too_large", 0.85)
 
-        risk_score = min(0.99, position_pct / max(self.limits.max_position_pct, 0.0001))
+        risk_score = min(0.99, position_pct / max(applicable_limit, 0.0001))
         return RiskDecision(True, "approved", risk_score)

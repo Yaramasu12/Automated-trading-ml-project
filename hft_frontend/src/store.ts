@@ -18,6 +18,7 @@ import type {
 
 export type NavView =
   | 'dashboard'
+  | 'engine'
   | 'signals'
   | 'strategies'
   | 'backtest'

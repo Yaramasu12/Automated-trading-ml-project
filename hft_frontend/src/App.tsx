@@ -1,6 +1,7 @@
 import { useStore } from './store'
 import { Layout } from './components/Layout'
 import { Dashboard } from './views/Dashboard'
+import { Engine } from './views/Engine'
 import { Signals } from './views/Signals'
 import { Strategies } from './views/Strategies'
 import { Backtest } from './views/Backtest'
@@ -17,16 +18,17 @@ export function App() {
 
   function renderView() {
     switch (activeView) {
-      case 'dashboard':   return <Dashboard />
-      case 'signals':     return <Signals />
-      case 'strategies':  return <Strategies />
-      case 'backtest':    return <Backtest />
-      case 'models':      return <Models />
-      case 'risk':        return <Risk />
-      case 'execution':   return <Execution />
+      case 'dashboard':    return <Dashboard />
+      case 'engine':       return <Engine />
+      case 'signals':      return <Signals />
+      case 'strategies':   return <Strategies />
+      case 'backtest':     return <Backtest />
+      case 'models':       return <Models />
+      case 'risk':         return <Risk />
+      case 'execution':    return <Execution />
       case 'intelligence': return <Intelligence />
-      case 'account':     return <Account />
-      default:            return <Dashboard />
+      case 'account':      return <Account />
+      default:             return <Dashboard />
     }
   }
 

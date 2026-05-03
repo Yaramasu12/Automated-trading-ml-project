@@ -48,6 +48,7 @@ from trading_platform.risk.engine import RiskEngine, RiskLimits
 from trading_platform.risk.event_risk import EventRiskGuard
 from trading_platform.risk.manual_approval import ManualApprovalGate
 from trading_platform.strategies.factory import StrategyFactory
+from trading_platform.agent.trading_agent import TradingAgent
 
 
 @dataclass
@@ -98,6 +99,10 @@ class TradingRuntime:
         self.meta_model = MetaModel()
         self.feature_store = FeatureStore()
         self.iv_surface_builder = IVSurfaceBuilder()
+        # In-memory logs for dashboard visibility
+        self._risk_rejection_log: list[dict] = []   # last 500 risk rejections
+        self._agent_trade_log: list[dict] = []      # every entry/exit fill the agent sees
+        self._entry_fill_context: dict[str, dict] = {}  # symbol -> {strategy, regime, entry_price}
         self.walk_forward_evaluator = WalkForwardEvaluator(self.backtest_engine)
         self.synthetic_data = SyntheticDataProvider()
         self.charges_model = ChargesModel()
@@ -174,7 +179,11 @@ class TradingRuntime:
             self.risk_engine,
             self.portfolio,
             self.synthetic_data,
+            live_feed=self.live_feed,
+            history_provider=self.angel_one_history if self.settings.angel_one_configured else None,
+            feature_store=self.feature_store,
         )
+        self.agent = TradingAgent(self)
 
     def state(self) -> RuntimeState:
         return RuntimeState(
@@ -240,9 +249,59 @@ class TradingRuntime:
         return self.state_payload()
 
     async def _on_fill(self, trade, intent: OrderIntent) -> None:
-        """Fill callback: creates an ExitPlan for every entry fill."""
+        """Fill callback: creates ExitPlan on entry fills; records ML feedback on exit fills."""
+        now_ts = datetime.now(timezone.utc).isoformat()
+        symbol = intent.instrument.symbol
+        strategy_name = intent.signal.strategy_name
+        fill_price = getattr(trade, "fill_price", None) or intent.signal.price
+        side = intent.signal.side.value
+
+        # ── Exit fill: compute P&L-based score → update MetaModel ──────────
         if intent.priority != OrderPriority.ENTRY:
+            ctx = self._entry_fill_context.pop(symbol, None)
+            if ctx:
+                entry_price = ctx.get("entry_price", fill_price)
+                regime = ctx.get("regime", "MEAN_REVERTING")
+                strat = ctx.get("strategy", strategy_name)
+                direction = 1 if ctx.get("side", "BUY") == "BUY" else -1
+                pnl_pct = direction * (fill_price - entry_price) / max(entry_price, 1)
+                # Normalise to [0,1] score: 0.5=breakeven, 1=+5%+, 0=−5%−
+                score = min(1.0, max(0.0, 0.5 + pnl_pct * 10))
+                try:
+                    self.meta_model.update(regime, strat, score)
+                except Exception:
+                    pass
+                self._agent_trade_log.append({
+                    "ts": now_ts, "type": "EXIT", "symbol": symbol,
+                    "strategy": strat, "regime": regime, "side": side,
+                    "entry_price": entry_price, "exit_price": fill_price,
+                    "pnl_pct": round(pnl_pct * 100, 2), "ml_score": round(score, 3),
+                })
+            else:
+                self._agent_trade_log.append({
+                    "ts": now_ts, "type": "EXIT", "symbol": symbol,
+                    "strategy": strategy_name, "side": side, "exit_price": fill_price,
+                })
+            if len(self._agent_trade_log) > 500:
+                self._agent_trade_log = self._agent_trade_log[-500:]
             return
+
+        # ── Entry fill: record context for ML feedback later ────────────────
+        self._entry_fill_context[symbol] = {
+            "strategy": strategy_name,
+            "regime": intent.signal.metadata.get("regime", "MEAN_REVERTING"),
+            "entry_price": fill_price,
+            "side": side,
+        }
+        self._agent_trade_log.append({
+            "ts": now_ts, "type": "ENTRY", "symbol": symbol,
+            "strategy": strategy_name, "side": side, "entry_price": fill_price,
+            "quantity": intent.quantity,
+        })
+        if len(self._agent_trade_log) > 500:
+            self._agent_trade_log = self._agent_trade_log[-500:]
+
+        # ── Create ExitPlan ─────────────────────────────────────────────────
         expiry_date = intent.instrument.expiry
         plan = ExitPlan.from_trade(
             trade,
@@ -258,7 +317,7 @@ class TradingRuntime:
         self.oms.append(
             event_type="exit_plan_created",
             order_id=intent.idempotency_key,
-            symbol=intent.instrument.symbol,
+            symbol=symbol,
             metadata={
                 **plan.to_dict(),
                 "broker": broker_name,
@@ -279,16 +338,37 @@ class TradingRuntime:
         )
 
     async def start_async_services(self) -> None:
-        """Start scheduler and exit manager. Call once from FastAPI lifespan."""
+        """Start scheduler, exit manager, live feed, and trading agent."""
         await self.scheduler.start()
         await self.exit_manager.start()
-        self.monitor.record_event("async_services_started", "Scheduler and ExitManager started")
+        if self.settings.angel_one_configured:
+            self.start_live_feed()
+        self.agent.start()
+        self.monitor.record_event("async_services_started", "Scheduler, ExitManager, and Agent started")
 
     async def stop_async_services(self) -> None:
         """Stop scheduler and exit manager gracefully."""
+        self.agent.stop()
         await self.scheduler.stop()
         await self.exit_manager.stop()
+        self.live_feed.stop()
         self.monitor.record_event("async_services_stopped", "Scheduler and ExitManager stopped")
+
+    # ------------------------------------------------------------------
+    # Autonomous trading agent
+    # ------------------------------------------------------------------
+
+    def start_agent(self, scan_interval: int | None = None) -> dict:
+        return self.agent.start(scan_interval=scan_interval)
+
+    def stop_agent(self) -> dict:
+        return self.agent.stop()
+
+    def agent_status(self) -> dict:
+        return self.agent.status()
+
+    def set_agent_interval(self, seconds: int) -> dict:
+        return self.agent.set_interval(seconds)
 
     def run_backtest(self, payload: dict | None = None) -> dict:
         payload = payload or {}
@@ -417,6 +497,9 @@ class TradingRuntime:
             self.risk_engine,
             self.portfolio,
             self.synthetic_data,
+            live_feed=self.live_feed,
+            history_provider=self.angel_one_history if self.settings.angel_one_configured else None,
+            feature_store=self.feature_store,
         )
 
     def preview_order(self, payload: dict) -> dict:
@@ -817,30 +900,47 @@ class TradingRuntime:
         start = date.fromisoformat(str(payload.get("start", "2026-01-01")))
         days = int(payload.get("days", 30))
         strategy_names = [str(item) for item in payload["strategy_names"]] if payload.get("strategy_names") else None
+        # Allow caller to override execution_mode (e.g. BACKTEST to bypass market-hours gate)
+        mode_override = payload.get("execution_mode")
+        try:
+            scan_mode = ExecutionMode(mode_override) if mode_override else self.execution_mode
+        except ValueError:
+            scan_mode = self.execution_mode
         scans = [
             self.decision_pipeline.scan(
                 underlying=underlying,
                 start=start,
                 days=days,
-                execution_mode=self.execution_mode,
+                execution_mode=scan_mode,
                 live_armed=self.live_armed,
                 kill_switch_active=self.kill_switch_active,
                 strategy_names=strategy_names,
             ).to_dict()
             for underlying in underlyings
         ]
-        approved = sum(
-            1
-            for scan in scans
-            for candidate in scan["candidates"]
-            if candidate["risk_decision"] and candidate["risk_decision"]["approved"]
-        )
-        rejected = sum(
-            1
-            for scan in scans
-            for candidate in scan["candidates"]
-            if candidate["risk_decision"] and not candidate["risk_decision"]["approved"]
-        )
+        approved = 0
+        rejected = 0
+        now_ts = datetime.now(timezone.utc).isoformat()
+        for scan in scans:
+            for candidate in scan["candidates"]:
+                rd = candidate.get("risk_decision")
+                if not rd:
+                    continue
+                if rd["approved"]:
+                    approved += 1
+                else:
+                    rejected += 1
+                    self._risk_rejection_log.append({
+                        "ts": now_ts,
+                        "underlying": scan.get("underlying", ""),
+                        "symbol": (candidate.get("instrument") or {}).get("symbol", ""),
+                        "strategy": candidate.get("strategy_name", ""),
+                        "reason": rd.get("reason", ""),
+                        "risk_score": rd.get("risk_score", 0),
+                        "regime": scan.get("regime", ""),
+                    })
+        if len(self._risk_rejection_log) > 500:
+            self._risk_rejection_log = self._risk_rejection_log[-500:]
         return {
             "mode": self.execution_mode.value,
             "submitted_orders": 0,
@@ -1384,11 +1484,12 @@ class TradingRuntime:
 
     def start_live_feed(self, symbols: list[str] | None = None) -> dict:
         symbols = symbols or [inst.symbol for inst in self.instrument_master.all() if not inst.is_derivative]
+        # Register ALL instruments so the feed has token+exchange mappings for everything
         self.live_feed.register_instruments(self.instrument_master.all())
         self.live_feed.subscribe(symbols)
         self.live_feed.start()
         self.monitor.record_event("live_feed_started", f"Live tick feed started for {len(symbols)} symbols")
-        return {"started": True, "symbols": symbols}
+        return {"started": True, "symbols": symbols, "symbol_count": len(symbols)}
 
     def stop_live_feed(self) -> dict:
         self.live_feed.stop()
@@ -1473,6 +1574,110 @@ class TradingRuntime:
     def update_exit_marks(self, prices: dict[str, float]) -> dict:
         self.exit_manager.update_marks(prices)
         return {"updated": True, "symbol_count": len(prices)}
+
+    def portfolio_positions(self) -> dict:
+        """All open positions with live mark-to-market P&L."""
+        now = datetime.now(timezone.utc)
+        mark_prices: dict[str, float] = {}
+        for symbol in list(self.portfolio.positions.keys()):
+            tick = self.live_feed.latest_tick(symbol)
+            if tick and tick.last_price > 0:
+                mark_prices[symbol] = tick.last_price
+        snapshot = self.portfolio.mark_to_market(now, mark_prices)
+        positions = []
+        for symbol, pos in self.portfolio.positions.items():
+            if pos.quantity == 0:
+                continue
+            mark = mark_prices.get(symbol, pos.average_price)
+            lot_size = getattr(pos.instrument, "lot_size", 1) if hasattr(pos, "instrument") else 1
+            unrealized = pos.unrealized_pnl(mark)
+            pnl_pct = unrealized / max(pos.average_price * abs(pos.quantity) * lot_size, 1)
+            positions.append({
+                "symbol": symbol,
+                "quantity": pos.quantity,
+                "side": "BUY" if pos.quantity > 0 else "SELL",
+                "average_price": round(pos.average_price, 2),
+                "mark_price": round(mark, 2),
+                "unrealized_pnl": round(unrealized, 2),
+                "realized_pnl": round(pos.realized_pnl, 2),
+                "pnl_pct": round(pnl_pct * 100, 2),
+                "live": symbol in mark_prices,
+            })
+        return {
+            "count": len(positions),
+            "positions": positions,
+            "portfolio": {
+                "cash": round(snapshot.cash, 2),
+                "equity": round(snapshot.equity, 2),
+                "unrealized_pnl": round(snapshot.unrealized_pnl, 2),
+                "realized_pnl": round(snapshot.realized_pnl, 2),
+                "drawdown": round(snapshot.drawdown * 100, 2),
+                "peak_equity": round(snapshot.peak_equity, 2),
+                "open_positions": snapshot.open_positions,
+            },
+        }
+
+    def agent_trade_log(self, limit: int = 100) -> dict:
+        """History of every entry/exit fill the agent processed."""
+        log = self._agent_trade_log[-limit:]
+        log.reverse()
+        return {"count": len(log), "trades": log}
+
+    def risk_rejection_log(self, limit: int = 100) -> dict:
+        """Recent risk engine rejections with reason codes."""
+        log = self._risk_rejection_log[-limit:]
+        log.reverse()
+        return {"count": len(log), "rejections": log}
+
+    def governance_dashboard(self) -> dict:
+        """Full governance state: goal phase, ML model health, risk supervisor, feature drift."""
+        snapshot = self.portfolio.mark_to_market(datetime.now(timezone.utc), {})
+        goal = self.goal_governance.evaluate(snapshot.equity, snapshot.drawdown)
+        # Feature drift across scan underlyings
+        drift_scores = {}
+        for sym in list(self.feature_store.all_symbols())[:20]:
+            drift_scores[sym] = round(self.feature_store.feature_drift_score(sym), 4)
+        # MetaModel summary
+        meta_summary = self.meta_model.summary()
+        # Regime distribution per symbol
+        regime_dist = {sym: self.feature_store.regime_distribution(sym) for sym in list(self.feature_store.all_symbols())[:10]}
+        return {
+            "goal": {
+                "phase": goal.phase.value,
+                "annual_target_pct": round(goal.annual_target_pct * 100, 1),
+                "actual_run_rate": round(goal.actual_run_rate * 100, 2),
+                "required_run_rate": round(goal.required_run_rate * 100, 2),
+                "scaling_factor": goal.scaling_factor,
+                "gap_pct": round(goal.gap_pct * 100, 2),
+                "current_equity": round(goal.current_equity, 2),
+                "target_equity": round(goal.target_equity, 2),
+                "days_elapsed": goal.days_elapsed,
+                "days_remaining": goal.days_remaining,
+                "message": goal.message,
+            },
+            "portfolio": {
+                "equity": round(snapshot.equity, 2),
+                "drawdown_pct": round(snapshot.drawdown * 100, 2),
+                "unrealized_pnl": round(snapshot.unrealized_pnl, 2),
+                "realized_pnl": round(snapshot.realized_pnl, 2),
+                "open_positions": snapshot.open_positions,
+            },
+            "ml_models": {
+                "meta_model_summary": meta_summary,
+                "regime_classifier_trained": self.regime_classifier.is_trained,
+                "regime_classifier_metrics": self.regime_classifier.last_train_metrics,
+                "feature_store_symbols": self.feature_store.all_symbols(),
+                "feature_drift_scores": drift_scores,
+                "regime_distribution": regime_dist,
+            },
+            "risk": {
+                "kill_switch": self.kill_switch_active,
+                "live_armed": self.live_armed,
+                "compliance_orders_today": self.compliance.orders_today,
+                "compliance_max_orders": self.compliance.max_orders_per_day,
+                "rejection_count_session": len(self._risk_rejection_log),
+            },
+        }
 
     # ------------------------------------------------------------------
     # Compliance / event risk

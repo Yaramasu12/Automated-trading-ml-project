@@ -291,28 +291,30 @@ class SentimentAnalyzer:
     """Lexicon baseline that keeps the FinBERT interface shape without network/model downloads."""
 
     positive_words = {
-        "beat",
-        "bullish",
-        "growth",
-        "profit",
-        "record",
-        "upgrade",
-        "strong",
-        "surge",
-        "gain",
-        "optimistic",
+        # earnings / fundamentals
+        "beat", "outperform", "record", "profit", "revenue", "dividend", "surplus",
+        "margin", "earnings", "growth", "expansion", "recovery", "rebound",
+        # sentiment
+        "bullish", "optimistic", "confident", "positive", "strong", "robust",
+        # price action
+        "surge", "rally", "jump", "soar", "climb", "gain", "rise", "breakout",
+        # ratings / news
+        "upgrade", "buy", "overweight", "accumulate", "recommend", "target",
+        # macro
+        "gdp", "stimulus", "reform", "investment", "inflow", "opportunity",
     }
     negative_words = {
-        "bearish",
-        "downgrade",
-        "fall",
-        "fraud",
-        "loss",
-        "miss",
-        "probe",
-        "weak",
-        "decline",
-        "volatile",
+        # earnings / fundamentals
+        "miss", "loss", "deficit", "writedown", "impairment", "default", "debt",
+        "liabilities", "downgrade", "warning", "revision", "shortfall",
+        # sentiment
+        "bearish", "pessimistic", "concern", "fear", "risk", "uncertain", "weak",
+        # price action
+        "fall", "drop", "decline", "plunge", "crash", "sell", "slump", "slide",
+        # regulatory / news
+        "fraud", "probe", "investigation", "penalty", "ban", "fine", "lawsuit",
+        # macro
+        "recession", "inflation", "hike", "outflow", "sanctions", "volatile",
     }
 
     def analyze(self, text: str) -> SentimentResult:
@@ -402,10 +404,10 @@ class RegimeClassifier:
             self._label_source = label_source
             return False
         valid = [r for r in feature_records if r.get("regime") in self.REGIMES]
-        if len(valid) < 12 or len({r["regime"] for r in valid}) < 2:
+        if len(valid) < 8 or len({r["regime"] for r in valid}) < 2:
             self._last_train_metrics = {
                 "rejected": True,
-                "reason": f"insufficient_records ({len(valid)} valid; need >=12 spanning >=2 regimes)",
+                "reason": f"insufficient_records ({len(valid)} valid; need >=8 spanning >=2 regimes)",
             }
             return False
         try:

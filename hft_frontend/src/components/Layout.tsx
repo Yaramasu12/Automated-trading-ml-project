@@ -15,6 +15,7 @@ import {
   Wifi,
   WifiOff,
   Zap,
+  Bot,
 } from 'lucide-react'
 import type { ReactNode } from 'react'
 import { useStore } from '../store'
@@ -30,6 +31,7 @@ interface NavItem {
 
 const NAV: NavItem[] = [
   { id: 'dashboard', label: 'Dashboard', icon: <LayoutDashboard size={16} /> },
+  { id: 'engine', label: 'Engine', icon: <Bot size={16} /> },
   { id: 'signals', label: 'Signals', icon: <Zap size={16} /> },
   { id: 'strategies', label: 'Strategies', icon: <BarChart2 size={16} /> },
   { id: 'backtest', label: 'Backtest', icon: <BookOpen size={16} /> },

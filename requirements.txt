@@ -3,6 +3,7 @@
 #   pip install -r requirements.txt -c constraints.lock
 fastapi==0.136.1
 uvicorn[standard]==0.46.0
+httpx==0.28.1
 websockets==16.0
 smartapi-python==1.5.5
 pyotp==2.9.0

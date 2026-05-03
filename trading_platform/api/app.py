@@ -120,6 +120,50 @@ def signal_scan(payload: dict):
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
+# ── Autonomous Agent ──────────────────────────────────────────────────────────
+
+@app.get("/agent/status")
+def agent_status():
+    return runtime.agent_status()
+
+
+@app.post("/agent/start", dependencies=[_AuthDep])
+def agent_start(payload: dict | None = None):
+    interval = (payload or {}).get("scan_interval")
+    return runtime.start_agent(scan_interval=int(interval) if interval else None)
+
+
+@app.post("/agent/stop", dependencies=[_AuthDep])
+def agent_stop():
+    return runtime.stop_agent()
+
+
+@app.post("/agent/interval", dependencies=[_AuthDep])
+def agent_set_interval(payload: dict):
+    seconds = int(payload.get("seconds", 300))
+    return runtime.set_agent_interval(seconds)
+
+
+@app.get("/agent/trades")
+def agent_trade_log(limit: int = 100):
+    return runtime.agent_trade_log(limit=limit)
+
+
+@app.get("/portfolio/positions")
+def portfolio_positions():
+    return runtime.portfolio_positions()
+
+
+@app.get("/risk/rejections")
+def risk_rejection_log(limit: int = 100):
+    return runtime.risk_rejection_log(limit=limit)
+
+
+@app.get("/governance")
+def governance_dashboard():
+    return runtime.governance_dashboard()
+
+
 @app.post("/shadow/run", dependencies=[_AuthDep])
 def shadow_run(payload: dict):
     try:
