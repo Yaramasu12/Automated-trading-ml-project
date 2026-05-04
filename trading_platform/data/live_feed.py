@@ -20,7 +20,7 @@ _EXCHANGE_MODE_MAP = {
     "NSE": NSE_CM,
     "BSE": BSE_CM,
     "NFO": NSE_FO,
-    "BFO": BSE_FO,
+    "BFO": BSE_FO,   # BSE Futures & Options — used for SENSEX/BANKEX derivatives
 }
 
 
@@ -141,6 +141,10 @@ class LiveTickFeed:
     # Internal
     # ------------------------------------------------------------------
 
+    _MAX_RETRIES = 10
+    _BASE_BACKOFF = 5      # seconds before first retry
+    _MAX_BACKOFF = 300     # cap at 5 minutes
+
     def _run(self) -> None:
         try:
             from SmartApi.smartWebSocketV2 import SmartWebSocketV2  # type: ignore[import]
@@ -149,36 +153,53 @@ class LiveTickFeed:
             self._running = False
             return
 
-        try:
-            from SmartApi import SmartConnect  # type: ignore[import]
-            import pyotp
+        retries = 0
+        while self._running and retries <= self._MAX_RETRIES:
+            if retries > 0:
+                backoff = min(self._BASE_BACKOFF * (2 ** (retries - 1)), self._MAX_BACKOFF)
+                logger.warning("LiveTickFeed reconnect attempt %d — waiting %ds", retries, backoff)
+                import time
+                time.sleep(backoff)
+                if not self._running:
+                    break
 
-            connect = SmartConnect(api_key=self._settings.angel_one_api_key)
-            totp = pyotp.TOTP(self._settings.angel_one_totp_secret).now()
-            session = connect.generateSession(
-                self._settings.angel_one_client_code,
-                self._settings.angel_one_pin,
-                totp,
-            )
-            feed_token = connect.getfeedToken()
-            client_code = self._settings.angel_one_client_code
+            try:
+                from SmartApi import SmartConnect  # type: ignore[import]
+                import pyotp
 
-            self._ws = SmartWebSocketV2(
-                session["data"]["jwtToken"],
-                self._settings.angel_one_api_key,
-                client_code,
-                feed_token,
-            )
+                connect = SmartConnect(api_key=self._settings.angel_one_api_key)
+                totp = pyotp.TOTP(self._settings.angel_one_totp_secret).now()
+                session = connect.generateSession(
+                    self._settings.angel_one_client_code,
+                    self._settings.angel_one_pin,
+                    totp,
+                )
+                feed_token = connect.getfeedToken()
+                client_code = self._settings.angel_one_client_code
 
-            self._ws.on_open = self._on_open
-            self._ws.on_data = self._on_data
-            self._ws.on_error = self._on_error
-            self._ws.on_close = self._on_close
+                self._ws = SmartWebSocketV2(
+                    session["data"]["jwtToken"],
+                    self._settings.angel_one_api_key,
+                    client_code,
+                    feed_token,
+                )
 
-            self._ws.connect()
-        except Exception as exc:
-            logger.error("LiveTickFeed connection error: %s", exc)
-            self._running = False
+                self._ws.on_open = self._on_open
+                self._ws.on_data = self._on_data
+                self._ws.on_error = self._on_error
+                self._ws.on_close = self._on_close
+
+                self._reconnect_pending = False
+                self._ws.connect()  # blocks until disconnect
+                # If connect() returns and _running is still True, reconnect
+                retries += 1
+            except Exception as exc:
+                logger.error("LiveTickFeed connection error: %s", exc)
+                retries += 1
+
+        if retries > self._MAX_RETRIES:
+            logger.error("LiveTickFeed exceeded max retries (%d) — giving up", self._MAX_RETRIES)
+        self._running = False
 
     def _on_open(self, ws) -> None:
         logger.info("LiveTickFeed WebSocket connected")
@@ -215,8 +236,7 @@ class LiveTickFeed:
         logger.error("LiveTickFeed WebSocket error: %s", error)
 
     def _on_close(self, ws) -> None:
-        logger.warning("LiveTickFeed WebSocket closed")
-        self._running = False
+        logger.warning("LiveTickFeed WebSocket closed — will reconnect if still running")
 
     def _parse(self, message) -> Tick | None:
         if isinstance(message, (bytes, bytearray)):

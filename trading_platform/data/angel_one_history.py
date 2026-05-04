@@ -21,7 +21,6 @@ class AngelOneHistoricalDataProvider:
         to_dt: datetime,
         interval: str = "ONE_DAY",
     ) -> list[MarketBar]:
-        smart_api = self._smart_api or self._login()
         params = {
             "exchange": instrument.exchange.value,
             "symboltoken": instrument.token,
@@ -29,10 +28,18 @@ class AngelOneHistoricalDataProvider:
             "fromdate": from_dt.strftime("%Y-%m-%d %H:%M"),
             "todate": to_dt.strftime("%Y-%m-%d %H:%M"),
         }
-        response = smart_api.getCandleData(params)
-        if not response or not response.get("status"):
-            raise RuntimeError(f"Angel One candle request failed: {response}")
-        return [_parse_candle(instrument.symbol, candle) for candle in response.get("data") or []]
+        # Try with cached session first; on any failure re-authenticate once.
+        for attempt in range(2):
+            smart_api = self._smart_api or self._login()
+            try:
+                response = smart_api.getCandleData(params)
+            except Exception:
+                response = None
+            if response and response.get("status"):
+                return [_parse_candle(instrument.symbol, candle) for candle in response.get("data") or []]
+            # Session likely expired — force re-login on next attempt
+            self._smart_api = None
+        raise RuntimeError(f"Angel One candle request failed after re-auth: {response}")
 
     def _login(self):
         if not self.settings.angel_one_configured:

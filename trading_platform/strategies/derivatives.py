@@ -1,10 +1,23 @@
 from __future__ import annotations
 
+import math
 from datetime import datetime
 
 from trading_platform.domain.enums import InstrumentType, OptionType, Side
 from trading_platform.domain.models import Instrument, MarketBar, Signal
 from trading_platform.strategies.base import Strategy, StrategyExitRules, StrategyRiskEstimate
+
+
+def _atm_option_premium(spot: float, realized_vol: float, days_to_expiry: int) -> float:
+    """Brenner-Subrahmanyam ATM approximation: C ≈ S × σ × √(T/252) × 0.4.
+
+    Returns a floor of 1.0 so zero-price signals never enter the system.
+    Uses 0.15 annualised vol as minimum to avoid near-zero premiums on calm days.
+    """
+    annual_vol = max(realized_vol * math.sqrt(252), 0.15)
+    dte = max(days_to_expiry, 1)
+    premium = spot * annual_vol * math.sqrt(dte / 252) * 0.4
+    return max(1.0, round(premium, 2))
 
 
 class FuturesTrendStrategy(Strategy):
@@ -52,18 +65,21 @@ class DefinedRiskOptionSpreadStrategy(Strategy):
         preferred_option = OptionType.CE if bullish else OptionType.PE
         if instrument.option_type != preferred_option:
             return None
+        days_to_expiry = (instrument.expiry - now.date()).days if instrument.expiry else 7
+        price = _atm_option_premium(features.close, features.realized_volatility, days_to_expiry)
         return Signal(
             strategy_name=self.name,
             symbol=instrument.symbol,
             side=Side.BUY,
             confidence=min(0.88, 0.55 + abs(features.momentum_20) * 4),
-            price=max(1.0, features.close * 0.015),
+            price=price,
             reason="defined-risk directional options exposure",
             created_at=now,
             metadata={
                 "underlying_close": features.close,
                 "option_type": instrument.option_type.value,
                 "expiry": instrument.expiry.isoformat() if instrument.expiry else None,
+                "days_to_expiry": days_to_expiry,
             },
         )
 
@@ -88,15 +104,21 @@ class VolatilityBreakoutOptionsStrategy(Strategy):
         side_option = OptionType.CE if features.momentum_5 > 0 else OptionType.PE
         if instrument.option_type != side_option:
             return None
+        days_to_expiry = (instrument.expiry - now.date()).days if instrument.expiry else 7
+        price = _atm_option_premium(features.close, features.realized_volatility, days_to_expiry)
         return Signal(
             strategy_name=self.name,
             symbol=instrument.symbol,
             side=Side.BUY,
             confidence=min(0.9, 0.58 + features.volume_ratio / 10),
-            price=max(1.0, features.close * 0.018),
+            price=price,
             reason="volume-backed volatility breakout",
             created_at=now,
-            metadata={"volume_ratio": features.volume_ratio, "momentum_5": features.momentum_5},
+            metadata={
+                "volume_ratio": features.volume_ratio,
+                "momentum_5": features.momentum_5,
+                "days_to_expiry": days_to_expiry,
+            },
         )
 
 

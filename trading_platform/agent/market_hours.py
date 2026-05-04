@@ -1,0 +1,78 @@
+from __future__ import annotations
+
+import zoneinfo
+from datetime import date, datetime, time, timedelta
+
+IST = zoneinfo.ZoneInfo("Asia/Kolkata")
+
+_MARKET_OPEN = time(9, 15)
+_MARKET_CLOSE = time(15, 30)
+_ENTRY_CUTOFF = time(15, 20)   # no new entries after this
+_EOD_SQUAREOFF = time(15, 25)  # force-close all positions
+_PREMARKET = time(9, 0)
+
+# NSE holidays 2026
+_HOLIDAYS: set[date] = {
+    date(2026, 1, 26),  # Republic Day
+    date(2026, 3, 25),  # Holi
+    date(2026, 4, 3),   # Good Friday
+    date(2026, 4, 14),  # Ambedkar Jayanti
+    date(2026, 5, 1),   # Maharashtra Day
+    date(2026, 8, 15),  # Independence Day
+    date(2026, 10, 2),  # Gandhi Jayanti
+    date(2026, 11, 4),  # Diwali Laxmi Puja
+    date(2026, 12, 25), # Christmas
+}
+
+
+def now_ist() -> datetime:
+    return datetime.now(IST)
+
+
+def is_trading_day(d: date | None = None) -> bool:
+    d = d or now_ist().date()
+    return d.weekday() < 5 and d not in _HOLIDAYS
+
+
+def market_status(dt: datetime | None = None) -> str:
+    now = dt or now_ist()
+    if not is_trading_day(now.date()):
+        return "CLOSED"
+    t = now.time()
+    if t < _PREMARKET:
+        return "PRE_MARKET_EARLY"
+    if t < _MARKET_OPEN:
+        return "PRE_MARKET"
+    if t < _ENTRY_CUTOFF:
+        return "OPEN"
+    if t < _EOD_SQUAREOFF:
+        return "ENTRY_CUTOFF"
+    if t <= _MARKET_CLOSE:
+        return "EOD_SQUAREOFF"
+    return "AFTER_HOURS"
+
+
+def is_market_open(dt: datetime | None = None) -> bool:
+    return market_status(dt) == "OPEN"
+
+
+def is_entry_allowed(dt: datetime | None = None) -> bool:
+    return market_status(dt) in ("OPEN",)
+
+
+def is_eod_squareoff(dt: datetime | None = None) -> bool:
+    return market_status(dt) == "EOD_SQUAREOFF"
+
+
+def is_premarket(dt: datetime | None = None) -> bool:
+    return market_status(dt) == "PRE_MARKET"
+
+
+def seconds_to_next_open(dt: datetime | None = None) -> float:
+    now = dt or now_ist()
+    nxt = now.replace(hour=_MARKET_OPEN.hour, minute=_MARKET_OPEN.minute, second=0, microsecond=0)
+    if nxt <= now:
+        nxt += timedelta(days=1)
+    while not is_trading_day(nxt.date()):
+        nxt += timedelta(days=1)
+    return (nxt - now).total_seconds()

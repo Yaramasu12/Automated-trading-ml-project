@@ -132,3 +132,49 @@ export const getNewsEvents = (limit = 30) => get<{ count: number; events: unknow
 export const getNewsFeatures = () => get<Record<string, unknown>>('/news/features')
 export const getCurrentRegime = (symbol = 'NIFTY') => get<Record<string, unknown>>(`/regime/current?symbol=${symbol}`)
 export const getPerformanceSummary = (days = 30) => get<Record<string, unknown>>(`/performance/summary?days=${days}`)
+export const getEconomicCalendar = () => get<{ count: number; events: unknown[] }>('/news/calendar')
+
+// ─── Risk / Compliance ───────────────────────────────────────────────────────
+export const getCompliance = () => get<Record<string, unknown>>('/risk/compliance')
+export const getEventRisk = () => get<Record<string, unknown>>('/risk/event-risk')
+
+// ─── Derivatives ─────────────────────────────────────────────────────────────
+export const getOptionExpiries = (underlying: string) => get<{ underlying: string; expiries: string[] }>(`/derivatives/expiries/${underlying}`)
+export const getOptionChain = (underlying: string, expiry?: string, spot?: number) => {
+  const params = new URLSearchParams()
+  if (expiry) params.set('expiry', expiry)
+  if (spot) params.set('spot', String(spot))
+  return get<Record<string, unknown>>(`/derivatives/option-chain/${underlying}?${params}`)
+}
+export const calculateGreeks = (payload: Record<string, unknown>) => post<Record<string, unknown>>('/derivatives/greeks', payload)
+
+// ─── Models (missing) ────────────────────────────────────────────────────────
+export const getSentiment = (payload: Record<string, unknown>) => post<Record<string, unknown>>('/models/sentiment', payload)
+export const selectModel = (payload: Record<string, unknown>) => post<Record<string, unknown>>('/models/select', payload)
+export const retrainingDecision = (payload: Record<string, unknown>) => post<Record<string, unknown>>('/models/retraining-decision', payload)
+
+// ─── Feature store ───────────────────────────────────────────────────────────
+export const getFeatureHistory = (symbol: string, limit = 30) => get<Record<string, unknown>>(`/features/history/${symbol}?limit=${limit}`)
+
+// ─── Live feed tick ──────────────────────────────────────────────────────────
+export const getLatestTick = (symbol: string) => get<Record<string, unknown>>(`/feed/tick/${symbol}`)
+
+// ─── Reconciliation ──────────────────────────────────────────────────────────
+export const reconcilePositions = () => post<Record<string, unknown>>('/execution/reconcile', {})
+
+// ─── Autonomous Agent ────────────────────────────────────────────────────────
+export const getAgentStatus = () => get<Record<string, unknown>>('/agent/status')
+export const startAgent = (scan_interval?: number) => post<Record<string, unknown>>('/agent/start', scan_interval ? { scan_interval } : {})
+export const stopAgent = () => post<Record<string, unknown>>('/agent/stop', {})
+export const setAgentInterval = (seconds: number) => post<Record<string, unknown>>('/agent/interval', { seconds })
+export const getAgentTrades = (limit = 100) => get<Record<string, unknown>>(`/agent/trades?limit=${limit}`)
+
+// ─── Portfolio ───────────────────────────────────────────────────────────────
+export const getPortfolioPositions = () => get<Record<string, unknown>>('/portfolio/positions')
+
+// ─── Risk / governance ───────────────────────────────────────────────────────
+export const getRiskRejections = (limit = 100) => get<Record<string, unknown>>(`/risk/rejections?limit=${limit}`)
+export const getGovernanceDashboard = () => get<Record<string, unknown>>('/governance')
+
+// ─── Exit plans ──────────────────────────────────────────────────────────────
+export const getActiveExitPlans = () => get<Record<string, unknown>>('/execution/exit-plans')

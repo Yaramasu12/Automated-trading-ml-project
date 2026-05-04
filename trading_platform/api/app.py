@@ -5,16 +5,19 @@ import json
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 
+from trading_platform.api.auth import require_auth, verify_token
 from trading_platform.api.runtime import TradingRuntime
+from trading_platform.config import load_settings
 
 try:
-    from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+    from fastapi import Depends, FastAPI, HTTPException, WebSocket, WebSocketDisconnect
     from fastapi.middleware.cors import CORSMiddleware
 except ImportError as exc:  # pragma: no cover - exercised only without optional API deps
     raise RuntimeError("Install API dependencies with: pip install -r requirements.txt") from exc
 
 
 runtime = TradingRuntime()
+_settings = load_settings()
 
 # Registry of active WebSocket connections for push broadcasting
 _ws_clients: list[WebSocket] = []
@@ -46,13 +49,18 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+_cors_origins = list(_settings.api_cors_origins) or ["http://localhost:5173", "http://127.0.0.1:5173"]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_cors_origins,
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type"],
 )
+
+
+# Convenience: a Depends() handle for protected mutating endpoints.
+_AuthDep = Depends(require_auth)
 
 
 @app.get("/health")
@@ -65,7 +73,7 @@ def state():
     return runtime.state_payload()
 
 
-@app.post("/live/arm")
+@app.post("/live/arm", dependencies=[_AuthDep])
 def arm_live(payload: dict):
     try:
         return runtime.arm_live(bool(payload.get("armed", False)))
@@ -73,7 +81,7 @@ def arm_live(payload: dict):
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
-@app.post("/execution-mode")
+@app.post("/execution-mode", dependencies=[_AuthDep])
 def execution_mode(payload: dict):
     try:
         return runtime.set_execution_mode(str(payload.get("mode", "BACKTEST")))
@@ -81,7 +89,7 @@ def execution_mode(payload: dict):
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
-@app.post("/kill-switch")
+@app.post("/kill-switch", dependencies=[_AuthDep])
 def kill_switch(payload: dict):
     return runtime.set_kill_switch(bool(payload.get("active", True)))
 
@@ -112,7 +120,51 @@ def signal_scan(payload: dict):
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
-@app.post("/shadow/run")
+# ── Autonomous Agent ──────────────────────────────────────────────────────────
+
+@app.get("/agent/status")
+def agent_status():
+    return runtime.agent_status()
+
+
+@app.post("/agent/start", dependencies=[_AuthDep])
+def agent_start(payload: dict | None = None):
+    interval = (payload or {}).get("scan_interval")
+    return runtime.start_agent(scan_interval=int(interval) if interval else None)
+
+
+@app.post("/agent/stop", dependencies=[_AuthDep])
+def agent_stop():
+    return runtime.stop_agent()
+
+
+@app.post("/agent/interval", dependencies=[_AuthDep])
+def agent_set_interval(payload: dict):
+    seconds = int(payload.get("seconds", 300))
+    return runtime.set_agent_interval(seconds)
+
+
+@app.get("/agent/trades")
+def agent_trade_log(limit: int = 100):
+    return runtime.agent_trade_log(limit=limit)
+
+
+@app.get("/portfolio/positions")
+def portfolio_positions():
+    return runtime.portfolio_positions()
+
+
+@app.get("/risk/rejections")
+def risk_rejection_log(limit: int = 100):
+    return runtime.risk_rejection_log(limit=limit)
+
+
+@app.get("/governance")
+def governance_dashboard():
+    return runtime.governance_dashboard()
+
+
+@app.post("/shadow/run", dependencies=[_AuthDep])
 def shadow_run(payload: dict):
     try:
         return runtime.shadow_run(payload)
@@ -154,7 +206,7 @@ def account_status():
     return runtime.account_status()
 
 
-@app.get("/account/snapshot")
+@app.get("/account/snapshot", dependencies=[_AuthDep])
 def account_snapshot():
     try:
         return runtime.account_snapshot()
@@ -162,7 +214,7 @@ def account_snapshot():
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
-@app.post("/data/instruments/refresh")
+@app.post("/data/instruments/refresh", dependencies=[_AuthDep])
 def refresh_instruments():
     try:
         return runtime.refresh_angel_one_instruments()
@@ -170,7 +222,7 @@ def refresh_instruments():
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
-@app.post("/data/instruments/load-cache")
+@app.post("/data/instruments/load-cache", dependencies=[_AuthDep])
 def load_cached_instruments():
     try:
         return runtime.load_cached_angel_one_instruments()
@@ -186,7 +238,7 @@ def historical_candles(payload: dict):
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
-@app.post("/backtests/run")
+@app.post("/backtests/run", dependencies=[_AuthDep])
 def run_backtest(payload: dict):
     try:
         return runtime.run_backtest(payload)
@@ -194,7 +246,7 @@ def run_backtest(payload: dict):
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
-@app.post("/orders/preview")
+@app.post("/orders/preview", dependencies=[_AuthDep])
 def preview_order(payload: dict):
     try:
         return runtime.preview_order(payload)
@@ -202,7 +254,7 @@ def preview_order(payload: dict):
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
-@app.post("/orders/paper")
+@app.post("/orders/paper", dependencies=[_AuthDep])
 def simulate_order(payload: dict):
     try:
         return runtime.simulate_order(payload)
@@ -295,7 +347,7 @@ def iv_surface(payload: dict):
 # ---------------------------------------------------------------------------
 
 
-@app.post("/backtests/walk-forward")
+@app.post("/backtests/walk-forward", dependencies=[_AuthDep])
 def walk_forward(payload: dict):
     try:
         return runtime.walk_forward_backtest(payload)
@@ -390,7 +442,7 @@ def db_risk_events(limit: int = 50):
 # ---------------------------------------------------------------------------
 
 
-@app.post("/feed/start")
+@app.post("/feed/start", dependencies=[_AuthDep])
 def feed_start(payload: dict):
     try:
         return runtime.start_live_feed(payload.get("symbols", []))
@@ -398,7 +450,7 @@ def feed_start(payload: dict):
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
-@app.post("/feed/stop")
+@app.post("/feed/stop", dependencies=[_AuthDep])
 def feed_stop():
     return runtime.stop_live_feed()
 
@@ -433,7 +485,7 @@ def oms_order_events(order_id: str):
     return runtime.oms_order_events(order_id)
 
 
-@app.post("/execution/enqueue")
+@app.post("/execution/enqueue", dependencies=[_AuthDep])
 async def enqueue_order(payload: dict):
     """Enqueue an OrderIntent directly (for testing / manual orders)."""
     try:
@@ -447,7 +499,7 @@ def manual_approvals():
     return runtime.manual_approval_status()
 
 
-@app.post("/execution/manual-approvals/{request_id}/approve")
+@app.post("/execution/manual-approvals/{request_id}/approve", dependencies=[_AuthDep])
 async def approve_manual_order(request_id: str, payload: dict | None = None):
     try:
         return await runtime.approve_order(request_id, payload or {})
@@ -455,7 +507,7 @@ async def approve_manual_order(request_id: str, payload: dict | None = None):
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
-@app.post("/execution/manual-approvals/{request_id}/reject")
+@app.post("/execution/manual-approvals/{request_id}/reject", dependencies=[_AuthDep])
 def reject_manual_order(request_id: str, payload: dict | None = None):
     try:
         return runtime.reject_order(request_id, payload or {})
@@ -463,7 +515,7 @@ def reject_manual_order(request_id: str, payload: dict | None = None):
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
-@app.post("/execution/multi-leg")
+@app.post("/execution/multi-leg", dependencies=[_AuthDep])
 async def submit_multi_leg(payload: dict):
     try:
         return await runtime.submit_multi_leg(payload)
@@ -476,7 +528,7 @@ def multi_leg_orders():
     return {"orders": runtime.multi_leg_manager.all_orders()}
 
 
-@app.post("/execution/square-off")
+@app.post("/execution/square-off", dependencies=[_AuthDep])
 async def square_off(payload: dict):
     try:
         return await runtime.square_off(payload)
@@ -509,7 +561,7 @@ def active_exit_plans():
     return runtime.active_exit_plans()
 
 
-@app.post("/execution/exit-marks")
+@app.post("/execution/exit-marks", dependencies=[_AuthDep])
 def update_exit_marks(payload: dict):
     prices = {str(k): float(v) for k, v in payload.items()}
     return runtime.update_exit_marks(prices)
@@ -581,7 +633,7 @@ def performance_summary(days: int = 30):
 # ---------------------------------------------------------------------------
 
 
-@app.post("/execution/reconcile")
+@app.post("/execution/reconcile", dependencies=[_AuthDep])
 def reconcile_positions(payload: dict):
     broker_positions: dict[str, int] = {str(k): int(v) for k, v in payload.items()}
     return runtime.reconcile_positions(broker_positions)
@@ -592,7 +644,7 @@ def reconcile_positions(payload: dict):
 # ---------------------------------------------------------------------------
 
 
-@app.post("/api/v1/mode")
+@app.post("/api/v1/mode", dependencies=[_AuthDep])
 def api_v1_mode(payload: dict):
     return execution_mode({"mode": payload.get("mode", "BACKTEST")})
 
@@ -607,22 +659,22 @@ def api_v1_orders(limit: int = 100):
     return runtime.oms_events(limit)
 
 
-@app.post("/api/v1/orders")
+@app.post("/api/v1/orders", dependencies=[_AuthDep])
 async def api_v1_enqueue_order(payload: dict):
     return await enqueue_order(payload)
 
 
-@app.post("/api/v1/orders/{request_id}/approve")
+@app.post("/api/v1/orders/{request_id}/approve", dependencies=[_AuthDep])
 async def api_v1_approve_order(request_id: str, payload: dict | None = None):
     return await approve_manual_order(request_id, payload or {})
 
 
-@app.post("/api/v1/orders/{request_id}/reject")
+@app.post("/api/v1/orders/{request_id}/reject", dependencies=[_AuthDep])
 def api_v1_reject_order(request_id: str, payload: dict | None = None):
     return reject_manual_order(request_id, payload or {})
 
 
-@app.post("/api/v1/square-off")
+@app.post("/api/v1/square-off", dependencies=[_AuthDep])
 async def api_v1_square_off(payload: dict):
     return await square_off(payload)
 
@@ -659,13 +711,20 @@ def api_v1_events(limit: int = 100, stream: str | None = None):
 
 @app.websocket("/ws/dashboard")
 async def ws_dashboard(websocket: WebSocket):
+    # Token may be supplied as ?token=... query param, or via the first
+    # JSON message {"action": "auth", "token": "..."}. Snapshots are
+    # streamed regardless, but mutating commands are rejected until the
+    # connection is authenticated.
     await websocket.accept()
+    query_token = websocket.query_params.get("token")
+    authed = verify_token(query_token)
     _ws_clients.append(websocket)
     try:
         while True:
             snapshot = {
                 "type": "snapshot",
                 "timestamp": datetime.now(timezone.utc).isoformat(),
+                "authenticated": authed,
                 "state": runtime.state_payload(),
                 "monitoring": runtime.monitoring_metrics(),
                 "live_feed": runtime.live_feed_snapshot(),
@@ -679,11 +738,19 @@ async def ws_dashboard(websocket: WebSocket):
             try:
                 raw = await asyncio.wait_for(websocket.receive_text(), timeout=1.0)
                 cmd = json.loads(raw)
-                if cmd.get("action") == "kill_switch":
+                action = cmd.get("action")
+                if action == "auth":
+                    authed = verify_token(cmd.get("token"))
+                    await websocket.send_text(json.dumps({"type": "auth_result", "authenticated": authed}))
+                    continue
+                if action in {"kill_switch", "execution_mode", "update_marks"} and not authed:
+                    await websocket.send_text(json.dumps({"type": "error", "error": "unauthenticated", "action": action}))
+                    continue
+                if action == "kill_switch":
                     runtime.set_kill_switch(bool(cmd.get("active", True)))
-                elif cmd.get("action") == "execution_mode":
+                elif action == "execution_mode":
                     runtime.set_execution_mode(str(cmd.get("mode", "BACKTEST")))
-                elif cmd.get("action") == "update_marks":
+                elif action == "update_marks":
                     marks = {str(k): float(v) for k, v in cmd.get("prices", {}).items()}
                     runtime.update_exit_marks(marks)
             except asyncio.TimeoutError:

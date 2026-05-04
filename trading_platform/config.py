@@ -54,6 +54,9 @@ class Settings:
     angel_one_instrument_master_url: str
     angel_one_instrument_cache_path: str
     aws_region: str
+    api_auth_token: str = ""
+    api_cors_origins: tuple[str, ...] = ()
+    api_auth_required: bool = True
 
     @property
     def angel_one_configured(self) -> bool:
@@ -74,6 +77,13 @@ class Settings:
             and self.live_order_confirmation == LIVE_ORDER_CONFIRMATION_PHRASE
             and self.angel_one_configured
         )
+
+
+def _parse_cors_origins(raw: str) -> tuple[str, ...]:
+    if not raw:
+        return ()
+    parts = [p.strip() for p in raw.split(",")]
+    return tuple(p for p in parts if p)
 
 
 def load_settings() -> Settings:
@@ -102,4 +112,9 @@ def load_settings() -> Settings:
             "data/processed/angel_one_instruments.json",
         ),
         aws_region=os.getenv("AWS_REGION", "ap-south-1"),
+        api_auth_token=os.getenv("API_AUTH_TOKEN", ""),
+        api_cors_origins=_parse_cors_origins(
+            os.getenv("API_CORS_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173")
+        ),
+        api_auth_required=_bool_env("API_AUTH_REQUIRED", True),
     )

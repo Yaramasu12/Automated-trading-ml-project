@@ -15,12 +15,20 @@ from trading_platform.domain.models import Instrument
 
 
 INDEX_UNDERLYINGS = {
-    "NIFTY": {"token": "26000", "lot_size": 50, "strike_step": 50},
-    "BANKNIFTY": {"token": "26009", "lot_size": 15, "strike_step": 100},
-    "FINNIFTY": {"token": "26037", "lot_size": 40, "strike_step": 50},
-    "MIDCPNIFTY": {"token": "26074", "lot_size": 75, "strike_step": 25},
+    # NSE indices — F&O on NFO, weekly expiry on Thursday
+    # Synthetic bases are deliberately stable for local backtests/tests.
+    # Production symbols, tokens, strikes, and expiries are refreshed from the
+    # Angel One instrument master before live or paper-shadow operation.
+    "NIFTY":      {"token": "26000", "lot_size": 50,  "strike_step": 50,  "base": 22500},
+    "BANKNIFTY":  {"token": "26009", "lot_size": 15,  "strike_step": 100, "base": 48500},
+    "FINNIFTY":   {"token": "26037", "lot_size": 40,  "strike_step": 50,  "base": 23000},
+    "MIDCPNIFTY": {"token": "26074", "lot_size": 75,  "strike_step": 25,  "base": 12500},
+    # BSE indices — F&O on BFO; SENSEX weekly expires Friday, BANKEX weekly expires Monday
+    "SENSEX": {"token": "1",  "exchange": "BSE", "expiry_day": "friday",  "lot_size": 10, "strike_step": 100, "base": 80000},
+    "BANKEX": {"token": "12", "exchange": "BSE", "expiry_day": "monday",  "lot_size": 15, "strike_step": 100, "base": 58000},
 }
 
+# Tokens sourced from Angel One NSE instrument master (NSE Cash Market)
 LIQUID_EQUITIES = {
     "RELIANCE": "2885",
     "TCS": "11536",
@@ -28,6 +36,22 @@ LIQUID_EQUITIES = {
     "HDFCBANK": "1333",
     "ICICIBANK": "4963",
     "SBIN": "3045",
+    # Extended Nifty 50 universe
+    "WIPRO": "3787",
+    "KOTAKBANK": "1922",
+    "AXISBANK": "5900",
+    "MARUTI": "10999",
+    "SUNPHARMA": "3351",
+    "TATAMOTORS": "3456",
+    "BAJFINANCE": "317",
+    "HINDUNILVR": "1394",
+    "ASIANPAINT": "236",
+    "LTIM": "17818",
+    "BHARTIARTL": "10604",
+    "ONGC": "2475",
+    "NTPC": "11630",
+    "POWERGRID": "14977",
+    "TITAN": "3506",
 }
 
 EQUITY_FO_UNDERLYINGS = {
@@ -37,21 +61,61 @@ EQUITY_FO_UNDERLYINGS = {
     "HDFCBANK": {"lot_size": 550, "strike_step": 20, "base": 1600},
     "ICICIBANK": {"lot_size": 700, "strike_step": 10, "base": 1100},
     "SBIN": {"lot_size": 750, "strike_step": 10, "base": 750},
+    # Extended F&O universe
+    "WIPRO": {"lot_size": 1500, "strike_step": 10, "base": 450},
+    "KOTAKBANK": {"lot_size": 400, "strike_step": 20, "base": 1750},
+    "AXISBANK": {"lot_size": 1200, "strike_step": 10, "base": 1050},
+    "MARUTI": {"lot_size": 100, "strike_step": 100, "base": 11000},
+    "SUNPHARMA": {"lot_size": 700, "strike_step": 10, "base": 1650},
+    "TATAMOTORS": {"lot_size": 1500, "strike_step": 5, "base": 750},
+    "BAJFINANCE": {"lot_size": 125, "strike_step": 100, "base": 7000},
+    "HINDUNILVR": {"lot_size": 300, "strike_step": 20, "base": 2300},
+    "BHARTIARTL": {"lot_size": 950, "strike_step": 10, "base": 1600},
+    "NTPC": {"lot_size": 3000, "strike_step": 5, "base": 370},
 }
 
 
-def _next_thursday(anchor: date) -> date:
-    days_ahead = (3 - anchor.weekday()) % 7
+def _next_weekday(anchor: date, target_weekday: int) -> date:
+    """Return the next occurrence of target_weekday (Mon=0 … Fri=4) after anchor."""
+    days_ahead = (target_weekday - anchor.weekday()) % 7
     if days_ahead == 0:
         days_ahead = 7
     return anchor + timedelta(days=days_ahead)
 
 
-def _monthly_expiry(anchor: date) -> date:
+def _next_thursday(anchor: date) -> date:
+    return _next_weekday(anchor, 3)
+
+
+def _next_friday(anchor: date) -> date:
+    return _next_weekday(anchor, 4)
+
+
+def _next_monday(anchor: date) -> date:
+    return _next_weekday(anchor, 0)
+
+
+def _last_weekday_of_month(anchor: date, target_weekday: int) -> date:
+    """Return the last occurrence of target_weekday in anchor's next month."""
     first_next_month = date(anchor.year + (anchor.month == 12), 1 if anchor.month == 12 else anchor.month + 1, 1)
     last_day = first_next_month - timedelta(days=1)
-    offset = (last_day.weekday() - 3) % 7
+    offset = (last_day.weekday() - target_weekday) % 7
     return last_day - timedelta(days=offset)
+
+
+def _monthly_expiry(anchor: date) -> date:
+    """Last Thursday of the month (NSE standard)."""
+    return _last_weekday_of_month(anchor, 3)
+
+
+def _monthly_friday_expiry(anchor: date) -> date:
+    """Last Friday of the month (BSE SENSEX standard)."""
+    return _last_weekday_of_month(anchor, 4)
+
+
+def _monthly_monday_expiry(anchor: date) -> date:
+    """Last Monday of the month (BSE BANKEX standard)."""
+    return _last_weekday_of_month(anchor, 0)
 
 
 def _add_months(anchor: date, months: int) -> date:
@@ -142,11 +206,11 @@ def _add_equity(universe: dict[str, Instrument], symbol: str, token: str) -> Non
     )
 
 
-def _add_index(universe: dict[str, Instrument], symbol: str, token: str) -> None:
+def _add_index(universe: dict[str, Instrument], symbol: str, token: str, exchange: Exchange = Exchange.NSE) -> None:
     universe[symbol] = Instrument(
         symbol=symbol,
         name=symbol,
-        exchange=Exchange.NSE,
+        exchange=exchange,
         segment=Segment.CASH,
         asset_class=AssetClass.INDEX,
         instrument_type=InstrumentType.INDEX,
@@ -159,32 +223,47 @@ def _add_derivatives(universe: dict[str, Instrument], as_of: date, underlyings: 
     for underlying in underlyings:
         is_index = underlying in INDEX_UNDERLYINGS
         meta = INDEX_UNDERLYINGS[underlying] if is_index else EQUITY_FO_UNDERLYINGS[underlying]
-        weekly = _next_thursday(as_of)
-        monthly_expiries = {_monthly_expiry(_add_months(as_of, offset)) for offset in range(3)}
-        weekly_expiries = {weekly + timedelta(days=7 * offset) for offset in range(9)}
-        expiries = sorted((weekly_expiries | monthly_expiries) if is_index else monthly_expiries)
+        is_bse = meta.get("exchange") == "BSE"
+        expiry_day = meta.get("expiry_day", "thursday")  # "thursday" | "friday" | "monday"
+
+        # Determine exchange for derivatives
+        fo_exchange = Exchange.BFO if is_bse else Exchange.NFO
+
+        # Compute expiry set
+        if is_index:
+            if expiry_day == "friday":
+                weekly_anchor = _next_friday(as_of)
+                monthly_fn = _monthly_friday_expiry
+            elif expiry_day == "monday":
+                weekly_anchor = _next_monday(as_of)
+                monthly_fn = _monthly_monday_expiry
+            else:
+                weekly_anchor = _next_thursday(as_of)
+                monthly_fn = _monthly_expiry
+            weekly_expiries = {weekly_anchor + timedelta(days=7 * i) for i in range(9)}
+            monthly_expiries = {monthly_fn(_add_months(as_of, i)) for i in range(3)}
+            expiries = sorted(weekly_expiries | monthly_expiries)
+        else:
+            expiries = sorted({_monthly_expiry(_add_months(as_of, i)) for i in range(3)})
+
+        base = meta.get("base", 1000)
+        step = meta["strike_step"]
+        asset_class = AssetClass.INDEX if is_index else AssetClass.EQUITY
+
         for expiry in expiries:
             future_symbol = f"{underlying}{expiry:%d%b%y}FUT".upper()
             universe[future_symbol] = Instrument(
                 symbol=future_symbol,
                 name=f"{underlying} Future {expiry.isoformat()}",
-                exchange=Exchange.NFO,
+                exchange=fo_exchange,
                 segment=Segment.FUTURES,
-                asset_class=AssetClass.INDEX if is_index else AssetClass.EQUITY,
+                asset_class=asset_class,
                 instrument_type=InstrumentType.FUTURE,
                 token=f"FUT-{underlying}-{expiry:%Y%m%d}",
                 lot_size=meta["lot_size"],
                 expiry=expiry,
                 underlying=underlying,
             )
-            index_bases = {
-                "NIFTY": 22500,
-                "BANKNIFTY": 48500,
-                "FINNIFTY": 21500,
-                "MIDCPNIFTY": 11800,
-            }
-            base = index_bases[underlying] if is_index else meta["base"]
-            step = meta["strike_step"]
             for offset in range(-5, 6):
                 strike = base + offset * step
                 for option_type in (OptionType.CE, OptionType.PE):
@@ -192,9 +271,9 @@ def _add_derivatives(universe: dict[str, Instrument], as_of: date, underlyings: 
                     universe[option_symbol] = Instrument(
                         symbol=option_symbol,
                         name=f"{underlying} {strike:g} {option_type.value} {expiry.isoformat()}",
-                        exchange=Exchange.NFO,
+                        exchange=fo_exchange,
                         segment=Segment.OPTIONS,
-                        asset_class=AssetClass.INDEX if is_index else AssetClass.EQUITY,
+                        asset_class=asset_class,
                         instrument_type=InstrumentType.OPTION,
                         token=f"OPT-{underlying}-{expiry:%Y%m%d}-{int(strike)}-{option_type.value}",
                         lot_size=meta["lot_size"],
@@ -208,9 +287,11 @@ def _add_derivatives(universe: dict[str, Instrument], as_of: date, underlyings: 
 def build_default_universe(as_of: date | None = None) -> InstrumentMaster:
     anchor = as_of or date.today()
     universe: dict[str, Instrument] = {}
-    for symbol, token in INDEX_UNDERLYINGS.items():
-        _add_index(universe, symbol, token)
+    for symbol, meta in INDEX_UNDERLYINGS.items():
+        exchange = Exchange.BSE if meta.get("exchange") == "BSE" else Exchange.NSE
+        _add_index(universe, symbol, meta["token"], exchange)
     for symbol, token in LIQUID_EQUITIES.items():
         _add_equity(universe, symbol, token)
+    # Build F&O derivatives for all indices (NSE → NFO, BSE → BFO) and equity F&O underlyings
     _add_derivatives(universe, anchor, [*INDEX_UNDERLYINGS.keys(), *EQUITY_FO_UNDERLYINGS.keys()])
     return InstrumentMaster(universe)

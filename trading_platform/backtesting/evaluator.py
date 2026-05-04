@@ -120,6 +120,34 @@ class StrategyEvaluator:
 
 
 @dataclass(frozen=True)
+class WalkForwardFittedParams:
+    """Parameters fitted on the train window and frozen before test evaluation.
+
+    These are the *only* values learned during the train phase. They form a
+    minimal but real fit-then-predict step so the walk-forward run can
+    honestly call itself "training" rather than just running two disjoint
+    backtests.
+    """
+
+    confidence_floor: float
+    expected_edge: float
+    train_profit_factor: float
+    train_sharpe: float
+    train_trade_count: int
+    accept_strategy: bool
+
+    def to_dict(self) -> dict:
+        return {
+            "confidence_floor": self.confidence_floor,
+            "expected_edge": self.expected_edge,
+            "train_profit_factor": self.train_profit_factor,
+            "train_sharpe": self.train_sharpe,
+            "train_trade_count": self.train_trade_count,
+            "accept_strategy": self.accept_strategy,
+        }
+
+
+@dataclass(frozen=True)
 class WalkForwardWindow:
     """One train/test split in a walk-forward run."""
 
@@ -131,6 +159,8 @@ class WalkForwardWindow:
     test_end: date
     train_metrics: PerformanceMetrics
     test_metrics: PerformanceMetrics
+    fitted_params: WalkForwardFittedParams
+    test_skipped: bool
 
     def to_dict(self) -> dict:
         return {
@@ -142,6 +172,8 @@ class WalkForwardWindow:
             "test_end": self.test_end.isoformat(),
             "train_metrics": asdict(self.train_metrics),
             "test_metrics": asdict(self.test_metrics),
+            "fitted_params": self.fitted_params.to_dict(),
+            "test_skipped": self.test_skipped,
         }
 
 
@@ -191,10 +223,24 @@ class WalkForwardResult:
 
 
 class WalkForwardEvaluator:
-    """Rolling train/test walk-forward validation for a single strategy.
+    """Honest train-then-test walk-forward evaluator for a single strategy.
 
-    Splits `total_days` into non-overlapping windows of size `train_days + test_days`,
-    runs a backtest in each window, and reports per-window and aggregate metrics.
+    For each window:
+      1. Run the strategy on the train slice and *fit* `WalkForwardFittedParams`
+         from the realised trades — i.e. learn (a) a per-strategy expected edge
+         (mean trade return) and (b) a confidence floor calibrated so that the
+         lowest-quartile train signals are filtered out on the test slice.
+      2. *Freeze* those params before the test slice runs.
+      3. If the train fit fails the acceptance gate (no trades, negative edge,
+         or profit factor < 1.0) the test window is *skipped* (zeroed metrics)
+         to avoid pretending an unfit strategy generalised. This makes the
+         training step have an actually measurable effect on the holdout.
+
+    The strategies in this repo are rule-based with no learnable parameters,
+    so we deliberately do not claim to be fitting model weights — we are
+    calibrating a thin acceptance/threshold layer on top of the rule. That
+    layer is real, frozen between train and test, and observable in the
+    output (`fitted_params`, `test_skipped`).
     """
 
     def __init__(self, backtest_engine: BacktestEngine) -> None:
@@ -231,17 +277,27 @@ class WalkForwardEvaluator:
                 max_drawdown=max_drawdown,
                 strategy_names=(strategy_name,),
             )
-            test_cfg = BacktestConfig(
-                starting_capital=starting_capital,
-                start=test_start,
-                days=test_days,
-                underlyings=underlyings,
-                max_drawdown=max_drawdown,
-                strategy_names=(strategy_name,),
-            )
-
             train_result = self.backtest_engine.run(train_cfg)
-            test_result = self.backtest_engine.run(test_cfg)
+            fitted = self._fit_from_train(train_result)
+
+            if fitted.accept_strategy:
+                test_cfg = BacktestConfig(
+                    starting_capital=starting_capital,
+                    start=test_start,
+                    days=test_days,
+                    underlyings=underlyings,
+                    max_drawdown=max_drawdown,
+                    strategy_names=(strategy_name,),
+                )
+                test_result = self.backtest_engine.run(
+                    test_cfg, signal_filter=fitted_signal_filter(fitted)
+                )
+                test_metrics = test_result.metrics
+                test_skipped = False
+            else:
+                # Honestly skip: no fit, no holdout claim.
+                test_metrics = _zero_metrics(starting_capital)
+                test_skipped = True
 
             windows.append(
                 WalkForwardWindow(
@@ -252,11 +308,12 @@ class WalkForwardEvaluator:
                     test_start=test_start,
                     test_end=test_end,
                     train_metrics=train_result.metrics,
-                    test_metrics=test_result.metrics,
+                    test_metrics=test_metrics,
+                    fitted_params=fitted,
+                    test_skipped=test_skipped,
                 )
             )
 
-            # Advance cursor by one test window (anchored expansion)
             cursor = test_start
             window_index += 1
 
@@ -268,3 +325,68 @@ class WalkForwardEvaluator:
             underlyings=underlyings,
             windows=windows,
         )
+
+    @staticmethod
+    def _fit_from_train(train_result) -> WalkForwardFittedParams:
+        """Derive frozen params from the train backtest. Pure function of train_result."""
+        metrics = train_result.metrics
+        confidences = [
+            report.order.intent.signal.confidence
+            for report in train_result.reports
+            if report.risk_decision.approved
+            and getattr(report.order.intent.signal, "confidence", None) is not None
+        ]
+        if confidences:
+            confidences_sorted = sorted(confidences)
+            # Drop the bottom quartile of training confidences.
+            q1_index = max(0, len(confidences_sorted) // 4 - 1)
+            confidence_floor = confidences_sorted[q1_index]
+        else:
+            confidence_floor = 0.55
+
+        # Expected edge: simple mean realized return per trade in train.
+        expected_edge = 0.0
+        if metrics.trade_count > 0:
+            # PerformanceMetrics.return_pct is whole-portfolio; per-trade edge
+            # approximation: total return divided by trade count.
+            expected_edge = metrics.return_pct / max(1, metrics.trade_count)
+
+        accept = (
+            metrics.trade_count >= 1
+            and metrics.profit_factor >= 1.0
+            and metrics.return_pct > 0.0
+        )
+        return WalkForwardFittedParams(
+            confidence_floor=float(confidence_floor),
+            expected_edge=float(expected_edge),
+            train_profit_factor=float(metrics.profit_factor),
+            train_sharpe=float(metrics.sharpe_like),
+            train_trade_count=int(metrics.trade_count),
+            accept_strategy=bool(accept),
+        )
+
+
+def fitted_signal_filter(fitted: WalkForwardFittedParams):
+    """Build a frozen signal-acceptance callable from train-fit params."""
+    floor = fitted.confidence_floor
+
+    def _accept(signal) -> bool:
+        if signal is None:
+            return False
+        return getattr(signal, "confidence", 0.0) >= floor
+
+    return _accept
+
+
+def _zero_metrics(starting_capital: float) -> PerformanceMetrics:
+    return PerformanceMetrics(
+        starting_capital=starting_capital,
+        ending_equity=starting_capital,
+        total_pnl=0.0,
+        return_pct=0.0,
+        max_drawdown=0.0,
+        trade_count=0,
+        win_rate=0.0,
+        profit_factor=0.0,
+        sharpe_like=0.0,
+    )
