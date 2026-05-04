@@ -20,6 +20,8 @@ data/raw/*
 !data/raw/.gitkeep
 data/processed/*
 !data/processed/.gitkeep
+data/*.db-shm
+data/*.db-wal
 backtest_results/*
 !backtest_results/.gitkeep
 models/*

@@ -129,9 +129,10 @@ class DecisionPipeline:
         kill_switch_active: bool,
         strategy_names: list[str] | None = None,
     ) -> DecisionScanResult:
-        # Enforce market hours for PAPER and LIVE modes so direct /signals/scan
-        # API calls don't generate candidates outside the trading window.
-        if execution_mode != ExecutionMode.BACKTEST and not is_entry_allowed():
+        # Enforce market hours only for armed live entry generation. Paper and
+        # unarmed live-readiness scans must still produce candidates so the
+        # risk layer can prove it will reject or approve them correctly.
+        if execution_mode.value.startswith("LIVE") and live_armed and not is_entry_allowed():
             now = datetime.now(timezone.utc)
             return DecisionScanResult(
                 as_of=now,
@@ -295,8 +296,8 @@ class DecisionPipeline:
 
     def _base_price(self, underlying: str) -> float:
         bases = {
-            "NIFTY": 24500,
-            "BANKNIFTY": 52000,
+            "NIFTY": 22500,
+            "BANKNIFTY": 48500,
             "FINNIFTY": 23000,
             "MIDCPNIFTY": 12500,
             "SENSEX": 80000,

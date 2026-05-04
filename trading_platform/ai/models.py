@@ -403,6 +403,7 @@ class RegimeClassifier:
             }
             self._label_source = label_source
             return False
+        self._label_source = label_source
         valid = [r for r in feature_records if r.get("regime") in self.REGIMES]
         if len(valid) < 8 or len({r["regime"] for r in valid}) < 2:
             self._last_train_metrics = {
@@ -413,8 +414,12 @@ class RegimeClassifier:
         try:
             from sklearn.ensemble import GradientBoostingClassifier
             from sklearn.model_selection import train_test_split
-        except ImportError:
-            self._last_train_metrics = {"rejected": True, "reason": "sklearn_unavailable"}
+        except Exception as exc:
+            self._last_train_metrics = {
+                "rejected": True,
+                "reason": "sklearn_unavailable",
+                "error": exc.__class__.__name__,
+            }
             return False
 
         X = [
@@ -448,7 +453,6 @@ class RegimeClassifier:
             "test_samples": len(X_test),
             "accepted": accepted,
         }
-        self._label_source = label_source
         if not accepted:
             self._model = None
             self._trained = False

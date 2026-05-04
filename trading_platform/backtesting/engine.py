@@ -100,7 +100,12 @@ class BacktestEngine:
             self.instrument_master = cached
         bars_by_underlying = self.data_provider.generate_many(config.underlyings, config.start, config.days)
         portfolio = PortfolioLedger(config.starting_capital)
-        risk = RiskEngine(RiskLimits(max_drawdown=config.max_drawdown))
+        risk = RiskEngine(
+            RiskLimits(
+                max_drawdown=config.max_drawdown,
+                max_futures_margin_pct=min(0.05, config.max_drawdown / 2),
+            )
+        )
         router = ExecutionRouter(
             broker=SimulatedBrokerClient(),
             risk_engine=risk,

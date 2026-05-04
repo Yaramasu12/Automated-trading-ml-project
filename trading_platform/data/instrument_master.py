@@ -16,8 +16,11 @@ from trading_platform.domain.models import Instrument
 
 INDEX_UNDERLYINGS = {
     # NSE indices — F&O on NFO, weekly expiry on Thursday
-    "NIFTY":      {"token": "26000", "lot_size": 50,  "strike_step": 50,  "base": 24500},
-    "BANKNIFTY":  {"token": "26009", "lot_size": 15,  "strike_step": 100, "base": 52000},
+    # Synthetic bases are deliberately stable for local backtests/tests.
+    # Production symbols, tokens, strikes, and expiries are refreshed from the
+    # Angel One instrument master before live or paper-shadow operation.
+    "NIFTY":      {"token": "26000", "lot_size": 50,  "strike_step": 50,  "base": 22500},
+    "BANKNIFTY":  {"token": "26009", "lot_size": 15,  "strike_step": 100, "base": 48500},
     "FINNIFTY":   {"token": "26037", "lot_size": 40,  "strike_step": 50,  "base": 23000},
     "MIDCPNIFTY": {"token": "26074", "lot_size": 75,  "strike_step": 25,  "base": 12500},
     # BSE indices — F&O on BFO; SENSEX weekly expires Friday, BANKEX weekly expires Monday

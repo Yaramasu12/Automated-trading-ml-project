@@ -55,11 +55,15 @@ class RiskEngine:
         orders_sent_today: int = 0,
         trades_today: int = 1,
     ) -> RiskDecision:
-        if kill_switch_active:
+        # Position-reducing orders must stay available during protective states
+        # in BACKTEST/PAPER. Otherwise a drawdown breach or kill switch would
+        # trap the simulator in the risky position it is trying to close.
+        is_opening = intent.signal.metadata.get("opens_position", True)
+        if kill_switch_active and is_opening:
             return RiskDecision(False, "kill_switch_active", 1.0)
         if execution_mode.value.startswith("LIVE") and not live_armed:
             return RiskDecision(False, "live_mode_not_armed", 1.0)
-        if portfolio.drawdown >= self.limits.max_drawdown:
+        if portfolio.drawdown >= self.limits.max_drawdown and is_opening:
             return RiskDecision(False, "max_drawdown_breached", 1.0)
         if portfolio.equity <= 0:
             return RiskDecision(False, "invalid_portfolio_equity", 1.0)
@@ -82,7 +86,6 @@ class RiskEngine:
         # options-short caps must not block them — otherwise a forced exit at
         # end-of-backtest (or any stop-out) would be silently rejected, leaving
         # the position open and the demo backtest's win/loss metrics empty.
-        is_opening = intent.signal.metadata.get("opens_position", True)
         # For futures the capital at risk is the SPAN margin (~12% of notional),
         # not the full contract notional.  Using full notional always exceeds
         # position limits for any index lot, so we compare margin against
