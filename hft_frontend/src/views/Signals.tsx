@@ -1,14 +1,23 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Zap, Play, Loader2, ChevronDown, ChevronRight } from 'lucide-react'
 import { Card, CardBody, CardHeader } from '../components/shared/Card'
 import { Badge, regimeBadge } from '../components/shared/Badge'
 import { useStore } from '../store'
-import { scanSignals, runShadow } from '../api'
+import { getUniverse, scanSignals, runShadow } from '../api'
 import { inr, pct, num } from '../utils'
 import type { Candidate, SignalScanResult } from '../types'
 import { clsx } from 'clsx'
 
-const DEFAULT_UNDERLYINGS = ['NIFTY', 'BANKNIFTY', 'FINNIFTY']
+const FALLBACK_UNDERLYINGS = [
+  'NIFTY', 'BANKNIFTY', 'FINNIFTY', 'MIDCPNIFTY', 'SENSEX', 'BANKEX',
+  'RELIANCE', 'TCS', 'INFY', 'HDFCBANK', 'ICICIBANK', 'SBIN',
+  'WIPRO', 'KOTAKBANK', 'AXISBANK', 'MARUTI', 'SUNPHARMA', 'TATAMOTORS',
+  'BAJFINANCE', 'HINDUNILVR', 'BHARTIARTL', 'NTPC',
+]
+
+function unique(values: string[]) {
+  return [...new Set(values.map((value) => value.trim().toUpperCase()).filter(Boolean))]
+}
 
 export function Signals() {
   const signalResult = useStore((s) => s.signalResult)
@@ -17,9 +26,24 @@ export function Signals() {
   const setLoading = useStore((s) => s.setLoading)
   const setError = useStore((s) => s.setError)
 
-  const [underlyings, setUnderlyings] = useState(DEFAULT_UNDERLYINGS.join(', '))
+  const [underlyings, setUnderlyings] = useState(FALLBACK_UNDERLYINGS.join(', '))
+  const [editedUnderlyings, setEditedUnderlyings] = useState(false)
   const [mode, setMode] = useState<'scan' | 'shadow'>('scan')
   const [expanded, setExpanded] = useState<Record<string, boolean>>({})
+
+  useEffect(() => {
+    if (editedUnderlyings) return
+    getUniverse()
+      .then((rows) => {
+        const derived = unique(
+          rows
+            .filter((row) => row.segment === 'FUTURES' || row.segment === 'OPTIONS')
+            .map((row) => String(row.underlying ?? '')),
+        )
+        if (derived.length) setUnderlyings(derived.join(', '))
+      })
+      .catch(() => {})
+  }, [editedUnderlyings])
 
   async function run() {
     setLoading('signals', true)
@@ -57,7 +81,10 @@ export function Signals() {
             <label className="block text-xs text-gray-500 mb-1">Underlyings (comma-separated)</label>
             <input
               value={underlyings}
-              onChange={(e) => setUnderlyings(e.target.value)}
+              onChange={(e) => {
+                setEditedUnderlyings(true)
+                setUnderlyings(e.target.value)
+              }}
               className="w-full bg-surface-elevated border border-surface-border rounded-md px-3 py-1.5 text-sm text-gray-200 font-mono focus:outline-none focus:border-brand-blue"
             />
           </div>

@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { CheckCircle, GitBranch, Loader2, RefreshCw, ShieldAlert, XCircle } from 'lucide-react'
 import { Card, CardBody, CardHeader } from '../components/shared/Card'
 import { Badge } from '../components/shared/Badge'
@@ -34,25 +34,23 @@ export function Execution() {
   const [eventBus, setEventBus] = useState<EventBusSummary | null>(null)
   const [loading, setLoading] = useState(false)
   const [busyRequest, setBusyRequest] = useState<string | null>(null)
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
   async function refresh() {
     setLoading(true)
-    try {
-      const [schedulerRes, approvalsRes, omsRes, capsRes, busRes] = await Promise.all([
-        getSchedulerStats(),
-        getManualApprovals(),
-        getOmsEvents(60),
-        getBrokerCapabilities(),
-        getEventSummary(),
-      ])
-      setScheduler(schedulerRes)
-      setApprovals(approvalsRes)
-      setOmsEvents(omsRes.events as OmsEvent[])
-      setCapabilities(capsRes)
-      setEventBus(busRes)
-    } finally {
-      setLoading(false)
-    }
+    const [schedulerRes, approvalsRes, omsRes, capsRes, busRes] = await Promise.allSettled([
+      getSchedulerStats(),
+      getManualApprovals(),
+      getOmsEvents(60),
+      getBrokerCapabilities(),
+      getEventSummary(),
+    ])
+    if (schedulerRes.status === 'fulfilled') setScheduler(schedulerRes.value)
+    if (approvalsRes.status === 'fulfilled') setApprovals(approvalsRes.value)
+    if (omsRes.status === 'fulfilled') setOmsEvents(omsRes.value.events as OmsEvent[])
+    if (capsRes.status === 'fulfilled') setCapabilities(capsRes.value)
+    if (busRes.status === 'fulfilled') setEventBus(busRes.value)
+    setLoading(false)
   }
 
   async function approve(requestId: string) {
@@ -87,6 +85,8 @@ export function Execution() {
 
   useEffect(() => {
     refresh()
+    pollRef.current = setInterval(refresh, 6_000)
+    return () => { if (pollRef.current) clearInterval(pollRef.current) }
   }, [])
 
   const queueDepth = Number(scheduler?.queue_depth ?? 0)

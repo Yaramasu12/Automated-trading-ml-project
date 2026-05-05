@@ -55,7 +55,10 @@ class Strategy(ABC):
         return self.estimate_risk(instrument, price, quantity).margin_required
 
     def exit_rules(self) -> StrategyExitRules:
-        return StrategyExitRules(stop_loss_pct=0.01, target_pct=0.02, max_holding_days=1)
+        # Minimum 2.5:1 R:R: 1.5% stop, 3.75% target.
+        # ATR-based stops in ExitPlan.from_trade() will override these when ATR
+        # metadata is available, but these ensure a floor R:R when ATR is absent.
+        return StrategyExitRules(stop_loss_pct=0.015, target_pct=0.038, max_holding_days=3)
 
     def expiry_rules(self) -> dict:
         return {

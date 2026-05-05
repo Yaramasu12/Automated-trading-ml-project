@@ -21,6 +21,7 @@ if TYPE_CHECKING:
     from trading_platform.risk.capital_protection import CapitalProtection
     from trading_platform.risk.event_risk import EventRiskGuard
     from trading_platform.portfolio.ledger import PortfolioLedger
+    from trading_platform.backtesting.charges import ChargesModel
 
 logger = logging.getLogger(__name__)
 
@@ -61,6 +62,7 @@ class ExecutionScheduler:
         event_risk: EventRiskGuard | None = None,
         portfolio: PortfolioLedger | None = None,
         event_bus: InMemoryEventBus | None = None,
+        charges_model: ChargesModel | None = None,
         max_queue_size: int = 500,
     ) -> None:
         self.broker = broker
@@ -73,6 +75,7 @@ class ExecutionScheduler:
         self.event_risk = event_risk
         self.portfolio = portfolio
         self.event_bus = event_bus
+        self.charges_model = charges_model
         self._queue: asyncio.PriorityQueue[PrioritizedOrderIntent] = asyncio.PriorityQueue(
             maxsize=max_queue_size
         )
@@ -303,7 +306,8 @@ class ExecutionScheduler:
 
         if result.status == OrderStatus.FILLED and result.average_price is not None:
             order.filled_at = now
-            trade = self.fill_processor.process(order, result.average_price, intent.quantity, 0.0, now)
+            charges = self.charges_model.estimate(intent, result.average_price) if self.charges_model else 0.0
+            trade = self.fill_processor.process(order, result.average_price, intent.quantity, charges, now)
             self.oms.append(
                 event_type="broker_filled",
                 order_id=intent.idempotency_key,

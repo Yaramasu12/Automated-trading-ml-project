@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import asdict, dataclass
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, timezone
 from typing import TYPE_CHECKING
 
 from trading_platform.agent.market_hours import is_entry_allowed
@@ -19,6 +19,8 @@ from trading_platform.strategies.factory import StrategyFactory
 
 if TYPE_CHECKING:
     from trading_platform.ai.feature_store import FeatureStore
+    from trading_platform.ai.features import FeatureSnapshot
+    from trading_platform.ai.models import MetaModel, RegimeClassifier
     from trading_platform.data.angel_one_history import AngelOneHistoricalDataProvider
 
 logger = logging.getLogger(__name__)
@@ -105,6 +107,8 @@ class DecisionPipeline:
         live_feed=None,
         history_provider: "AngelOneHistoricalDataProvider | None" = None,
         feature_store: "FeatureStore | None" = None,
+        regime_classifier: "RegimeClassifier | None" = None,
+        meta_model: "MetaModel | None" = None,
     ):
         self.instrument_master = instrument_master
         self.strategy_factory = strategy_factory
@@ -114,6 +118,8 @@ class DecisionPipeline:
         self.live_feed = live_feed
         self.history_provider = history_provider
         self.feature_store = feature_store
+        self.regime_classifier = regime_classifier
+        self.meta_model = meta_model
         self.feature_engine = FeatureEngine()
         self.regime_agent = MarketRegimeAgent()
         self.strategy_agent = StrategySelectionAgent()
@@ -164,8 +170,43 @@ class DecisionPipeline:
                     volume=tick.volume if tick.volume > 0 else last.volume,
                 )
         features = self.feature_engine.compute(bars)
-        regime = self.regime_agent.classify(features)
-        selected = strategy_names or self.strategy_agent.choose(regime, underlying)
+
+        # Use ML regime classifier when it has been trained and validated on
+        # external labels; otherwise fall back to the deterministic rule agent.
+        if self.regime_classifier is not None and self.regime_classifier.is_trained:
+            regime = self.regime_classifier.predict(features)
+        else:
+            regime = self.regime_agent.classify(features)
+
+        # Use MetaModel-ranked strategies when enough feedback has accumulated;
+        # otherwise fall back to the fixed strategy-selection mapping.
+        if strategy_names:
+            selected = strategy_names
+            meta_scores: dict[str, float] = {}
+        elif self.meta_model is not None:
+            base = self.strategy_agent.choose(regime, underlying)
+            ranked = self.meta_model.rank(regime, base)
+            # Skip strategies the MetaModel has learned are consistently losing
+            # in this regime (score < 0.35 with enough observations = 5+ trades)
+            selected = []
+            meta_scores = {}
+            for item in ranked:
+                obs = self.meta_model.observation_count(regime, item.strategy_name)
+                if obs >= 5 and item.score < 0.35:
+                    logger.debug(
+                        "MetaModel pruned %s in %s regime (score=%.2f obs=%d)",
+                        item.strategy_name, regime, item.score, obs,
+                    )
+                    continue
+                selected.append(item.strategy_name)
+                meta_scores[item.strategy_name] = item.score
+            if not selected:  # all pruned — fall back to rule selection
+                selected = base
+                meta_scores = {}
+        else:
+            selected = self.strategy_agent.choose(regime, underlying)
+            meta_scores = {}
+
         closes = [bar.close for bar in bars]
         forecast = self.volatility_forecaster.forecast(closes, "garch_baseline")
 
@@ -190,6 +231,8 @@ class DecisionPipeline:
                 execution_mode=execution_mode,
                 live_armed=live_armed,
                 kill_switch_active=kill_switch_active,
+                features=features,
+                meta_score=meta_scores.get(strategy_name),
             )
             for strategy_name in selected
         ]
@@ -221,6 +264,11 @@ class DecisionPipeline:
                 logger.debug("Angel One historical fetch failed for %s: %s — using synthetic", underlying, exc)
         return self.data_provider.generate_daily_bars(underlying, start, min_bars, self._base_price(underlying))
 
+    # Minimum signal confidence to proceed to risk evaluation
+    _MIN_CONFIDENCE = 0.65
+    # Annualised vol cap: skip entries when market is in extreme volatility
+    _MAX_ENTRY_ANNUALISED_VOL = 0.60   # 60% annualised (~3.8% daily)
+
     def _candidate(
         self,
         underlying: str,
@@ -231,13 +279,64 @@ class DecisionPipeline:
         execution_mode: ExecutionMode,
         live_armed: bool,
         kill_switch_active: bool,
+        features: "FeatureSnapshot | None" = None,
+        meta_score: float | None = None,
     ) -> DecisionCandidate:
         strategy = self.strategy_factory.get(strategy_name)
         instrument = self._select_instrument(strategy_name, underlying, bars[-1], now.date())
         signal = strategy.generate_signal(instrument, bars, now)
         if signal is None:
             return DecisionCandidate(underlying, strategy_name, instrument, None, 0, None, "no_signal")
-        quantity = self._position_quantity(snapshot.equity, instrument, signal.price)
+
+        # Apply MetaModel score as confidence adjustment:
+        # - score > 0.6 → slight boost (+0.03) for high-performing strategies
+        # - score < 0.45 → slight penalty (−0.03) for underperformers
+        # - score not available → neutral (new strategies not penalized)
+        if meta_score is not None and meta_score > 0:
+            from dataclasses import replace as _replace
+            if meta_score > 0.60:
+                adj = min(0.04, (meta_score - 0.60) * 0.2)
+                signal = _replace(signal, confidence=min(0.97, signal.confidence + adj))
+            elif meta_score < 0.45:
+                adj = min(0.04, (0.45 - meta_score) * 0.2)
+                signal = _replace(signal, confidence=max(0.0, signal.confidence - adj))
+
+        # Gate 1: confidence filter — drop weak signals before any further processing
+        if signal.confidence < self._MIN_CONFIDENCE:
+            return DecisionCandidate(
+                underlying, strategy_name, instrument, signal, 0, None,
+                f"low_confidence:{signal.confidence:.2f}<{self._MIN_CONFIDENCE}",
+            )
+
+        # Gate 2: PRICE SANITY — reject if signal price is stale/synthetic vs live tick
+        # This is the primary loss driver: entry at synthetic 3448 when real price is 1452
+        if self.live_feed is not None and instrument.instrument_type not in {
+            InstrumentType.OPTION, InstrumentType.FUTURE
+        }:
+            try:
+                tick = self.live_feed.latest_tick(underlying)
+                if tick is not None:
+                    lp = tick.last_price if hasattr(tick, "last_price") else tick.get("last_price", 0)
+                    if lp and lp > 0 and signal.price > 0:
+                        price_error = abs(signal.price - lp) / lp
+                        if price_error > 0.10:   # >10% away from real tick = synthetic contamination
+                            return DecisionCandidate(
+                                underlying, strategy_name, instrument, signal, 0, None,
+                                f"price_sanity_fail:signal={signal.price:.0f}_tick={lp:.0f}_err={price_error:.1%}",
+                            )
+            except Exception:
+                pass
+
+        # Gate 3: volatility blowout filter — annualised vol > 60% = avoid new entries
+        if features is not None:
+            ann_vol = features.realized_volatility * (252 ** 0.5)
+            if ann_vol > self._MAX_ENTRY_ANNUALISED_VOL:
+                return DecisionCandidate(
+                    underlying, strategy_name, instrument, signal, 0, None,
+                    f"volatility_blowout:{ann_vol:.1%}>{self._MAX_ENTRY_ANNUALISED_VOL:.0%}",
+                )
+
+        quantity = self._position_quantity(snapshot.equity, instrument, signal.price, features)
         if quantity <= 0:
             return DecisionCandidate(underlying, strategy_name, instrument, signal, 0, None, "quantity_zero")
         intent = OrderIntent(signal, instrument, quantity, OrderType.MARKET, ProductType.INTRADAY)
@@ -284,46 +383,96 @@ class DecisionPipeline:
     _FUTURES_MARGIN_PCT = 0.12   # ~12% of notional for index/equity futures
     _OPTIONS_MARGIN_PCT = 1.00   # options buyers pay full premium
 
-    def _position_quantity(self, equity: float, instrument: Instrument, price: float) -> int:
-        budget = equity * 0.02
+    def _position_quantity(
+        self,
+        equity: float,
+        instrument: Instrument,
+        price: float,
+        features: "FeatureSnapshot | None" = None,
+    ) -> int:
+        base_pct = 0.02
+        # Volatility-adjusted sizing: scale down in high-vol, scale up in calm markets
+        # Target daily risk = 0.5% of equity; position = target_risk / realized_vol
+        if features is not None and features.realized_volatility > 0:
+            target_daily_risk = equity * 0.005
+            vol_sized_budget = target_daily_risk / features.realized_volatility
+            # Clamp: never more than 3% or less than 0.5% of equity regardless
+            budget = max(equity * 0.005, min(equity * 0.03, vol_sized_budget))
+        else:
+            budget = equity * base_pct
         if instrument.instrument_type == InstrumentType.FUTURE:
-            # For futures, lot_notional is full contract value but only ~12% margin is required.
-            # Size so that the margin deployed ≤ budget, not the full notional.
             margin_per_lot = max(price * instrument.lot_size * self._FUTURES_MARGIN_PCT, 1)
             return max(1, int(budget / margin_per_lot))
         lot_notional = max(price * instrument.lot_size, 1)
         return max(1, int(budget / lot_notional))
 
     def _base_price(self, underlying: str) -> float:
+        # IMPORTANT: These are calibrated to real NSE/BSE market prices (May 2026).
+        # Update weekly by running: scripts/update_base_prices.py
+        # Wrong base prices = synthetic bars at wrong levels = instant stop-loss losses.
         bases = {
-            "NIFTY": 22500,
-            "BANKNIFTY": 48500,
-            "FINNIFTY": 23000,
-            "MIDCPNIFTY": 12500,
-            "SENSEX": 80000,
-            "BANKEX": 58000,
-            "RELIANCE": 2900,
-            "TCS": 3800,
-            "INFY": 1600,
-            "HDFCBANK": 1700,
-            "ICICIBANK": 1200,
-            "SBIN": 800,
-            "WIPRO": 480,
-            "KOTAKBANK": 1900,
-            "AXISBANK": 1100,
-            "MARUTI": 12000,
-            "SUNPHARMA": 1700,
-            "TATAMOTORS": 750,
-            "BAJFINANCE": 7000,
-            "HINDUNILVR": 2400,
-            "BHARTIARTL": 1600,
-            "NTPC": 350,
-            "POWERGRID": 330,
-            "TITAN": 3300,
-            "ASIANPAINT": 2400,
-            "LTIM": 5500,
-            "ONGC": 280,
+            # ── Indices ──────────────────────────────────────────────────────────
+            "NIFTY":      23900,
+            "BANKNIFTY":  54400,
+            "FINNIFTY":   25600,
+            "MIDCPNIFTY": 13900,
+            "SENSEX":     76700,
+            "BANKEX":     61300,
+            # ── Large-cap equities (real prices as of May 2026) ──────────────────
+            "RELIANCE":   1452,
+            "TCS":        2444,
+            "INFY":       1175,
+            "HDFCBANK":    770,
+            "ICICIBANK":  1250,
+            "SBIN":       1060,
+            "WIPRO":       201,
+            "KOTAKBANK":   372,
+            "AXISBANK":   1263,
+            "MARUTI":    13428,
+            "SUNPHARMA":  1807,
+            "TATAMOTORS":  341,
+            "BAJFINANCE":  941,
+            "HINDUNILVR": 2292,
+            "BHARTIARTL": 1822,
+            "NTPC":        397,
+            "POWERGRID":   318,
+            "TITAN":      4373,
+            "ASIANPAINT": 2432,
+            "LTIM":       4240,
+            "ONGC":        288,
+            "ITC":         310,
+            "LT":         4036,
+            "HCLTECH":    1196,
+            "M&M":        3077,
+            "COALINDIA":   474,
+            "HEROMOTOCO": 5030,
+            "HINDALCO":   1042,
+            "JSWSTEEL":   1258,
+            "ULTRACEMCO": 11500,  # approx when live feed unavailable
+            "GRASIM":     2854,
+            "BPCL":        297,
+            "CIPLA":      1318,
+            "DRREDDY":    1279,
+            "EICHERMOT":  7261,
+            "ADANIENT":   2471,
+            "ADANIPORTS": 1729,
+            "APOLLOHOSP": 7710,
+            "TATACONSUM": 1150,
+            "TRENT":      4106,
+            "BAJAJFINSV": 1756,
+            "DIVISLAB":   6601,
+            "SHRIRAMFIN":  955,
         }
+        # Prefer live tick price over hardcoded base — live price is always accurate
+        if self.live_feed is not None:
+            try:
+                tick = self.live_feed.latest_tick(underlying)
+                if tick is not None:
+                    lp = tick.last_price if hasattr(tick, "last_price") else tick.get("last_price", 0)
+                    if lp and lp > 0:
+                        return float(lp)
+            except Exception:
+                pass
         return bases.get(underlying, 1000.0)
 
     def _market_time(self, bar: MarketBar) -> datetime:

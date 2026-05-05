@@ -25,25 +25,58 @@ class SupervisorDecision:
 
 
 class MarketRegimeAgent:
+    """Multi-factor regime classifier.
+
+    Threshold raised from 0.025 → 0.038 daily vol:
+      0.025/day ≈ 40% annualised = normal for Indian markets → was classifying 96%
+      of stocks as HIGH_VOLATILITY → forced buying of expensive options → theta decay losses.
+      0.038/day ≈ 60% annualised = genuine stress/panic only.
+    """
+
     def classify(self, features: FeatureSnapshot) -> str:
-        if features.realized_volatility > 0.025:
+        rv = features.realized_volatility
+
+        # Genuine panic/stress: high vol + momentum extreme OR Bollinger Band blown wide
+        if rv > 0.038 and (abs(features.momentum_5) > 0.04 or features.bb_width > 0.12):
             return "HIGH_VOLATILITY"
-        if features.trend_strength > 4 and abs(features.momentum_20) > 0.03:
+
+        # Trending: sustained directional move, vol not spiking
+        if features.trend_strength > 3.0 and abs(features.momentum_20) > 0.025 and rv < 0.030:
             return "TRENDING"
-        if abs(features.momentum_5) > 0.02 and features.volume_ratio > 1.2:
+
+        # Breakout: short-term surge with volume confirmation
+        if abs(features.momentum_5) > 0.018 and features.volume_ratio > 1.3 and rv < 0.035:
             return "BREAKOUT"
+
+        # Elevated vol but directionless → treat as high-vol (use theta strategies)
+        if rv > 0.028 and features.trend_strength < 2.0:
+            return "HIGH_VOLATILITY"
+
+        # Default: range-bound, use mean-reversion
         return "MEAN_REVERTING"
 
 
 class StrategySelectionAgent:
+    """Map regime → strategies that PROFIT in that environment.
+
+    HIGH_VOLATILITY fix: instead of buying expensive options (theta decay),
+    use equity_momentum with tighter risk + gap_strategy (sells into vol spikes).
+    Options buying is only valid when volatility is LOW (cheap premium) not HIGH.
+    """
+
     def choose(self, regime: str, symbol: str) -> list[str]:
         if regime == "TRENDING":
-            return ["futures_trend", "equity_momentum"]
+            # Strong trend: ride it with momentum + futures leverage
+            return ["equity_momentum", "futures_trend", "swing_trend"]
         if regime == "HIGH_VOLATILITY":
-            return ["defined_risk_option_spread", "volatility_breakout_options"]
+            # High vol: mean-revert extremes, use gap strategy (fades gap after vol spike)
+            # Do NOT buy expensive options — that's theta decay
+            return ["gap_strategy", "mean_reversion"]
         if regime == "BREAKOUT":
-            return ["volatility_breakout_options", "futures_trend"]
-        return ["equity_momentum", "defined_risk_option_spread"]
+            # Price breaking out: breakout + momentum
+            return ["breakout", "equity_momentum"]
+        # MEAN_REVERTING: oscillating — RSI extremes are the edge
+        return ["mean_reversion", "equity_momentum"]
 
 
 class ModelSelectionAgent:

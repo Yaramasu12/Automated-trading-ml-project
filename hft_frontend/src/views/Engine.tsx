@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from 'react'
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import {
   Play, Square, Activity, Shield,
   Brain, Cpu, Bot, AlertTriangle,
@@ -9,26 +9,28 @@ import { Card, CardBody, CardHeader } from '../components/shared/Card'
 import { useStore } from '../store'
 import {
   getAgentStatus, startAgent, stopAgent, setAgentInterval,
-  getLatestTick, getSchedulerStats, getOmsEvents,
+  getBatchTicks, getSchedulerStats, getOmsEvents,
   getAgentTrades, getPortfolioPositions, getRiskRejections,
-  getGovernanceDashboard, getActiveExitPlans,
+  getGovernanceDashboard, getActiveExitPlans, getOptionChain, getUniverse,
 } from '../api'
 import { inr, pct } from '../utils'
 
 // ── Universe ──────────────────────────────────────────────────────────────────
-const NSE_INDICES   = ['NIFTY', 'BANKNIFTY', 'FINNIFTY', 'MIDCPNIFTY']
-const BSE_INDICES   = ['SENSEX', 'BANKEX']
-const ALL_INDICES   = [...NSE_INDICES, ...BSE_INDICES]
-const CORE_EQUITIES = ['RELIANCE', 'TCS', 'INFY', 'HDFCBANK', 'ICICIBANK', 'SBIN']
-const EXT_EQUITIES  = ['WIPRO', 'KOTAKBANK', 'AXISBANK', 'MARUTI', 'SUNPHARMA',
-                        'TATAMOTORS', 'BAJFINANCE', 'HINDUNILVR', 'BHARTIARTL', 'NTPC']
-const ALL_EQUITIES  = [...CORE_EQUITIES, ...EXT_EQUITIES]
-const FO_UNDERLYINGS = [...NSE_INDICES, ...CORE_EQUITIES, 'WIPRO', 'KOTAKBANK', 'AXISBANK',
-                         'MARUTI', 'SUNPHARMA', 'TATAMOTORS', 'BAJFINANCE', 'HINDUNILVR',
-                         'BHARTIARTL', 'NTPC']
-const ALL_UNDERLYINGS = [...ALL_INDICES, ...ALL_EQUITIES]
+const FALLBACK_NSE_INDICES   = ['NIFTY', 'BANKNIFTY', 'FINNIFTY', 'MIDCPNIFTY']
+const FALLBACK_BSE_INDICES   = ['SENSEX', 'BANKEX']
+const FALLBACK_CORE_EQUITIES = ['RELIANCE', 'TCS', 'INFY', 'HDFCBANK', 'ICICIBANK', 'SBIN']
+const FALLBACK_EXT_EQUITIES  = ['WIPRO', 'KOTAKBANK', 'AXISBANK', 'MARUTI', 'SUNPHARMA',
+                                'TATAMOTORS', 'BAJFINANCE', 'HINDUNILVR', 'BHARTIARTL', 'NTPC']
+const FALLBACK_FO_UNDERLYINGS = [...FALLBACK_NSE_INDICES, ...FALLBACK_CORE_EQUITIES, ...FALLBACK_EXT_EQUITIES]
+const FALLBACK_TICK_SYMBOLS = [
+  ...FALLBACK_NSE_INDICES,
+  ...FALLBACK_BSE_INDICES,
+  ...FALLBACK_CORE_EQUITIES,
+  ...FALLBACK_EXT_EQUITIES,
+]
+const MAX_VISIBLE_TICKS = 120
 
-const LOT_SIZE: Record<string, number> = {
+const FALLBACK_LOT_SIZE: Record<string, number> = {
   NIFTY:50, BANKNIFTY:15, FINNIFTY:40, MIDCPNIFTY:75,
   RELIANCE:250, TCS:175, INFY:400, HDFCBANK:550, ICICIBANK:700, SBIN:750,
   WIPRO:1500, KOTAKBANK:400, AXISBANK:1200, MARUTI:100, SUNPHARMA:700,
@@ -41,6 +43,42 @@ const BASE_PRICE: Record<string, number> = {
   RELIANCE:2850, TCS:3500, INFY:1500, HDFCBANK:1620, ICICIBANK:1130, SBIN:800,
   WIPRO:460, KOTAKBANK:1800, AXISBANK:1070, MARUTI:11200, SUNPHARMA:1680,
   TATAMOTORS:760, BAJFINANCE:7200, HINDUNILVR:2320, BHARTIARTL:1630, NTPC:375,
+}
+
+type UniverseInstrument = {
+  symbol: string
+  exchange: string
+  segment: string
+  type: string
+  underlying?: string | null
+  expiry?: string | null
+  strike?: number | null
+  option_type?: string | null
+  lot_size?: number
+}
+
+type OptionLeg = UniverseInstrument & {
+  ltp?: number | null
+  delta?: number | null
+  live?: boolean
+}
+
+type OptionChainPayload = {
+  underlying: string
+  expiry: string
+  dte?: number
+  spot_price?: number
+  rows?: Array<{ strike: number; call?: OptionLeg | null; put?: OptionLeg | null }>
+  call_count?: number
+  put_count?: number
+}
+
+function uniq(values: string[]) {
+  return [...new Set(values.map((value) => value.trim().toUpperCase()).filter(Boolean))]
+}
+
+function baseKey(symbol: string) {
+  return symbol.replace(/-EQ$/, '')
 }
 
 const INTERVALS = [
@@ -89,7 +127,8 @@ function LiveDot({ live }: { live: boolean }) {
 
 function TickBox({ symbol, tick }: { symbol: string; tick: any }) {
   const price  = tick?.last_price ?? tick?.ltp ?? null
-  const change = price && BASE_PRICE[symbol] ? ((price - BASE_PRICE[symbol]) / BASE_PRICE[symbol] * 100) : null
+  const refPrice = BASE_PRICE[symbol] ?? BASE_PRICE[baseKey(symbol)]
+  const change = price && refPrice ? ((price - refPrice) / refPrice * 100) : null
   const up     = change !== null ? change >= 0 : null
   return (
     <div className="bg-surface-elevated rounded border border-surface-border p-2">
@@ -120,13 +159,18 @@ function TickBox({ symbol, tick }: { symbol: string; tick: any }) {
   )
 }
 
-function OptionsTable({ underlying, spot }: { underlying: string; spot: number | null }) {
-  const step   = underlying === 'BANKNIFTY' ? 100 : underlying === 'NIFTY' ? 50
-               : underlying.endsWith('NIFTY') ? 50
-               : LOT_SIZE[underlying] ? 10 : 50
-  const base   = spot ?? BASE_PRICE[underlying] ?? 1000
-  const atm    = Math.round(base / step) * step
-  const strikes = Array.from({ length: 9 }, (_, i) => atm + (i - 4) * step)
+function legPrice(leg?: OptionLeg | null) {
+  if (leg?.ltp == null) return '—'
+  return `₹${leg.ltp.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+}
+
+function legDelta(leg?: OptionLeg | null) {
+  if (leg?.delta == null) return '—'
+  return leg.delta.toFixed(3)
+}
+
+function OptionsTable({ chain }: { chain?: OptionChainPayload }) {
+  const rows = chain?.rows ?? []
   return (
     <div className="overflow-x-auto">
       <table className="w-full text-[10px] font-mono">
@@ -140,36 +184,49 @@ function OptionsTable({ underlying, spot }: { underlying: string; spot: number |
           </tr>
         </thead>
         <tbody>
-          {strikes.map(strike => {
-            const isAtm = Math.abs(strike - atm) < step / 2
+          {rows.map((row) => {
+            const spot = chain?.spot_price ?? 0
+            const step = rows.length > 1 ? Math.abs(rows[1].strike - rows[0].strike) || 1 : 1
+            const isAtm = spot > 0 && Math.abs(row.strike - spot) <= step / 2
             return (
-              <tr key={strike} className={clsx(
+              <tr key={row.strike} className={clsx(
                 'border-b border-surface-border/40',
                 isAtm ? 'bg-amber-950/30' : '',
               )}>
-                <td className="text-right py-0.5 pr-2 text-emerald-400">—</td>
-                <td className="text-right py-0.5 pr-2 text-gray-500">—</td>
-                <td className={clsx('text-center py-0.5 px-2 font-bold', isAtm ? 'text-amber-400' : 'text-gray-300')}>
-                  {strike.toLocaleString('en-IN')}{isAtm ? ' ★' : ''}
+                <td className={clsx('text-right py-0.5 pr-2', row.call?.live ? 'text-emerald-400' : 'text-gray-500')}>
+                  {legPrice(row.call)}
                 </td>
-                <td className="text-left py-0.5 pl-2 text-gray-500">—</td>
-                <td className="text-left py-0.5 pl-2 text-red-400">—</td>
+                <td className="text-right py-0.5 pr-2 text-gray-500">{legDelta(row.call)}</td>
+                <td className={clsx('text-center py-0.5 px-2 font-bold', isAtm ? 'text-amber-400' : 'text-gray-300')}>
+                  {row.strike.toLocaleString('en-IN')}{isAtm ? ' ★' : ''}
+                </td>
+                <td className="text-left py-0.5 pl-2 text-gray-500">{legDelta(row.put)}</td>
+                <td className={clsx('text-left py-0.5 pl-2', row.put?.live ? 'text-red-400' : 'text-gray-500')}>
+                  {legPrice(row.put)}
+                </td>
               </tr>
             )
           })}
+          {rows.length === 0 && (
+            <tr>
+              <td colSpan={5} className="py-4 text-center text-gray-600">No option-chain rows available</td>
+            </tr>
+          )}
         </tbody>
       </table>
-      <p className="text-[9px] text-gray-600 mt-1">
-        Live premiums stream after 9:15 AM IST. Lot size: {LOT_SIZE[underlying] ?? '—'}.
-      </p>
     </div>
   )
 }
 
 // ── Main component ────────────────────────────────────────────────────────────
 export function Engine() {
-  useStore()  // keep store subscription for future state
+  const livePortfolio = useStore((s) => s.livePortfolio)
   const [activeTab, setActiveTab] = useState('overview')
+  const [universe, setUniverse] = useState<UniverseInstrument[]>([])
+  const [priceFilter, setPriceFilter] = useState('')
+  const [selectedOptionUnderlying, setSelectedOptionUnderlying] = useState('')
+  const [optionChains, setOptionChains] = useState<Record<string, OptionChainPayload>>({})
+  const [optionLoading, setOptionLoading] = useState(false)
   const [agent, setAgent]         = useState<any>(null)
   const [ticks, setTicks]         = useState<Record<string, any>>({})
   const [positions, setPositions] = useState<any>(null)
@@ -183,75 +240,172 @@ export function Engine() {
   const [intervalSec, setIntervalSec] = useState(300)
   const tickRef = useRef<Record<string, any>>({})
 
-  const fetchAll = useCallback(async () => {
-    const [ag, sched] = await Promise.allSettled([
-      getAgentStatus(),
-      getSchedulerStats(),
-    ])
-    if (ag.status === 'fulfilled') setAgent(ag.value)
-    if (sched.status === 'fulfilled') setScheduler((sched.value as any))
-
-    // Fetch ticks for all underlyings
-    const tickResults = await Promise.allSettled(
-      ALL_UNDERLYINGS.map(sym => getLatestTick(sym).then(t => ({ sym, t })))
-    )
-    const newTicks: Record<string, any> = {}
-    for (const r of tickResults) {
-      if (r.status === 'fulfilled' && (r.value as any).t?.available) {
-        newTicks[(r.value as any).sym] = (r.value as any).t
-      }
+  const cashInstruments = useMemo(
+    () => universe.filter((instrument) => instrument.segment === 'CASH'),
+    [universe],
+  )
+  const nseIndices = useMemo(
+    () => cashInstruments.filter((instrument) => instrument.exchange === 'NSE' && instrument.type === 'INDEX').map((instrument) => instrument.symbol),
+    [cashInstruments],
+  )
+  const bseIndices = useMemo(
+    () => cashInstruments.filter((instrument) => instrument.exchange === 'BSE' && instrument.type === 'INDEX').map((instrument) => instrument.symbol),
+    [cashInstruments],
+  )
+  const equitySymbols = useMemo(
+    () => cashInstruments.filter((instrument) => instrument.type === 'EQUITY').map((instrument) => instrument.symbol),
+    [cashInstruments],
+  )
+  const tickSymbols = useMemo(
+    () => uniq(cashInstruments.length ? cashInstruments.map((instrument) => instrument.symbol) : FALLBACK_TICK_SYMBOLS),
+    [cashInstruments],
+  )
+  const foUnderlyings = useMemo(
+    () => {
+      const derived = uniq(
+        universe
+          .filter((instrument) => instrument.segment === 'FUTURES' || instrument.segment === 'OPTIONS')
+          .map((instrument) => instrument.underlying ?? ''),
+      )
+      return derived.length ? derived : FALLBACK_FO_UNDERLYINGS
+    },
+    [universe],
+  )
+  const lotSizeByUnderlying = useMemo(() => {
+    const lots: Record<string, number> = { ...FALLBACK_LOT_SIZE }
+    for (const instrument of universe) {
+      if (instrument.underlying && instrument.lot_size) lots[instrument.underlying] = instrument.lot_size
     }
-    tickRef.current = { ...tickRef.current, ...newTicks }
-    setTicks({ ...tickRef.current })
-  }, [])
+    return lots
+  }, [universe])
+  const selectedOption = selectedOptionUnderlying || foUnderlyings[0] || ''
+  const activeOptionChain = selectedOption ? optionChains[selectedOption] : undefined
+  const activeOptionSymbols = useMemo(() => {
+    const rows = activeOptionChain?.rows ?? []
+    return uniq(rows.flatMap((row) => [row.call?.symbol ?? '', row.put?.symbol ?? '']))
+  }, [activeOptionChain])
+  const tickRequestSymbols = useMemo(
+    () => uniq([...tickSymbols, ...activeOptionSymbols]),
+    [tickSymbols, activeOptionSymbols],
+  )
+  const visiblePriceSymbols = useMemo(() => {
+    const filter = priceFilter.trim().toUpperCase()
+    const filtered = filter
+      ? tickSymbols.filter((symbol) => symbol.includes(filter) || baseKey(symbol).includes(filter))
+      : tickSymbols
+    return filtered.slice(0, MAX_VISIBLE_TICKS)
+  }, [priceFilter, tickSymbols])
+  const displayNseIndices = nseIndices.length ? nseIndices : FALLBACK_NSE_INDICES
+  const displayBseIndices = bseIndices.length ? bseIndices : FALLBACK_BSE_INDICES
 
-  const fetchTabData = useCallback(async (tab: string) => {
+  const fetchUniverse = useCallback(async () => {
     try {
-      if (tab === 'positions') {
-        const d = await getPortfolioPositions()
-        setPositions(d)
-      } else if (tab === 'trades') {
-        const d = await getAgentTrades(200)
-        setTrades(((d as any).trades) ?? [])
-      } else if (tab === 'risk') {
-        const d = await getRiskRejections(200)
-        setRejections(((d as any).rejections) ?? [])
-      } else if (tab === 'governance') {
-        const d = await getGovernanceDashboard()
-        setGovernance(d)
-      } else if (tab === 'activity') {
-        const [ep, omsD] = await Promise.allSettled([
-          getActiveExitPlans(),
-          getOmsEvents(50),
-        ])
-        if (ep.status === 'fulfilled') setExitPlans(((ep.value as any).plans) ?? [])
-        if (omsD.status === 'fulfilled') setOms(((omsD.value as any).events) ?? [])
-      }
-    } catch (_) { /* silent */ }
+      const rows = await getUniverse()
+      const parsed = rows.map((row) => ({
+        symbol: String(row.symbol ?? '').toUpperCase(),
+        exchange: String(row.exchange ?? ''),
+        segment: String(row.segment ?? ''),
+        type: String(row.type ?? ''),
+        underlying: row.underlying ? String(row.underlying).toUpperCase() : null,
+        expiry: row.expiry ? String(row.expiry) : null,
+        strike: row.strike == null ? null : Number(row.strike),
+        option_type: row.option_type ? String(row.option_type) : null,
+        lot_size: row.lot_size == null ? undefined : Number(row.lot_size),
+      })).filter((row) => row.symbol)
+      setUniverse(parsed)
+      const firstFo = parsed.find((row) => row.segment === 'OPTIONS' && row.underlying)?.underlying
+      if (firstFo) setSelectedOptionUnderlying((current) => current || firstFo)
+    } catch (_) {
+      setUniverse([])
+    }
   }, [])
 
-  useEffect(() => {
-    fetchAll()
-    const iv = setInterval(fetchAll, 3000)
-    return () => clearInterval(iv)
-  }, [fetchAll])
+  // Fetch agent status + scheduler every 5s (always, regardless of active tab)
+  const fetchCore = useCallback(async () => {
+    const [ag, sched] = await Promise.allSettled([getAgentStatus(), getSchedulerStats()])
+    if (ag.status === 'fulfilled') setAgent(ag.value)
+    if (sched.status === 'fulfilled') setScheduler(sched.value as any)
+  }, [])
+
+  // Fetch all tab-specific data every 8s regardless of which tab is active
+  const fetchAllSections = useCallback(async () => {
+    const [posRes, tradeRes, rejRes, govRes, epRes, omsRes] = await Promise.allSettled([
+      getPortfolioPositions(),
+      getAgentTrades(200),
+      getRiskRejections(200),
+      getGovernanceDashboard(),
+      getActiveExitPlans(),
+      getOmsEvents(50),
+    ])
+    if (posRes.status === 'fulfilled') setPositions(posRes.value)
+    if (tradeRes.status === 'fulfilled') setTrades(((tradeRes.value as any).trades) ?? [])
+    if (rejRes.status === 'fulfilled') setRejections(((rejRes.value as any).rejections) ?? [])
+    if (govRes.status === 'fulfilled') setGovernance(govRes.value)
+    if (epRes.status === 'fulfilled') setExitPlans(((epRes.value as any).plans) ?? [])
+    if (omsRes.status === 'fulfilled') setOms(((omsRes.value as any).events) ?? [])
+  }, [])
+
+  // Batch tick fetch — single request instead of 22
+  const fetchTicks = useCallback(async () => {
+    try {
+      if (tickRequestSymbols.length === 0) return
+      const res = await getBatchTicks(tickRequestSymbols)
+      const newTicks: Record<string, any> = {}
+      for (const [sym, tick] of Object.entries(res.ticks ?? {})) {
+        if ((tick as any)?.available) newTicks[sym] = tick
+      }
+      tickRef.current = { ...tickRef.current, ...newTicks }
+      setTicks({ ...tickRef.current })
+    } catch (_) { /* batch endpoint not yet available — silent */ }
+  }, [tickRequestSymbols])
+
+  const fetchOptionChain = useCallback(async () => {
+    if (!selectedOption) return
+    setOptionLoading(true)
+    try {
+      const spot = ticks[selectedOption]?.last_price ?? ticks[`${selectedOption}-EQ`]?.last_price
+      const chain = await getOptionChain(selectedOption, undefined, spot) as OptionChainPayload
+      setOptionChains((prev) => ({ ...prev, [selectedOption]: chain }))
+    } finally {
+      setOptionLoading(false)
+    }
+  }, [selectedOption, ticks])
 
   useEffect(() => {
-    fetchTabData(activeTab)
-    const iv = setInterval(() => fetchTabData(activeTab), 5000)
-    return () => clearInterval(iv)
-  }, [activeTab, fetchTabData])
+    fetchUniverse()
+  }, [fetchUniverse])
+
+  useEffect(() => {
+    fetchCore()
+    fetchAllSections()
+    fetchTicks()
+    const coreIv     = setInterval(fetchCore, 5000)
+    const sectionsIv = setInterval(fetchAllSections, 8000)
+    const ticksIv    = setInterval(fetchTicks, 5000)
+    return () => {
+      clearInterval(coreIv)
+      clearInterval(sectionsIv)
+      clearInterval(ticksIv)
+    }
+  }, [fetchCore, fetchAllSections, fetchTicks])
+
+  useEffect(() => {
+    if (activeTab !== 'options') return
+    fetchOptionChain()
+    const chainIv = setInterval(fetchOptionChain, 8000)
+    return () => clearInterval(chainIv)
+  }, [activeTab, fetchOptionChain])
 
   const handleStart = async () => {
     setLoading(true)
     await startAgent(intervalSec)
-    await fetchAll()
+    await fetchCore()
     setLoading(false)
   }
   const handleStop = async () => {
     setLoading(true)
     await stopAgent()
-    await fetchAll()
+    await fetchCore()
     setLoading(false)
   }
   const handleInterval = async (s: number) => {
@@ -276,7 +430,7 @@ export function Engine() {
           <div>
             <h1 className="text-lg font-bold text-gray-100">Autonomous Trading Engine</h1>
             <p className="text-[11px] text-gray-500">
-              {ALL_UNDERLYINGS.length} instruments · {FO_UNDERLYINGS.length} F&O underlyings · Paper mode
+              {(universe.length || tickSymbols.length).toLocaleString('en-IN')} instruments · {foUnderlyings.length.toLocaleString('en-IN')} F&O underlyings · Paper mode
             </p>
           </div>
         </div>
@@ -360,8 +514,8 @@ export function Engine() {
             <StatBox label="Status"   value={isRunning ? 'RUNNING' : 'STOPPED'} color={isRunning ? 'text-emerald-400' : 'text-red-400'} />
             <StatBox label="Scans"    value={scanCount} />
             <StatBox label="Enqueued" value={totalEnq} />
-            <StatBox label="Universe" value={ALL_UNDERLYINGS.length} sub="underlyings" />
-            <StatBox label="Live Ticks" value={Object.keys(ticks).length} sub={`/ ${ALL_UNDERLYINGS.length}`} color="text-emerald-400" />
+            <StatBox label="Universe" value={(universe.length || tickSymbols.length).toLocaleString('en-IN')} sub="instruments" />
+            <StatBox label="Live Ticks" value={Object.keys(ticks).length} sub={`/ ${tickSymbols.length.toLocaleString('en-IN')}`} color="text-emerald-400" />
             <StatBox label="Exit Plans" value={exitPlans.length} />
             <StatBox label="Rejections" value={rejections.length} sub="session" color="text-amber-400" />
             <StatBox label="Interval" value={`${intervalSec}s`} />
@@ -451,23 +605,31 @@ export function Engine() {
       ═══════════════════════════════════════════════════════════════ */}
       {activeTab === 'positions' && (
         <div className="space-y-4">
-          {/* Portfolio summary */}
-          {positions?.portfolio && (
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-              <StatBox label="Equity"       value={inr(positions.portfolio.equity)} />
-              <StatBox label="Drawdown"     value={`${positions.portfolio.drawdown_pct.toFixed(2)}%`}
-                color={positions.portfolio.drawdown_pct > 5 ? 'text-red-400' : 'text-gray-200'} />
-              <StatBox label="Unrealized P&L" value={inr(positions.portfolio.unrealized_pnl)}
-                color={positions.portfolio.unrealized_pnl >= 0 ? 'text-emerald-400' : 'text-red-400'} />
-              <StatBox label="Realized P&L" value={inr(positions.portfolio.realized_pnl)}
-                color={positions.portfolio.realized_pnl >= 0 ? 'text-emerald-400' : 'text-red-400'} />
-            </div>
-          )}
-          {/* Positions table */}
+          {/* Portfolio summary — WS snapshot (live) preferred over HTTP poll */}
+          {(positions?.portfolio || livePortfolio?.portfolio) && (() => {
+            const p = livePortfolio?.portfolio ?? positions?.portfolio
+            const drawdownPct = livePortfolio ? p.drawdown : (p.drawdown_pct ?? p.drawdown ?? 0)
+            return (
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                <StatBox label="Equity"         value={inr(p.equity)} />
+                <StatBox label="Drawdown"       value={`${Number(drawdownPct).toFixed(2)}%`}
+                  color={Number(drawdownPct) > 5 ? 'text-red-400' : 'text-gray-200'} />
+                <StatBox label="Unrealized P&L" value={inr(p.unrealized_pnl)}
+                  color={p.unrealized_pnl >= 0 ? 'text-emerald-400' : 'text-red-400'} />
+                <StatBox label="Realized P&L"   value={inr(p.realized_pnl)}
+                  color={p.realized_pnl >= 0 ? 'text-emerald-400' : 'text-red-400'} />
+              </div>
+            )
+          })()}
+          {/* Positions table — WS snapshot preferred */}
+          {(() => {
+            const posList = livePortfolio?.positions ?? positions?.positions ?? []
+            const count = livePortfolio?.count ?? positions?.count ?? 0
+            return (
           <Card>
-            <CardHeader title={`Open Positions (${positions?.count ?? 0})`} />
+            <CardHeader title={`Open Positions (${count})`} />
             <CardBody>
-              {(positions?.positions?.length ?? 0) === 0 ? (
+              {posList.length === 0 ? (
                 <div className="text-center text-gray-600 py-8 text-sm">No open positions</div>
               ) : (
                 <div className="overflow-x-auto">
@@ -485,7 +647,7 @@ export function Engine() {
                       </tr>
                     </thead>
                     <tbody>
-                      {positions.positions.map((pos: any) => (
+                      {posList.map((pos: any) => (
                         <tr key={pos.symbol} className="border-b border-surface-border/30 hover:bg-gray-800/30">
                           <td className="py-1 pr-3 font-mono font-semibold text-gray-200">{pos.symbol}</td>
                           <td className="py-1 pr-3">
@@ -509,6 +671,7 @@ export function Engine() {
               )}
             </CardBody>
           </Card>
+          )})()}
           {/* Active exit plans */}
           <Card>
             <CardHeader title={`Active Exit Plans (${exitPlans.length}) — SL / Target / Trailing`} />
@@ -741,28 +904,37 @@ export function Engine() {
       ═══════════════════════════════════════════════════════════════ */}
       {activeTab === 'prices' && (
         <div className="space-y-4">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="text-xs text-gray-500">
+              {tickSymbols.length.toLocaleString('en-IN')} cash/index symbols · {Object.keys(ticks).length.toLocaleString('en-IN')} live ticks
+            </div>
+            <input
+              value={priceFilter}
+              onChange={(e) => setPriceFilter(e.target.value)}
+              placeholder="Search symbol"
+              className="w-56 max-w-full bg-surface-elevated border border-surface-border rounded-md px-3 py-1.5 text-xs text-gray-200 font-mono focus:outline-none focus:border-brand-blue"
+            />
+          </div>
           <div>
             <div className="text-xs font-semibold text-gray-400 mb-2">NSE Indices</div>
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-              {NSE_INDICES.map(sym => <TickBox key={sym} symbol={sym} tick={ticks[sym]} />)}
+              {displayNseIndices.map(sym => <TickBox key={sym} symbol={sym} tick={ticks[sym]} />)}
             </div>
           </div>
           <div>
             <div className="text-xs font-semibold text-gray-400 mb-2">BSE Indices</div>
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-              {BSE_INDICES.map(sym => <TickBox key={sym} symbol={sym} tick={ticks[sym]} />)}
+              {displayBseIndices.map(sym => <TickBox key={sym} symbol={sym} tick={ticks[sym]} />)}
             </div>
           </div>
           <div>
-            <div className="text-xs font-semibold text-gray-400 mb-2">Core Equities (F&O)</div>
-            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2">
-              {CORE_EQUITIES.map(sym => <TickBox key={sym} symbol={sym} tick={ticks[sym]} />)}
+            <div className="text-xs font-semibold text-gray-400 mb-2">
+              Equities {visiblePriceSymbols.length < equitySymbols.length ? `(${visiblePriceSymbols.length.toLocaleString('en-IN')} of ${equitySymbols.length.toLocaleString('en-IN')})` : ''}
             </div>
-          </div>
-          <div>
-            <div className="text-xs font-semibold text-gray-400 mb-2">Extended Nifty 50 Equities</div>
             <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2">
-              {EXT_EQUITIES.map(sym => <TickBox key={sym} symbol={sym} tick={ticks[sym]} />)}
+              {visiblePriceSymbols
+                .filter((sym) => !displayNseIndices.includes(sym) && !displayBseIndices.includes(sym))
+                .map(sym => <TickBox key={sym} symbol={sym} tick={ticks[sym]} />)}
             </div>
           </div>
           <p className="text-[10px] text-gray-600 text-center">
@@ -777,25 +949,45 @@ export function Engine() {
       ═══════════════════════════════════════════════════════════════ */}
       {activeTab === 'options' && (
         <div className="space-y-4">
-          <p className="text-[11px] text-amber-400 bg-amber-950/30 border border-amber-900/50 rounded px-3 py-2">
-            Options premiums stream after 9:15 AM IST when Angel One WebSocket connects.
-            Strikes shown are near-the-money ±4 steps around current spot. ATM row is highlighted ★.
-            Real tokens loaded from Angel One instrument master at pre-market 9:00 AM.
-          </p>
-          {FO_UNDERLYINGS.map(sym => {
-            const spot = ticks[sym]?.last_price ?? null
-            return (
-              <Card key={sym}>
-                <CardHeader
-                  title={`${sym} Options Chain`}
-                  subtitle={spot ? `Spot ₹${spot.toFixed(2)} · Lot ${LOT_SIZE[sym] ?? '—'}` : `Lot ${LOT_SIZE[sym] ?? '—'}`}
-                />
-                <CardBody>
-                  <OptionsTable underlying={sym} spot={spot} />
-                </CardBody>
-              </Card>
-            )
-          })}
+          <div className="flex flex-wrap items-end justify-between gap-3">
+            <div>
+              <label className="block text-xs text-gray-500 mb-1">Underlying</label>
+              <select
+                value={selectedOption}
+                onChange={(e) => setSelectedOptionUnderlying(e.target.value)}
+                className="bg-surface-elevated border border-surface-border rounded-md px-3 py-1.5 text-sm text-gray-200 font-mono focus:outline-none focus:border-brand-blue"
+              >
+                {foUnderlyings.map((sym) => (
+                  <option key={sym} value={sym}>{sym}</option>
+                ))}
+              </select>
+            </div>
+            <button
+              onClick={fetchOptionChain}
+              disabled={optionLoading || !selectedOption}
+              className="px-3 py-1.5 rounded-md border border-surface-border bg-surface-elevated text-xs text-gray-300 hover:text-gray-100 disabled:opacity-50"
+            >
+              {optionLoading ? 'Loading…' : 'Refresh Chain'}
+            </button>
+          </div>
+          <Card>
+            <CardHeader
+              title={`${selectedOption || '—'} Options Chain`}
+              subtitle={[
+                activeOptionChain?.expiry ? `Expiry ${activeOptionChain.expiry}` : null,
+                activeOptionChain?.dte ? `${activeOptionChain.dte} DTE` : null,
+                activeOptionChain?.spot_price ? `Spot ₹${activeOptionChain.spot_price.toFixed(2)}` : null,
+                selectedOption ? `Lot ${lotSizeByUnderlying[selectedOption] ?? '—'}` : null,
+              ].filter(Boolean).join(' · ')}
+            />
+            <CardBody>
+              {optionLoading && !activeOptionChain ? (
+                <div className="py-8 text-center text-sm text-gray-600">Loading option chain…</div>
+              ) : (
+                <OptionsTable chain={activeOptionChain} />
+              )}
+            </CardBody>
+          </Card>
         </div>
       )}
 
@@ -863,10 +1055,11 @@ export function Engine() {
           {/* Scheduler */}
           {scheduler && (
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-              <StatBox label="Orders Queued"    value={scheduler.queue_depth ?? 0} />
-              <StatBox label="Processed Today"  value={scheduler.processed_today ?? 0} />
-              <StatBox label="Filled Today"     value={scheduler.filled_today ?? 0} />
-              <StatBox label="Rejected Today"   value={scheduler.rejected_today ?? 0} color="text-amber-400" />
+              <StatBox label="Orders Queued" value={scheduler.queue_depth ?? 0} />
+              <StatBox label="Processed"     value={scheduler.processed ?? 0} color="text-emerald-400" />
+              <StatBox label="Rejected"      value={scheduler.rejected ?? 0} color="text-amber-400" />
+              <StatBox label="Kill Switch"   value={scheduler.kill_switch_active ? 'ON' : 'OFF'}
+                color={scheduler.kill_switch_active ? 'text-red-400' : 'text-gray-400'} />
             </div>
           )}
           {/* OMS events */}

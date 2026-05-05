@@ -20,6 +20,15 @@ class ExitManager:
     After every entry fill the scheduler calls `register(plan)`.
     The monitor loop polls live prices and enqueues exit OrderIntents
     via the provided enqueue function (pointing at ExecutionScheduler.enqueue).
+
+    Mark price priority:
+      1. Live tick from live feed (most accurate)
+      2. Externally supplied mark via update_marks()
+      3. Last known mark price for the symbol (sticky — avoids silent skip)
+      4. Entry price (worst case — at least SL/target can still check on large moves)
+
+    Without this fallback, paper-mode positions where the live feed has no tick
+    for the instrument are NEVER closed, causing unlimited unrealized losses.
     """
 
     PRIORITY_MAP: dict[ExitTrigger, OrderPriority] = {
@@ -36,11 +45,15 @@ class ExitManager:
         self.poll_interval = poll_interval
         self._plans: dict[str, ExitPlan] = {}
         self._mark_prices: dict[str, float] = {}
+        self._last_known_marks: dict[str, float] = {}   # sticky prices for fallback
         self._running = False
         self._task: asyncio.Task | None = None
 
     def register(self, plan: ExitPlan) -> None:
         self._plans[plan.plan_id] = plan
+        # Seed last-known price from entry so the monitor has a fallback immediately
+        if plan.entry_price > 0:
+            self._last_known_marks.setdefault(plan.symbol, plan.entry_price)
         logger.debug("ExitPlan registered: %s for %s", plan.plan_id, plan.symbol)
 
     def deregister(self, plan_id: str) -> None:
@@ -48,6 +61,8 @@ class ExitManager:
 
     def update_marks(self, prices: dict[str, float]) -> None:
         self._mark_prices.update(prices)
+        # Keep sticky last-known for fallback when live feed goes stale
+        self._last_known_marks.update({k: v for k, v in prices.items() if v > 0})
 
     def kill_all(self) -> None:
         """Mark all active plans as kill-switch triggered (no broker call needed)."""
@@ -81,8 +96,13 @@ class ExitManager:
             for plan_id, plan in list(self._plans.items()):
                 if not plan.active:
                     continue
-                mark = self._mark_prices.get(plan.symbol)
-                if mark is None:
+                # Mark price resolution: live tick → cached update → sticky last-known → entry price
+                mark = (
+                    self._mark_prices.get(plan.symbol)
+                    or self._last_known_marks.get(plan.symbol)
+                    or plan.entry_price  # fallback to entry — at least SL/target can check
+                )
+                if not mark or mark <= 0:
                     continue
                 trigger = plan.check_trigger(mark, now)
                 if trigger:

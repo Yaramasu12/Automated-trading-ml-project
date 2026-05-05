@@ -1,10 +1,9 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Cpu, Loader2, RefreshCw, Wifi, WifiOff } from 'lucide-react'
 import { Card, CardBody, CardHeader } from '../components/shared/Card'
 import { Badge } from '../components/shared/Badge'
 import { useStore } from '../store'
 import {
-  getAccountSnapshot,
   getAccountStatus,
   getFeedSnapshot,
   getMonitoringMetrics,
@@ -43,29 +42,31 @@ export function Account() {
   const dbSummary = useStore((s) => s.dbSummary)
 
   const [accountStatus, setAccountStatus] = useState<AccountStatus | null>(null)
-  const [snapshot, setSnapshot] = useState<unknown>(null)
   const [feedSnapshot, setFeedSnapshot] = useState<FeedSnapshot | null>(null)
   const [monitoring, setMonitoring] = useState<MonitoringFull | null>(null)
   const [loading, setLoading] = useState(false)
-  const [feedSymbols, setFeedSymbols] = useState('NIFTY, BANKNIFTY')
+  const [feedSymbols, setFeedSymbols] = useState('')
   const [feedLoading, setFeedLoading] = useState(false)
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
   async function load() {
     setLoading(true)
-    const [status, snap, feed, mon] = await Promise.allSettled([
+    const [status, feed, mon] = await Promise.allSettled([
       getAccountStatus(),
-      getAccountSnapshot(),
       getFeedSnapshot(),
       getMonitoringMetrics(),
     ])
     if (status.status === 'fulfilled') setAccountStatus(status.value)
-    if (snap.status === 'fulfilled') setSnapshot(snap.value)
     if (feed.status === 'fulfilled') setFeedSnapshot(feed.value as FeedSnapshot)
     if (mon.status === 'fulfilled') setMonitoring(mon.value as unknown as MonitoringFull)
     setLoading(false)
   }
 
-  useEffect(() => { load() }, [])
+  useEffect(() => {
+    load()
+    pollRef.current = setInterval(load, 10_000)
+    return () => { if (pollRef.current) clearInterval(pollRef.current) }
+  }, [])
 
   async function handleFeedStart() {
     setFeedLoading(true)
@@ -190,6 +191,7 @@ export function Account() {
               <input
                 value={feedSymbols}
                 onChange={(e) => setFeedSymbols(e.target.value)}
+                placeholder="Blank = all cash/index instruments"
                 className="w-full bg-surface-elevated border border-surface-border rounded-md px-3 py-1.5 text-sm text-gray-200 font-mono focus:outline-none focus:border-brand-blue"
               />
             </div>

@@ -1,0 +1,14 @@
+.git
+.venv
+__pycache__
+*.pyc
+*.pyo
+.pytest_cache
+hft_frontend
+backtest_results
+logs
+.env
+data/trading.db-shm
+data/trading.db-wal
+data/oms_events.db-shm
+data/oms_events.db-wal

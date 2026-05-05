@@ -81,18 +81,30 @@ class SyntheticDataProvider:
             generated += 1
         return bars
 
+    # Real NSE/BSE market prices as of May 2026 — used as synthetic bar anchors.
+    # Update periodically; wrong anchors produce losing backtests.
+    _BASE_PRICES: dict[str, float] = {
+        "NIFTY": 23900, "BANKNIFTY": 54400, "FINNIFTY": 25600,
+        "MIDCPNIFTY": 13900, "SENSEX": 76700, "BANKEX": 61300,
+        "RELIANCE": 1452, "TCS": 2444, "INFY": 1175, "HDFCBANK": 770,
+        "ICICIBANK": 1250, "SBIN": 1060, "WIPRO": 201, "KOTAKBANK": 372,
+        "AXISBANK": 1263, "MARUTI": 13428, "SUNPHARMA": 1807,
+        "TATAMOTORS": 341, "BAJFINANCE": 941, "HINDUNILVR": 2292,
+        "LTIM": 5100, "LT": 3880, "HCLTECH": 1654, "ITC": 413,
+        "BAJAJFINSV": 2105, "TITAN": 3501, "ONGC": 257, "NTPC": 337,
+        "COALINDIA": 383, "POWERGRID": 296, "CIPLA": 1454,
+        "DRREDDY": 1166, "DIVISLAB": 5456, "EICHERMOT": 5390,
+        "APOLLOHOSP": 6801, "GRASIM": 2793, "HINDALCO": 649,
+        "JSWSTEEL": 987, "TATACONSUM": 955, "BHARTIARTL": 1897,
+        "ASIANPAINT": 2214, "ULTRACEMCO": 11680, "HEROMOTOCO": 4097,
+        "BPCL": 289, "SHRIRAMFIN": 650, "M&M": 3069, "TRENT": 5545,
+        "ADANIENT": 2212, "ADANIPORTS": 1343,
+    }
+
     def generate_many(self, symbols: Iterable[str], start: date, days: int = 30) -> dict[str, list[MarketBar]]:
         result: dict[str, list[MarketBar]] = {}
-        for index, symbol in enumerate(symbols):
-            base = 1000.0 + index * 750.0
-            if symbol == "NIFTY":
-                base = 22500
-            elif symbol == "BANKNIFTY":
-                base = 48500
-            elif symbol == "FINNIFTY":
-                base = 21500
-            elif symbol == "MIDCPNIFTY":
-                base = 11800
+        for symbol in symbols:
+            base = self._BASE_PRICES.get(symbol, 1500.0)
             result[symbol] = self.generate_daily_bars(symbol, start, days, base_price=base)
         return result
 

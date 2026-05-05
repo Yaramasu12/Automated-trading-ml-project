@@ -5,6 +5,7 @@ import type {
   DBSummary,
   EquityCurvePoint,
   LiveFeedSnapshot,
+  LivePortfolioSnapshot,
   ModelCatalogEntry,
   MonitoringMetrics,
   RuntimeState,
@@ -51,6 +52,7 @@ interface Store {
   monitoring: MonitoringMetrics | null
   liveFeed: LiveFeedSnapshot | null
   dbSummary: DBSummary | null
+  livePortfolio: LivePortfolioSnapshot | null
   applyWsSnapshot: (msg: WsDashboardMessage) => void
 
   // ── Equity / PnL ──────────────────────────────────────────────────────────
@@ -101,12 +103,14 @@ export const useStore = create<Store>((set) => ({
   monitoring: null,
   liveFeed: null,
   dbSummary: null,
+  livePortfolio: null,
   applyWsSnapshot: (msg) =>
     set({
       runtimeState: msg.state,
       monitoring: msg.monitoring,
       liveFeed: msg.live_feed,
       dbSummary: msg.db,
+      livePortfolio: msg.portfolio ?? null,
     }),
 
   equityCurve: [],

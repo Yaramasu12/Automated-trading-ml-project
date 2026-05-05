@@ -20,6 +20,18 @@ class OperationalEvent:
 
 
 @dataclass(frozen=True)
+class StrategyMetrics:
+    strategy_name: str
+    fills: int
+    realized_pnl: float
+    win_count: int
+
+    @property
+    def win_rate(self) -> float:
+        return self.win_count / self.fills if self.fills > 0 else 0.0
+
+
+@dataclass(frozen=True)
 class OperationalSnapshot:
     status: str
     started_at: datetime
@@ -35,10 +47,21 @@ class OperationalSnapshot:
     average_latency_ms: float
     max_latency_ms: float
     event_count: int
+    strategy_metrics: list[StrategyMetrics] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         payload = asdict(self)
         payload["started_at"] = self.started_at.isoformat()
+        payload["strategy_metrics"] = [
+            {
+                "strategy_name": sm.strategy_name,
+                "fills": sm.fills,
+                "realized_pnl": sm.realized_pnl,
+                "win_count": sm.win_count,
+                "win_rate": sm.win_rate,
+            }
+            for sm in self.strategy_metrics
+        ]
         return payload
 
 
@@ -50,6 +73,8 @@ class OperationalMonitor:
         self.filled_orders = 0
         self.rejected_orders = 0
         self.latencies_ms: list[float] = []
+        # strategy_name -> {fills, realized_pnl, win_count}
+        self._strategy_stats: dict[str, dict] = {}
 
     def record_event(
         self,
@@ -73,6 +98,16 @@ class OperationalMonitor:
         status = str(order.get("status", "")).upper()
         if status == "FILLED":
             self.filled_orders += 1
+            # Track per-strategy metrics when fill P&L is available
+            strategy = order.get("strategy_name", "unknown")
+            pnl = float(order.get("realized_pnl", 0.0))
+            stats = self._strategy_stats.setdefault(
+                strategy, {"fills": 0, "realized_pnl": 0.0, "win_count": 0}
+            )
+            stats["fills"] += 1
+            stats["realized_pnl"] += pnl
+            if pnl > 0:
+                stats["win_count"] += 1
         if status in {"REJECTED", "RISK_REJECTED", "CANCELLED"}:
             self.rejected_orders += 1
         latency = order.get("latency_ms")
@@ -99,6 +134,19 @@ class OperationalMonitor:
             status = "HALTED"
         elif stale_market_data or rejection_rate > 0.10 or average_latency > 200:
             status = "DEGRADED"
+        strategy_metrics = [
+            StrategyMetrics(
+                strategy_name=name,
+                fills=stats["fills"],
+                realized_pnl=stats["realized_pnl"],
+                win_count=stats["win_count"],
+            )
+            for name, stats in sorted(
+                self._strategy_stats.items(),
+                key=lambda kv: kv[1]["realized_pnl"],
+                reverse=True,
+            )
+        ]
         return OperationalSnapshot(
             status=status,
             started_at=self.started_at,
@@ -114,6 +162,7 @@ class OperationalMonitor:
             average_latency_ms=average_latency,
             max_latency_ms=max_latency,
             event_count=len(self.events),
+            strategy_metrics=strategy_metrics,
         )
 
     def recent_events(self, limit: int = 20) -> list[dict]:

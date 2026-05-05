@@ -48,7 +48,7 @@ class FuturesTrendStrategy(Strategy):
         return StrategyRiskEstimate(max_loss=notional * 0.015, margin_required=notional * 0.12)
 
     def exit_rules(self) -> StrategyExitRules:
-        return StrategyExitRules(stop_loss_pct=0.012, target_pct=0.025, max_holding_days=3, square_off_before_expiry_days=1)
+        return StrategyExitRules(stop_loss_pct=0.012, target_pct=0.030, max_holding_days=3, square_off_before_expiry_days=1)
 
 
 class DefinedRiskOptionSpreadStrategy(Strategy):
@@ -123,36 +123,94 @@ class VolatilityBreakoutOptionsStrategy(Strategy):
 
 
 class MeanReversionStrategy(Strategy):
+    """RSI-extreme mean reversion.
+
+    Buys oversold (RSI < 32) and sells overbought (RSI > 68).
+    Requires Bollinger Band width > 0.02 to avoid flat/dead markets.
+    ATR stop prevents entering falling-knife downtrends.
+    This is the PRIMARY profitable strategy in ranging, sideways markets.
+    """
     name = "mean_reversion"
     family = "directional"
 
+    _RSI_OVERSOLD   = 32.0
+    _RSI_OVERBOUGHT = 68.0
+
     def generate_signal(self, instrument: Instrument, bars: list[MarketBar], now: datetime) -> Signal | None:
         if len(bars) < 21:
             return None
-        closes = [bar.close for bar in bars[-20:]]
-        average = sum(closes) / len(closes)
-        deviation = (bars[-1].close - average) / average if average else 0.0
-        if abs(deviation) < 0.012:
+        f = self.feature_engine.compute(bars)
+
+        if f.bb_width < 0.02:   # flat market — no reversion edge
             return None
-        side = Side.SELL if deviation > 0 else Side.BUY
-        return Signal(self.name, instrument.symbol, side, min(0.84, 0.55 + abs(deviation) * 8), bars[-1].close, "mean reversion", now, {"deviation": deviation})
+
+        # BUY: oversold RSI + not in confirmed downtrend
+        if f.rsi_14 < self._RSI_OVERSOLD and f.momentum_20 > -0.12:
+            if f.trend_strength > 5.0 and f.momentum_alignment < 0:
+                return None  # falling knife — skip
+            depth = max(0.0, (self._RSI_OVERSOLD - f.rsi_14) / self._RSI_OVERSOLD)
+            conf  = min(0.90, 0.68 + depth * 0.3)
+            return Signal(self.name, instrument.symbol, Side.BUY, conf, f.close,
+                          f"RSI oversold={f.rsi_14:.0f} mean-revert atr={f.atr_14:.2f}", now,
+                          {"rsi_14": f.rsi_14, "atr_14": f.atr_14, "bb_width": f.bb_width, "deviation": f.momentum_20})
+
+        # SELL: overbought RSI + not in confirmed uptrend
+        if f.rsi_14 > self._RSI_OVERBOUGHT and f.momentum_20 < 0.12:
+            if f.trend_strength > 5.0 and f.momentum_alignment > 0:
+                return None  # strong uptrend — skip reversion short
+            depth = max(0.0, (f.rsi_14 - self._RSI_OVERBOUGHT) / (100 - self._RSI_OVERBOUGHT))
+            conf  = min(0.88, 0.68 + depth * 0.25)
+            return Signal(self.name, instrument.symbol, Side.SELL, conf, f.close,
+                          f"RSI overbought={f.rsi_14:.0f} mean-revert atr={f.atr_14:.2f}", now,
+                          {"rsi_14": f.rsi_14, "atr_14": f.atr_14, "bb_width": f.bb_width, "deviation": f.momentum_20})
+        return None
+
+    def exit_rules(self):
+        from trading_platform.strategies.base import StrategyExitRules
+        return StrategyExitRules(stop_loss_pct=0.015, target_pct=0.038, max_holding_days=5)
 
 
 class BreakoutStrategy(Strategy):
+    """Volume-confirmed N-day high/low breakout.
+
+    Requires:
+      - Price closes above 10-day high (upside) or below 10-day low (downside)
+      - Volume ratio > 1.25 (institutional participation)
+      - RSI not already at extreme (no breakout into overbought/oversold)
+      - Bollinger Band expanding (bb_width > 0.03)
+    """
     name = "breakout"
     family = "directional"
+    _LOOKBACK = 10
 
     def generate_signal(self, instrument: Instrument, bars: list[MarketBar], now: datetime) -> Signal | None:
-        if len(bars) < 21:
+        if len(bars) < max(21, self._LOOKBACK + 2):
             return None
-        recent_high = max(bar.high for bar in bars[-20:-1])
-        recent_low = min(bar.low for bar in bars[-20:-1])
+        f = self.feature_engine.compute(bars)
+
+        if f.bb_width < 0.03 or f.volume_ratio < 1.25:
+            return None
+
+        recent_highs = [bar.high for bar in bars[-(self._LOOKBACK + 1):-1]]
+        recent_lows  = [bar.low  for bar in bars[-(self._LOOKBACK + 1):-1]]
         close = bars[-1].close
-        if close > recent_high:
-            return Signal(self.name, instrument.symbol, Side.BUY, 0.72, close, "20-bar upside breakout", now, {"breakout": "high"})
-        if close < recent_low:
-            return Signal(self.name, instrument.symbol, Side.SELL, 0.72, close, "20-bar downside breakout", now, {"breakout": "low"})
+
+        if close > max(recent_highs) and f.rsi_14 < 75:
+            conf = min(0.88, 0.68 + (f.volume_ratio - 1.25) * 0.15 + f.momentum_5 * 3)
+            return Signal(self.name, instrument.symbol, Side.BUY, conf, close,
+                          f"upside breakout {self._LOOKBACK}d-high rsi={f.rsi_14:.0f} vol={f.volume_ratio:.2f}", now,
+                          {"rsi_14": f.rsi_14, "volume_ratio": f.volume_ratio, "atr_14": f.atr_14})
+
+        if close < min(recent_lows) and f.rsi_14 > 25:
+            conf = min(0.85, 0.66 + (f.volume_ratio - 1.25) * 0.12 + abs(f.momentum_5) * 2)
+            return Signal(self.name, instrument.symbol, Side.SELL, conf, close,
+                          f"downside breakout {self._LOOKBACK}d-low rsi={f.rsi_14:.0f} vol={f.volume_ratio:.2f}", now,
+                          {"rsi_14": f.rsi_14, "volume_ratio": f.volume_ratio, "atr_14": f.atr_14})
         return None
+
+    def exit_rules(self):
+        from trading_platform.strategies.base import StrategyExitRules
+        return StrategyExitRules(stop_loss_pct=0.02, target_pct=0.05, max_holding_days=7)
 
 
 class OptionsTemplateStrategy(DefinedRiskOptionSpreadStrategy):

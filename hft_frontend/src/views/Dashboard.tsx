@@ -1,23 +1,24 @@
-import { useEffect } from 'react'
+import { useEffect, useRef } from 'react'
 import {
   Area,
   AreaChart,
   Bar,
   BarChart,
   CartesianGrid,
+  Cell,
   ResponsiveContainer,
+  ReferenceLine,
   Tooltip,
   XAxis,
   YAxis,
 } from 'recharts'
-import { Activity, RefreshCw, Target, TrendingDown, TrendingUp } from 'lucide-react'
+import { Activity, RefreshCw, Target, TrendingDown, TrendingUp, Layers } from 'lucide-react'
 import { Card, CardBody, CardHeader } from '../components/shared/Card'
 import { MetricCard } from '../components/shared/MetricCard'
 import { Table } from '../components/shared/Table'
 import { execModeBadge } from '../components/shared/Badge'
 import { useStore } from '../store'
 import {
-  colorForPnl,
   fmtDate,
   fmtDateTime,
   inr,
@@ -43,6 +44,7 @@ const TOOLTIP_STYLE = {
 export function Dashboard() {
   const runtimeState = useStore((s) => s.runtimeState)
   const monitoring = useStore((s) => s.monitoring)
+  const livePortfolio = useStore((s) => s.livePortfolio)
   const equityCurve = useStore((s) => s.equityCurve)
   const dailyPnl = useStore((s) => s.dailyPnl)
   const recentTrades = useStore((s) => s.recentTrades)
@@ -51,13 +53,14 @@ export function Dashboard() {
   const setDailyPnl = useStore((s) => s.setDailyPnl)
   const setRecentTrades = useStore((s) => s.setRecentTrades)
   const setTargetProgress = useStore((s) => s.setTargetProgress)
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
   async function refresh() {
     const [curve, pnl, trades, progress] = await Promise.allSettled([
       getEquityCurve(),
       getDailyPnl(),
       getRecentTrades(),
-      getTargetProgress({ annual_target: 5_000_000, start_capital: 2_000_000 }),
+      getTargetProgress({}),
     ])
     if (curve.status === 'fulfilled') setEquityCurve(curve.value.curve)
     if (pnl.status === 'fulfilled') setDailyPnl(pnl.value.history)
@@ -67,16 +70,34 @@ export function Dashboard() {
 
   useEffect(() => {
     refresh()
+    pollRef.current = setInterval(refresh, 10_000)
+    return () => { if (pollRef.current) clearInterval(pollRef.current) }
   }, [])
 
-  const latestEquity = equityCurve[equityCurve.length - 1]?.equity ?? 0
-  const latestDrawdown = equityCurve[equityCurve.length - 1]?.drawdown ?? 0
+  const latestEquity = livePortfolio?.portfolio.equity ?? equityCurve[equityCurve.length - 1]?.equity ?? 0
+  const latestDrawdown = livePortfolio?.portfolio.drawdown != null
+    ? livePortfolio.portfolio.drawdown / 100
+    : equityCurve[equityCurve.length - 1]?.drawdown ?? 0
+  const unrealizedPnl = livePortfolio?.portfolio.unrealized_pnl ?? 0
   const totalPnl = dailyPnl.reduce((s, d) => s + d.realized_pnl, 0)
   const todayPnl = dailyPnl[dailyPnl.length - 1]?.realized_pnl ?? 0
   const winRate =
     dailyPnl.length > 0
       ? (dailyPnl.filter((d) => d.realized_pnl > 0).length / dailyPnl.length) * 100
       : 0
+
+  // Win/loss streak from most-recent day backwards
+  const streak = (() => {
+    if (dailyPnl.length === 0) return { count: 0, type: 'none' as const }
+    const last = dailyPnl[dailyPnl.length - 1].realized_pnl
+    const type = last >= 0 ? 'win' as const : 'loss' as const
+    let count = 0
+    for (let i = dailyPnl.length - 1; i >= 0; i--) {
+      if ((dailyPnl[i].realized_pnl >= 0) === (type === 'win')) count++
+      else break
+    }
+    return { count, type }
+  })()
 
   const tradeColumns = [
     { key: 'symbol', header: 'Symbol', render: (r: Trade) => <span className="text-brand-blue font-semibold">{r.symbol}</span> },
@@ -112,16 +133,24 @@ export function Dashboard() {
       </div>
 
       {/* KPI strip */}
-      <div className="grid grid-cols-2 md:grid-cols-4 xl:grid-cols-6 gap-3">
+      <div className="grid grid-cols-2 md:grid-cols-4 xl:grid-cols-7 gap-3">
         <MetricCard
           label="Portfolio Equity"
           value={inr(latestEquity)}
           accent="blue"
           icon={<Activity size={14} />}
           trend={latestEquity > 2_000_000 ? 'up' : 'down'}
+          sub={livePortfolio ? `${livePortfolio.count} open` : undefined}
         />
         <MetricCard
-          label="Today's P&L"
+          label="Unrealized P&L"
+          value={inr(unrealizedPnl)}
+          accent={unrealizedPnl >= 0 ? 'green' : 'red'}
+          icon={<Layers size={14} />}
+          sub="open positions"
+        />
+        <MetricCard
+          label="Today's Realized"
           value={inr(todayPnl)}
           accent={todayPnl >= 0 ? 'green' : 'red'}
           icon={todayPnl >= 0 ? <TrendingUp size={14} /> : <TrendingDown size={14} />}
@@ -139,7 +168,11 @@ export function Dashboard() {
         <MetricCard
           label="Win Rate"
           value={`${winRate.toFixed(1)}%`}
-          sub={`${dailyPnl.length} trading days`}
+          sub={
+            streak.count > 0
+              ? `${streak.count}-day ${streak.type === 'win' ? '🟢' : '🔴'} streak`
+              : `${dailyPnl.length} trading days`
+          }
           accent="cyan"
         />
         <MetricCard
@@ -246,22 +279,60 @@ export function Dashboard() {
                   tickLine={false}
                   width={40}
                 />
+                <ReferenceLine y={0} stroke="#30363d" strokeWidth={1} />
                 <Tooltip
                   contentStyle={TOOLTIP_STYLE}
                   formatter={(v: number) => [inr(v), 'Realized P&L']}
                 />
-                <Bar
-                  dataKey="realized_pnl"
-                  radius={[2, 2, 0, 0]}
-                  fill="#3fb950"
-                  // color each bar individually
-                  label={false}
-                />
+                <Bar dataKey="realized_pnl" radius={[2, 2, 0, 0]}>
+                  {dailyPnl.map((entry, index) => (
+                    <Cell
+                      key={`cell-${index}`}
+                      fill={entry.realized_pnl >= 0 ? '#3fb950' : '#f85149'}
+                    />
+                  ))}
+                </Bar>
               </BarChart>
             </ResponsiveContainer>
           </CardBody>
         </Card>
       </div>
+
+      {/* Execution health strip */}
+      {monitoring && (
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+          <div className="bg-surface-card border border-surface-border rounded-lg p-3">
+            <div className="text-[10px] text-gray-500 mb-1 uppercase tracking-wider">Fill Rate</div>
+            <div className={`text-lg font-bold font-mono ${monitoring.filled_orders / Math.max(1, monitoring.total_orders) > 0.85 ? 'text-brand-green' : 'text-brand-yellow'}`}>
+              {monitoring.total_orders > 0
+                ? `${((monitoring.filled_orders / monitoring.total_orders) * 100).toFixed(0)}%`
+                : '—'}
+            </div>
+            <div className="text-[10px] text-gray-600 mt-0.5">{monitoring.filled_orders}/{monitoring.total_orders} orders</div>
+          </div>
+          <div className="bg-surface-card border border-surface-border rounded-lg p-3">
+            <div className="text-[10px] text-gray-500 mb-1 uppercase tracking-wider">Rejection Rate</div>
+            <div className={`text-lg font-bold font-mono ${monitoring.rejection_rate < 0.05 ? 'text-brand-green' : monitoring.rejection_rate < 0.10 ? 'text-brand-yellow' : 'text-brand-red'}`}>
+              {(monitoring.rejection_rate * 100).toFixed(1)}%
+            </div>
+            <div className="text-[10px] text-gray-600 mt-0.5">{monitoring.rejected_orders} rejected</div>
+          </div>
+          <div className="bg-surface-card border border-surface-border rounded-lg p-3">
+            <div className="text-[10px] text-gray-500 mb-1 uppercase tracking-wider">Avg Latency</div>
+            <div className={`text-lg font-bold font-mono ${monitoring.average_latency_ms < 50 ? 'text-brand-green' : monitoring.average_latency_ms < 200 ? 'text-brand-yellow' : 'text-brand-red'}`}>
+              {monitoring.average_latency_ms.toFixed(0)}ms
+            </div>
+            <div className="text-[10px] text-gray-600 mt-0.5">max {monitoring.max_latency_ms.toFixed(0)}ms</div>
+          </div>
+          <div className="bg-surface-card border border-surface-border rounded-lg p-3">
+            <div className="text-[10px] text-gray-500 mb-1 uppercase tracking-wider">System Status</div>
+            <div className={`text-lg font-bold font-mono ${monitoring.status === 'HEALTHY' ? 'text-brand-green' : monitoring.status === 'DEGRADED' ? 'text-brand-yellow' : 'text-brand-red'}`}>
+              {monitoring.status}
+            </div>
+            <div className="text-[10px] text-gray-600 mt-0.5">{monitoring.event_count} events</div>
+          </div>
+        </div>
+      )}
 
       {/* Recent trades */}
       <Card>

@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import json
+import ssl
 from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 from urllib.request import urlopen
+
+import certifi
 
 from trading_platform.config import Settings
 from trading_platform.data.instrument_master import INDEX_UNDERLYINGS, InstrumentMaster
@@ -40,7 +43,8 @@ class AngelOneInstrumentMasterProvider:
 
     def refresh(self, timeout_seconds: int = 30) -> InstrumentMasterRefreshResult:
         self.cache_path.parent.mkdir(parents=True, exist_ok=True)
-        with urlopen(self.settings.angel_one_instrument_master_url, timeout=timeout_seconds) as response:
+        ssl_ctx = ssl.create_default_context(cafile=certifi.where())
+        with urlopen(self.settings.angel_one_instrument_master_url, timeout=timeout_seconds, context=ssl_ctx) as response:
             payload = response.read().decode("utf-8")
         rows = json.loads(payload)
         self.cache_path.write_text(json.dumps(rows), encoding="utf-8")

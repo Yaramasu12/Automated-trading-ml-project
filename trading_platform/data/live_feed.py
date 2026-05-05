@@ -7,6 +7,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Callable
 
+from trading_platform.data.feed_staleness import FeedStalenessTracker
+
 logger = logging.getLogger(__name__)
 
 # Exchange-mode constants for SmartWebSocketV2
@@ -71,7 +73,7 @@ class LiveTickFeed:
     WebSocket is parsed and forwarded to all registered handlers.
     """
 
-    def __init__(self, settings) -> None:
+    def __init__(self, settings, staleness_tracker: FeedStalenessTracker | None = None) -> None:
         self._settings = settings
         self._handlers: list[TickHandler] = []
         self._token_map: dict[str, str] = {}   # symbol -> token
@@ -80,7 +82,10 @@ class LiveTickFeed:
         self._thread: threading.Thread | None = None
         self._running = False
         self._last_ticks: dict[str, Tick] = {}
+        self._subscribed_symbols: list[str] = []
         self._lock = threading.Lock()
+        # Per-symbol last-tick tracker — answers "did THIS symbol tick recently?"
+        self.staleness_tracker = staleness_tracker or FeedStalenessTracker()
 
     # ------------------------------------------------------------------
     # Public API
@@ -100,6 +105,15 @@ class LiveTickFeed:
         if handler:
             self.add_handler(handler)
         self._subscribed_symbols = [s.upper() for s in symbols]
+        self._subscribe_symbols(self._subscribed_symbols)
+
+    def add_subscriptions(self, symbols: list[str]) -> None:
+        existing = set(self._subscribed_symbols)
+        additions = [s.upper() for s in symbols if s and s.upper() not in existing]
+        if not additions:
+            return
+        self._subscribed_symbols.extend(additions)
+        self._subscribe_symbols(additions)
 
     def start(self) -> None:
         if self._running:
@@ -129,13 +143,44 @@ class LiveTickFeed:
         tick = self.latest_tick(symbol)
         return tick.last_price if tick else None
 
+    @property
+    def is_running(self) -> bool:
+        return self._running
+
+    def subscribed_symbols(self) -> list[str]:
+        return list(self._subscribed_symbols)
+
+    def inject_tick(self, tick: Tick) -> None:
+        """Test/replay hook — record a tick as if it arrived from the
+        WebSocket. Used by the paper engine and unit tests so the
+        staleness tracker doesn't see PAPER mode as "no ticks ever."
+        """
+        with self._lock:
+            self._last_ticks[tick.symbol] = tick
+        self.staleness_tracker.record(tick.symbol, tick.timestamp)
+
     def snapshot(self) -> dict:
         with self._lock:
-            return {
-                "running": self._running,
-                "subscribed_symbols": list(self._last_ticks.keys()),
-                "tick_count": len(self._last_ticks),
-            }
+            running = self._running
+            subscribed = list(self._subscribed_symbols)
+            available = list(self._last_ticks.keys())
+            count = len(self._last_ticks)
+        # Per-symbol staleness restricted to currently subscribed symbols
+        # so the snapshot reflects "are the things we care about live?"
+        staleness = self.staleness_tracker.snapshot(subscribed) if subscribed else self.staleness_tracker.snapshot()
+        return {
+            "running": running,
+            "subscribed_symbols": subscribed,
+            "available_symbols": available,
+            "tick_count": count,
+            "staleness": staleness,
+        }
+
+    def staleness_gate(self):
+        """Convenience for the live-readiness aggregator."""
+        return self.staleness_tracker.gate(
+            self._subscribed_symbols, feed_running=self._running,
+        )
 
     # ------------------------------------------------------------------
     # Internal
@@ -207,9 +252,9 @@ class LiveTickFeed:
         if token_list:
             self._ws.subscribe("abc123", 3, token_list)  # mode 3 = full snap quote
 
-    def _build_token_list(self) -> list[dict]:
+    def _build_token_list(self, symbols: list[str] | None = None) -> list[dict]:
         token_list = []
-        symbols = getattr(self, "_subscribed_symbols", list(self._token_map.keys()))
+        symbols = symbols or getattr(self, "_subscribed_symbols", list(self._token_map.keys()))
         for symbol in symbols:
             token = self._token_map.get(symbol)
             exchange = self._exchange_map.get(symbol, "NSE")
@@ -218,12 +263,26 @@ class LiveTickFeed:
                 token_list.append({"exchangeType": exchange_type, "tokens": [token]})
         return token_list
 
+    def _subscribe_symbols(self, symbols: list[str]) -> None:
+        if not self._running or self._ws is None:
+            return
+        token_list = self._build_token_list(symbols)
+        if not token_list:
+            return
+        try:
+            self._ws.subscribe("abc123", 3, token_list)
+        except Exception as exc:
+            logger.warning("LiveTickFeed subscribe update failed: %s", exc)
+
     def _on_data(self, ws, message) -> None:
         try:
             tick = self._parse(message)
             if tick:
                 with self._lock:
                     self._last_ticks[tick.symbol] = tick
+                # Record tick freshness per-symbol so the readiness gate
+                # can answer "did this exact symbol tick in the last 15s?"
+                self.staleness_tracker.record(tick.symbol, tick.timestamp)
                 for handler in self._handlers:
                     try:
                         handler(tick)

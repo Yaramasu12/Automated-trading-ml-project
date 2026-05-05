@@ -12,3 +12,4 @@ logzero==1.7.0
 scikit-learn==1.8.0
 numpy==2.4.4
 scipy==1.17.1
+pytest==8.3.5
