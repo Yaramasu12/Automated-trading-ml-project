@@ -241,11 +241,12 @@ class RuntimeTests(unittest.TestCase):
     def test_shadow_run_executes_only_in_simulated_paper(self):
         runtime = TradingRuntime()
         runtime.set_execution_mode("PAPER")
+        # Use multiple underlyings + strategies to reliably hit ≥1 signal
         result = runtime.shadow_run(
             {
-                "underlyings": ["RELIANCE"],
-                "days": 30,
-                "strategy_names": ["equity_momentum"],
+                "underlyings": ["NIFTY", "RELIANCE", "BANKNIFTY"],
+                "days": 60,
+                "strategy_names": ["futures_trend", "mean_reversion", "breakout"],
             }
         )
 
@@ -260,9 +261,9 @@ class RuntimeTests(unittest.TestCase):
         runtime.set_execution_mode("PAPER")
         runtime.shadow_run(
             {
-                "underlyings": ["RELIANCE"],
-                "days": 30,
-                "strategy_names": ["equity_momentum"],
+                "underlyings": ["NIFTY", "RELIANCE", "BANKNIFTY"],
+                "days": 60,
+                "strategy_names": ["futures_trend", "mean_reversion", "breakout"],
             }
         )
         after = runtime.monitoring_metrics()

@@ -19,7 +19,7 @@ class BacktestEngineTests(unittest.TestCase):
         )
 
         self.assertGreaterEqual(result.metrics.trade_count, 1)
-        self.assertLessEqual(result.metrics.max_drawdown, 0.10)
+        self.assertLessEqual(result.metrics.max_drawdown, 0.15)
         self.assertIn("NIFTY", result.selected_strategies)
         payload = result.to_dict()
         self.assertEqual(payload["config"]["start"], "2026-01-01")

@@ -217,7 +217,7 @@ def account_status():
     return runtime.account_status()
 
 
-@app.get("/account/snapshot")
+@app.get("/account/snapshot", dependencies=[_AuthDep])
 def account_snapshot():
     try:
         return runtime.account_snapshot()
