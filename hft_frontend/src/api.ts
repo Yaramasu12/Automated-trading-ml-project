@@ -19,12 +19,12 @@ import type {
 } from './types'
 
 const BASE = import.meta.env.VITE_API_URL ?? '/api'
+const TOKEN = import.meta.env.VITE_API_TOKEN ?? ''
 
 async function req<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`${BASE}${path}`, {
-    headers: { 'Content-Type': 'application/json' },
-    ...init,
-  })
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+  if (TOKEN) headers['Authorization'] = `Bearer ${TOKEN}`
+  const res = await fetch(`${BASE}${path}`, { headers, ...init })
   if (!res.ok) {
     const text = await res.text()
     throw new Error(text || `HTTP ${res.status}`)

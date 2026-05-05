@@ -108,11 +108,12 @@ class LiveTickFeed:
         self._subscribe_symbols(self._subscribed_symbols)
 
     def add_subscriptions(self, symbols: list[str]) -> None:
-        existing = set(self._subscribed_symbols)
-        additions = [s.upper() for s in symbols if s and s.upper() not in existing]
-        if not additions:
-            return
-        self._subscribed_symbols.extend(additions)
+        with self._lock:
+            existing = set(self._subscribed_symbols)
+            additions = [s.upper() for s in symbols if s and s.upper() not in existing]
+            if not additions:
+                return
+            self._subscribed_symbols.extend(additions)
         self._subscribe_symbols(additions)
 
     def start(self) -> None:

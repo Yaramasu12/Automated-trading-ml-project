@@ -104,6 +104,9 @@ class TradingRuntime:
         self.model_registry = ModelRegistry()
         self.regime_classifier = RegimeClassifier()
         self.meta_model = MetaModel()
+        self._model_dir = "models"
+        self.regime_classifier.load(f"{self._model_dir}/regime_classifier")
+        self.meta_model.load(f"{self._model_dir}/meta_model.json")
         self.feature_store = FeatureStore()
         self.iv_surface_builder = IVSurfaceBuilder()
         # In-memory logs for dashboard visibility
@@ -422,11 +425,20 @@ class TradingRuntime:
         self.monitor.record_event("async_services_started", "Scheduler, ExitManager, and Agent started")
 
     async def stop_async_services(self) -> None:
-        """Stop scheduler and exit manager gracefully."""
+        """Stop scheduler and exit manager gracefully, then persist ML model state."""
         self.agent.stop()
         await self.scheduler.stop()
         await self.exit_manager.stop()
         self.live_feed.stop()
+        try:
+            import os as _os
+            _os.makedirs(self._model_dir, exist_ok=True)
+            self.meta_model.save(f"{self._model_dir}/meta_model.json")
+            if self.regime_classifier.is_trained:
+                self.regime_classifier.save(f"{self._model_dir}/regime_classifier")
+        except Exception as _save_err:
+            import logging as _log
+            _log.getLogger(__name__).warning("Failed to persist ML models: %s", _save_err)
         self.monitor.record_event("async_services_stopped", "Scheduler and ExitManager stopped")
 
     # ------------------------------------------------------------------

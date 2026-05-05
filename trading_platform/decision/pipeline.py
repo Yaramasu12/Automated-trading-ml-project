@@ -19,7 +19,6 @@ from trading_platform.strategies.factory import StrategyFactory
 
 if TYPE_CHECKING:
     from trading_platform.ai.feature_store import FeatureStore
-    from trading_platform.ai.features import FeatureSnapshot
     from trading_platform.ai.models import MetaModel, RegimeClassifier
     from trading_platform.data.angel_one_history import AngelOneHistoricalDataProvider
 

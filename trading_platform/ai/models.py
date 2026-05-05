@@ -532,6 +532,35 @@ class RegimeClassifier:
     def label_source(self) -> str | None:
         return self._label_source
 
+    def save(self, path: str) -> None:
+        """Persist trained model to disk using joblib + JSON metadata."""
+        import joblib, json as _json
+        if self._model is not None:
+            joblib.dump(self._model, f"{path}_sklearn.pkl")
+        meta = {
+            "trained": self._trained,
+            "label_source": self._label_source,
+            "last_train_metrics": self._last_train_metrics,
+        }
+        with open(f"{path}_meta.json", "w") as f:
+            _json.dump(meta, f)
+
+    def load(self, path: str) -> bool:
+        """Load a previously saved model. Returns True if successful."""
+        import joblib, json as _json
+        try:
+            self._model = joblib.load(f"{path}_sklearn.pkl")
+            with open(f"{path}_meta.json") as f:
+                meta = _json.load(f)
+            self._trained = meta.get("trained", False)
+            self._label_source = meta.get("label_source")
+            self._last_train_metrics = meta.get("last_train_metrics")
+            return True
+        except FileNotFoundError:
+            return False
+        except Exception:
+            return False
+
     @staticmethod
     def _rule_based(f: FeatureSnapshot) -> str:
         if f.realized_volatility > 0.025:
@@ -605,6 +634,26 @@ class MetaModel:
             regime: dict(sorted(scores.items(), key=lambda x: x[1], reverse=True))
             for regime, scores in self._scores.items()
         }
+
+    def save(self, path: str) -> None:
+        """Persist EMA scores and counts to disk."""
+        import json as _json
+        with open(path, "w") as f:
+            _json.dump({"scores": self._scores, "counts": self._counts}, f)
+
+    def load(self, path: str) -> bool:
+        """Load previously saved scores. Returns True if successful."""
+        import json as _json
+        try:
+            with open(path) as f:
+                data = _json.load(f)
+            self._scores = data.get("scores", {})
+            self._counts = data.get("counts", {})
+            return True
+        except FileNotFoundError:
+            return False
+        except Exception:
+            return False
 
 
 # ---------------------------------------------------------------------------

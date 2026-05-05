@@ -88,15 +88,33 @@ def _parse_cors_origins(raw: str) -> tuple[str, ...]:
 
 def load_settings() -> Settings:
     load_local_env_files()
+
+    initial_capital = float(os.getenv("INITIAL_CAPITAL", "1000000"))
+    max_drawdown = float(os.getenv("MAX_DRAWDOWN", "0.10"))
+    max_daily_loss = float(os.getenv("MAX_DAILY_LOSS", "0.02"))
+    max_position_pct = float(os.getenv("MAX_POSITION_PCT", "0.05"))
+    max_margin_utilization = float(os.getenv("MAX_MARGIN_UTILIZATION", "0.60"))
+
+    if initial_capital <= 0:
+        raise ValueError(f"INITIAL_CAPITAL must be > 0, got {initial_capital}")
+    if not (0 < max_drawdown <= 1):
+        raise ValueError(f"MAX_DRAWDOWN must be between 0 and 1, got {max_drawdown}")
+    if not (0 < max_daily_loss <= max_drawdown):
+        raise ValueError(f"MAX_DAILY_LOSS must be between 0 and MAX_DRAWDOWN ({max_drawdown}), got {max_daily_loss}")
+    if not (0 < max_position_pct <= 1):
+        raise ValueError(f"MAX_POSITION_PCT must be between 0 and 1, got {max_position_pct}")
+    if not (0 < max_margin_utilization <= 1):
+        raise ValueError(f"MAX_MARGIN_UTILIZATION must be between 0 and 1, got {max_margin_utilization}")
+
     return Settings(
         execution_mode=ExecutionMode(os.getenv("EXECUTION_MODE", "BACKTEST").upper()),
         broker=os.getenv("BROKER", "ANGEL_ONE"),
         live_trading_enabled=_bool_env("LIVE_TRADING_ENABLED", False),
-        initial_capital=float(os.getenv("INITIAL_CAPITAL", "1000000")),
-        max_drawdown=float(os.getenv("MAX_DRAWDOWN", "0.10")),
-        max_daily_loss=float(os.getenv("MAX_DAILY_LOSS", "0.02")),
-        max_position_pct=float(os.getenv("MAX_POSITION_PCT", "0.05")),
-        max_margin_utilization=float(os.getenv("MAX_MARGIN_UTILIZATION", "0.60")),
+        initial_capital=initial_capital,
+        max_drawdown=max_drawdown,
+        max_daily_loss=max_daily_loss,
+        max_position_pct=max_position_pct,
+        max_margin_utilization=max_margin_utilization,
         live_order_confirmation=os.getenv("LIVE_ORDER_CONFIRMATION", ""),
         angel_one_api_key=os.getenv("ANGEL_ONE_API_KEY", ""),
         angel_one_api_secret=os.getenv("ANGEL_ONE_API_SECRET", ""),

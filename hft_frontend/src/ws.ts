@@ -6,7 +6,9 @@ const WS_URL = (() => {
   const base = import.meta.env.VITE_WS_URL
   if (base) return base
   const proto = window.location.protocol === 'https:' ? 'wss' : 'ws'
-  return `${proto}://${window.location.host}/ws/dashboard`
+  const token = import.meta.env.VITE_API_TOKEN ?? ''
+  const query = token ? `?token=${encodeURIComponent(token)}` : ''
+  return `${proto}://${window.location.host}/ws/dashboard${query}`
 })()
 
 const RECONNECT_DELAY_MS = 3000
