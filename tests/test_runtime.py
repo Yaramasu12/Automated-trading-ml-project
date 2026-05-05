@@ -70,6 +70,12 @@ class RuntimeTests(unittest.TestCase):
             runtime.arm_live(True)
 
     def test_live_arm_allows_only_when_every_live_gate_is_present(self):
+        """Phase 1 hardening: even with every credential field set,
+        arm_live MUST refuse on synthetic instrument master + dead feed.
+
+        Operators must explicitly refresh from Angel One and start the
+        feed before live arming becomes possible.
+        """
         runtime = TradingRuntime(
             Settings(
                 execution_mode=ExecutionMode.LIVE,
@@ -92,8 +98,24 @@ class RuntimeTests(unittest.TestCase):
             )
         )
 
-        state = runtime.arm_live(True)
+        readiness = runtime.live_readiness_payload()
+        self.assertFalse(readiness["armed_eligible"])
+        # The synthetic-universe gate must be among the blockers.
+        self.assertIn("instrument_master_is_synthetic", readiness["blocking_reasons"])
 
+        with self.assertRaisesRegex(ValueError, "live_readiness_blocked"):
+            runtime.arm_live(True)
+
+        # Once we record a real refresh + tick a subscribed symbol,
+        # readiness flips green and arm_live succeeds.
+        runtime.instrument_freshness.record_refresh(
+            source="https://api.angelone.in/test", parsed_count=120_000
+        )
+        runtime.live_feed._subscribed_symbols = ["NIFTY"]
+        runtime.live_feed._running = True
+        runtime.live_feed.staleness_tracker.record("NIFTY")
+
+        state = runtime.arm_live(True)
         self.assertTrue(state["live_armed"])
         self.assertTrue(state["live_order_confirmation_ready"])
 

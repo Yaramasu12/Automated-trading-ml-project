@@ -37,14 +37,21 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 SCAN_UNDERLYINGS = [
-    # NSE Indices (F&O on NFO)
+    # NSE Indices (F&O on NFO — weekly expiry Thursday)
     "NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY",
-    # BSE Indices (F&O on BFO — SENSEX weekly expires Friday, BANKEX weekly expires Monday)
+    # BSE Indices (F&O on BFO — SENSEX weekly Friday, BANKEX weekly Monday)
     "SENSEX", "BANKEX",
-    # NSE Large Cap Equities (F&O)
+    # ── Nifty 50 equities with F&O ───────────────────────────────────────────
     "RELIANCE", "TCS", "INFY", "HDFCBANK", "ICICIBANK", "SBIN",
     "WIPRO", "KOTAKBANK", "AXISBANK", "MARUTI", "SUNPHARMA",
     "TATAMOTORS", "BAJFINANCE", "HINDUNILVR", "BHARTIARTL", "NTPC",
+    "ASIANPAINT", "LTIM", "ONGC", "POWERGRID", "TITAN",
+    "ITC", "LT", "HCLTECH", "M&M", "COALINDIA",
+    "HEROMOTOCO", "HINDALCO", "JSWSTEEL", "ULTRACEMCO", "GRASIM",
+    "BPCL", "CIPLA", "DRREDDY", "EICHERMOT",
+    # ── Nifty 100 additions ───────────────────────────────────────────────────
+    "ADANIENT", "ADANIPORTS", "APOLLOHOSP", "TATACONSUM", "TRENT",
+    "BAJAJFINSV", "DIVISLAB", "SHRIRAMFIN",
 ]
 DEFAULT_SCAN_INTERVAL = 300   # 5 minutes
 MIN_SCAN_INTERVAL = 30        # 30 seconds (frontend can lower for demo)
@@ -76,6 +83,7 @@ class AgentState:
     last_cycle: AgentCycleResult | None = None
     last_cycle_ts: str | None = None
     premarket_done: bool = False
+    premarket_date: date | None = None
     eod_done: bool = False
     started_at: str | None = None
     activity_log: list[dict] = field(default_factory=list)
@@ -164,6 +172,12 @@ class TradingAgent:
         ms = market_status(now)
         self._log_activity(f"Tick — market: {ms}")
 
+        # Reset premarket flag on a new trading day so the routine re-runs each morning
+        today = now.date()
+        if self._state.premarket_date != today:
+            self._state.premarket_done = False
+            self._state.premarket_date = today
+
         # Pre-market routine
         if is_premarket(now) and not self._state.premarket_done:
             await self._premarket_routine()
@@ -203,9 +217,12 @@ class TradingAgent:
             self._runtime.live_feed.stop()
             await asyncio.sleep(1)
 
-            # Subscribe cash symbols + near-expiry futures for all scan underlyings
-            cash_symbols = [s for s in SCAN_UNDERLYINGS
-                            if self._runtime.instrument_master.instruments.get(s) is not None]
+            # Subscribe the full cash/index universe plus near-expiry futures for scan underlyings.
+            cash_symbols = [
+                instrument.symbol
+                for instrument in self._runtime.instrument_master.all()
+                if not instrument.is_derivative
+            ]
             futures_symbols: list[str] = []
             today = date.today() if True else None  # avoid conditional import
             from datetime import date as _date
@@ -236,14 +253,14 @@ class TradingAgent:
         try:
             positions = self._runtime.portfolio.position_symbols()
             if positions:
-                await asyncio.to_thread(
-                    lambda: self._runtime.square_off_manager.square_off_all(
-                        self._runtime.portfolio
-                    )
+                result = await self._runtime.square_off_manager.square_off()
+                self._log_activity(
+                    f"EOD square-off issued for {result.get('positions_targeted', 0)} positions "
+                    f"({result.get('intents_enqueued', 0)} enqueued)"
                 )
-                self._log_activity(f"EOD square-off issued for {len(positions)} symbols: {positions}")
             else:
                 self._log_activity("EOD: no open positions to square off")
+                result = {}
             self._publish("agent.eod_done", {"positions_squared": len(positions) if positions else 0})
         except Exception as exc:
             logger.error("EOD routine error: %s", exc)
@@ -313,7 +330,7 @@ class TradingAgent:
 
                 # Auto-enqueue
                 try:
-                    enqueued = await self._enqueue_candidate(candidate, scan)
+                    enqueued = await self._enqueue_candidate(candidate, scan.get("regime", "UNKNOWN"))
                     if enqueued:
                         cycle.enqueued += 1
                         open_positions.add(symbol)
@@ -343,7 +360,7 @@ class TradingAgent:
         if self._state.scan_count % 10 == 0:
             await asyncio.to_thread(self._try_train_regime_classifier)
 
-    async def _enqueue_candidate(self, candidate: dict, scan: dict) -> bool:
+    async def _enqueue_candidate(self, candidate: dict, regime: str) -> bool:
         """Build OrderIntent from candidate dict and enqueue it."""
         sig_d = candidate.get("signal")
         inst_d = candidate.get("instrument")
@@ -369,6 +386,7 @@ class TradingAgent:
             price=float(sig_d.get("price", 0)),
             reason=sig_d.get("reason", "agent_auto"),
             created_at=datetime.now(timezone.utc),
+            metadata={"regime": regime, "agent_auto": True},
         )
         intent = OrderIntent(
             signal=signal,

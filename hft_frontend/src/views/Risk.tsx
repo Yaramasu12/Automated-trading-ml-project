@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { AlertTriangle, CheckCircle, Loader2, RefreshCw, Shield, XCircle } from 'lucide-react'
 import { Card, CardBody, CardHeader } from '../components/shared/Card'
 import { Badge } from '../components/shared/Badge'
@@ -39,19 +39,28 @@ export function Risk() {
   async function loadSupervisor() {
     setLoadingSupervisor(true)
     try {
-      const r = await getSupervisorDecision({ equity: 2_000_000, realized_pnl: 0, drawdown: 0 })
+      // Read fresh store state at call time to avoid stale closure from setInterval
+      const { monitoring: mon, livePortfolio: lp } = useStore.getState()
+      const r = await getSupervisorDecision({
+        drawdown: (lp?.portfolio.drawdown ?? 0) / 100,
+        daily_loss_pct: 0,
+        rejection_rate: mon?.rejection_rate ?? 0,
+        stale_market_data: mon?.stale_market_data ?? false,
+      })
       setSupervisor(r)
     } finally {
       setLoadingSupervisor(false)
     }
   }
 
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
+
   useEffect(() => {
     loadEvents()
     loadSupervisor()
+    pollRef.current = setInterval(() => { loadEvents(); loadSupervisor() }, 8_000)
+    return () => { if (pollRef.current) clearInterval(pollRef.current) }
   }, [])
-
-  const limits = runtimeState ? null : null // populated from health endpoint via WS
 
   const rejectRate = monitoring?.rejection_rate ?? 0
   const totalOrders = monitoring?.total_orders ?? 0
@@ -110,7 +119,7 @@ export function Risk() {
             ) : supervisor ? (
               <div className="space-y-3">
                 <div className="flex items-center gap-3">
-                  {supervisor.action === 'PROCEED' ? (
+                  {supervisor.action === 'ALLOW' ? (
                     <CheckCircle size={24} className="text-brand-green flex-shrink-0" />
                   ) : supervisor.action === 'REDUCE' ? (
                     <AlertTriangle size={24} className="text-brand-yellow flex-shrink-0" />

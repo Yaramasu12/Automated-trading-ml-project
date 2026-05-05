@@ -47,6 +47,7 @@ export const setKillSwitch = (active: boolean) => post<RuntimeState>('/kill-swit
 export const getDataStatus = () => get<{ instrument_cache_exists: boolean; current_universe_count: number; angel_one_configured: boolean }>('/data/status')
 export const refreshInstruments = () => post('/data/instruments/refresh', {})
 export const loadCachedInstruments = () => post('/data/instruments/load-cache', {})
+export const getUniverse = () => get<Array<Record<string, unknown>>>('/universe')
 
 // ─── Strategies ───────────────────────────────────────────────────────────────
 export const getStrategyCatalog = () => get<{ count: number; by_family: Record<string, number>; strategies: unknown[] }>('/strategies/catalog')
@@ -143,7 +144,7 @@ export const getOptionExpiries = (underlying: string) => get<{ underlying: strin
 export const getOptionChain = (underlying: string, expiry?: string, spot?: number) => {
   const params = new URLSearchParams()
   if (expiry) params.set('expiry', expiry)
-  if (spot) params.set('spot', String(spot))
+  if (spot) params.set('spot_price', String(spot))
   return get<Record<string, unknown>>(`/derivatives/option-chain/${underlying}?${params}`)
 }
 export const calculateGreeks = (payload: Record<string, unknown>) => post<Record<string, unknown>>('/derivatives/greeks', payload)
@@ -158,6 +159,21 @@ export const getFeatureHistory = (symbol: string, limit = 30) => get<Record<stri
 
 // ─── Live feed tick ──────────────────────────────────────────────────────────
 export const getLatestTick = (symbol: string) => get<Record<string, unknown>>(`/feed/tick/${symbol}`)
+export const getBatchTicks = async (symbols: string[], includeUnavailable = false) => {
+  const unique = [...new Set(symbols.map((s) => s.trim().toUpperCase()).filter(Boolean))]
+  const chunks = Array.from({ length: Math.ceil(unique.length / 250) }, (_, i) => unique.slice(i * 250, (i + 1) * 250))
+  const responses = await Promise.all(
+    chunks.map((chunk) =>
+      post<{ ticks: Record<string, Record<string, unknown>> }>('/feed/ticks/batch', {
+        symbols: chunk,
+        include_unavailable: includeUnavailable,
+      }),
+    ),
+  )
+  return {
+    ticks: Object.assign({}, ...responses.map((response) => response.ticks ?? {})),
+  }
+}
 
 // ─── Reconciliation ──────────────────────────────────────────────────────────
 export const reconcilePositions = () => post<Record<string, unknown>>('/execution/reconcile', {})

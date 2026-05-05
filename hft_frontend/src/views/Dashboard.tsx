@@ -1,4 +1,4 @@
-import { useEffect } from 'react'
+import { useEffect, useRef } from 'react'
 import {
   Area,
   AreaChart,
@@ -17,7 +17,6 @@ import { Table } from '../components/shared/Table'
 import { execModeBadge } from '../components/shared/Badge'
 import { useStore } from '../store'
 import {
-  colorForPnl,
   fmtDate,
   fmtDateTime,
   inr,
@@ -43,6 +42,7 @@ const TOOLTIP_STYLE = {
 export function Dashboard() {
   const runtimeState = useStore((s) => s.runtimeState)
   const monitoring = useStore((s) => s.monitoring)
+  const livePortfolio = useStore((s) => s.livePortfolio)
   const equityCurve = useStore((s) => s.equityCurve)
   const dailyPnl = useStore((s) => s.dailyPnl)
   const recentTrades = useStore((s) => s.recentTrades)
@@ -51,13 +51,14 @@ export function Dashboard() {
   const setDailyPnl = useStore((s) => s.setDailyPnl)
   const setRecentTrades = useStore((s) => s.setRecentTrades)
   const setTargetProgress = useStore((s) => s.setTargetProgress)
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
   async function refresh() {
     const [curve, pnl, trades, progress] = await Promise.allSettled([
       getEquityCurve(),
       getDailyPnl(),
       getRecentTrades(),
-      getTargetProgress({ annual_target: 5_000_000, start_capital: 2_000_000 }),
+      getTargetProgress({}),
     ])
     if (curve.status === 'fulfilled') setEquityCurve(curve.value.curve)
     if (pnl.status === 'fulfilled') setDailyPnl(pnl.value.history)
@@ -67,10 +68,14 @@ export function Dashboard() {
 
   useEffect(() => {
     refresh()
+    pollRef.current = setInterval(refresh, 10_000)
+    return () => { if (pollRef.current) clearInterval(pollRef.current) }
   }, [])
 
-  const latestEquity = equityCurve[equityCurve.length - 1]?.equity ?? 0
-  const latestDrawdown = equityCurve[equityCurve.length - 1]?.drawdown ?? 0
+  const latestEquity = livePortfolio?.portfolio.equity ?? equityCurve[equityCurve.length - 1]?.equity ?? 0
+  const latestDrawdown = livePortfolio?.portfolio.drawdown != null
+    ? livePortfolio.portfolio.drawdown / 100
+    : equityCurve[equityCurve.length - 1]?.drawdown ?? 0
   const totalPnl = dailyPnl.reduce((s, d) => s + d.realized_pnl, 0)
   const todayPnl = dailyPnl[dailyPnl.length - 1]?.realized_pnl ?? 0
   const winRate =
@@ -119,6 +124,7 @@ export function Dashboard() {
           accent="blue"
           icon={<Activity size={14} />}
           trend={latestEquity > 2_000_000 ? 'up' : 'down'}
+          sub={livePortfolio ? `${livePortfolio.count} open` : undefined}
         />
         <MetricCard
           label="Today's P&L"

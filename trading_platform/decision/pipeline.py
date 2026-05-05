@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import asdict, dataclass
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, timezone
 from typing import TYPE_CHECKING
 
 from trading_platform.agent.market_hours import is_entry_allowed
@@ -19,6 +19,7 @@ from trading_platform.strategies.factory import StrategyFactory
 
 if TYPE_CHECKING:
     from trading_platform.ai.feature_store import FeatureStore
+    from trading_platform.ai.models import MetaModel, RegimeClassifier
     from trading_platform.data.angel_one_history import AngelOneHistoricalDataProvider
 
 logger = logging.getLogger(__name__)
@@ -105,6 +106,8 @@ class DecisionPipeline:
         live_feed=None,
         history_provider: "AngelOneHistoricalDataProvider | None" = None,
         feature_store: "FeatureStore | None" = None,
+        regime_classifier: "RegimeClassifier | None" = None,
+        meta_model: "MetaModel | None" = None,
     ):
         self.instrument_master = instrument_master
         self.strategy_factory = strategy_factory
@@ -114,6 +117,8 @@ class DecisionPipeline:
         self.live_feed = live_feed
         self.history_provider = history_provider
         self.feature_store = feature_store
+        self.regime_classifier = regime_classifier
+        self.meta_model = meta_model
         self.feature_engine = FeatureEngine()
         self.regime_agent = MarketRegimeAgent()
         self.strategy_agent = StrategySelectionAgent()
@@ -164,8 +169,26 @@ class DecisionPipeline:
                     volume=tick.volume if tick.volume > 0 else last.volume,
                 )
         features = self.feature_engine.compute(bars)
-        regime = self.regime_agent.classify(features)
-        selected = strategy_names or self.strategy_agent.choose(regime, underlying)
+
+        # Use ML regime classifier when it has been trained and validated on
+        # external labels; otherwise fall back to the deterministic rule agent.
+        if self.regime_classifier is not None and self.regime_classifier.is_trained:
+            regime = self.regime_classifier.predict(features)
+        else:
+            regime = self.regime_agent.classify(features)
+
+        # Use MetaModel-ranked strategies when enough feedback has accumulated;
+        # otherwise fall back to the fixed strategy-selection mapping.
+        if strategy_names:
+            selected = strategy_names
+        elif self.meta_model is not None:
+            base = self.strategy_agent.choose(regime, underlying)
+            # Rank the rule-selected candidates by observed P&L scores per regime.
+            ranked = self.meta_model.rank(regime, base)
+            selected = [item.strategy_name for item in ranked]
+        else:
+            selected = self.strategy_agent.choose(regime, underlying)
+
         closes = [bar.close for bar in bars]
         forecast = self.volatility_forecaster.forecast(closes, "garch_baseline")
 

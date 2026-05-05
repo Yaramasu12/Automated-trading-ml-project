@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Brain, Loader2, Newspaper, Play, RefreshCw } from 'lucide-react'
 import { Card, CardBody, CardHeader } from '../components/shared/Card'
 import { Badge, regimeBadge } from '../components/shared/Badge'
@@ -36,18 +36,22 @@ export function Intelligence() {
   const [performance, setPerformance] = useState<Record<string, unknown> | null>(null)
   const [loading, setLoading] = useState(false)
 
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
+
   async function refresh() {
     setLoading(true)
     try {
-      const [news, current, perf] = await Promise.all([
+      const [news, current, perf] = await Promise.allSettled([
         getNewsEvents(30),
         getCurrentRegime('NIFTY'),
         getPerformanceSummary(30),
       ])
-      setNewsEvents(news.events as NewsEvent[])
-      setNewsFeatures(news.features)
-      setRegime(current)
-      setPerformance(perf)
+      if (news.status === 'fulfilled') {
+        setNewsEvents(news.value.events as NewsEvent[])
+        setNewsFeatures(news.value.features)
+      }
+      if (current.status === 'fulfilled') setRegime(current.value)
+      if (perf.status === 'fulfilled') setPerformance(perf.value)
     } finally {
       setLoading(false)
     }
@@ -65,6 +69,19 @@ export function Intelligence() {
 
   useEffect(() => {
     refresh()
+    // News + regime refresh every 30s; performance summary is expensive so only fetched on mount
+    pollRef.current = setInterval(async () => {
+      const [news, current] = await Promise.allSettled([
+        getNewsEvents(30),
+        getCurrentRegime('NIFTY'),
+      ])
+      if (news.status === 'fulfilled') {
+        setNewsEvents(news.value.events as NewsEvent[])
+        setNewsFeatures(news.value.features)
+      }
+      if (current.status === 'fulfilled') setRegime(current.value)
+    }, 30_000)
+    return () => { if (pollRef.current) clearInterval(pollRef.current) }
   }, [])
 
   const qualityScores = ((performance?.strategy_quality_scores as StrategyQuality[] | undefined) ?? []).slice(0, 8)

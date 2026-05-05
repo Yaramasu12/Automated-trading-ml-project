@@ -81,6 +81,17 @@ def arm_live(payload: dict):
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
+@app.get("/live/readiness")
+def live_readiness():
+    """Phase-1 seven-gate readiness check.
+
+    Returns ``armed_eligible``, ``blocking_reasons``, and a per-gate
+    breakdown (with evidence) so the dashboard can render the failures
+    as a checklist.
+    """
+    return runtime.live_readiness_payload()
+
+
 @app.post("/execution-mode", dependencies=[_AuthDep])
 def execution_mode(payload: dict):
     try:
@@ -206,7 +217,7 @@ def account_status():
     return runtime.account_status()
 
 
-@app.get("/account/snapshot", dependencies=[_AuthDep])
+@app.get("/account/snapshot")
 def account_snapshot():
     try:
         return runtime.account_snapshot()
@@ -465,6 +476,32 @@ def feed_tick(symbol: str):
     return runtime.latest_tick(symbol)
 
 
+@app.get("/feed/ticks/batch")
+def feed_ticks_batch(symbols: str = ""):
+    """Return ticks for multiple symbols in one request.
+    Pass symbols as comma-separated query param: ?symbols=NIFTY,BANKNIFTY,...
+    """
+    syms = [s.strip() for s in symbols.split(",") if s.strip()] if symbols else []
+    return {"ticks": {sym: runtime.latest_tick(sym) for sym in syms}}
+
+
+@app.post("/feed/ticks/batch")
+def feed_ticks_batch_post(payload: dict | None = None):
+    """Return ticks for many symbols without relying on a very long URL."""
+    payload = payload or {}
+    symbols = payload.get("symbols") or []
+    include_unavailable = bool(payload.get("include_unavailable", False))
+    if isinstance(symbols, str):
+        symbols = [s.strip() for s in symbols.split(",") if s.strip()]
+    ticks = {
+        str(sym).upper(): runtime.latest_tick(str(sym))
+        for sym in symbols
+    }
+    if not include_unavailable:
+        ticks = {sym: tick for sym, tick in ticks.items() if tick.get("available")}
+    return {"ticks": ticks}
+
+
 # ---------------------------------------------------------------------------
 # Execution scheduler & OMS
 # ---------------------------------------------------------------------------
@@ -625,7 +662,12 @@ def goal_state(payload: dict):
 
 @app.get("/performance/summary")
 def performance_summary(days: int = 30):
-    return runtime.performance_summary({"days": days})
+    import traceback as _tb, logging as _log
+    try:
+        return runtime.performance_summary({"days": days})
+    except Exception as exc:
+        _log.getLogger(__name__).error("performance_summary error: %s\n%s", exc, _tb.format_exc())
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
 # ---------------------------------------------------------------------------
@@ -733,6 +775,7 @@ async def ws_dashboard(websocket: WebSocket):
                 "exit_plans": runtime.exit_manager.active_plan_count,
                 "manual_approvals": runtime.manual_approval_status()["pending_count"],
                 "event_bus": runtime.event_bus_summary(),
+                "portfolio": runtime.portfolio_positions(),
             }
             await websocket.send_text(json.dumps(snapshot))
             try:

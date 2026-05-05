@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import logging
 from dataclasses import asdict, dataclass
 from datetime import date, datetime, timezone
+
+logger = logging.getLogger(__name__)
 
 from trading_platform.ai.agents import ModelPerformance, RetrainingAgent, RiskSupervisorAgent
 from trading_platform.ai.feature_store import FeatureStore
@@ -37,6 +40,10 @@ from trading_platform.exit.exit_manager import ExitManager
 from trading_platform.exit.exit_plan import ExitPlan
 from trading_platform.goal.governance import GoalGovernance
 from trading_platform.goal.scaling import PositionScaler
+from trading_platform.governance.live_readiness import (
+    InstrumentFreshnessTracker,
+    LiveReadinessAggregator,
+)
 from trading_platform.monitoring.metrics import OperationalMonitor
 from trading_platform.news.calendar import EconomicCalendar
 from trading_platform.news.intelligence import NewsIntelligence
@@ -48,7 +55,7 @@ from trading_platform.risk.engine import RiskEngine, RiskLimits
 from trading_platform.risk.event_risk import EventRiskGuard
 from trading_platform.risk.manual_approval import ManualApprovalGate
 from trading_platform.strategies.factory import StrategyFactory
-from trading_platform.agent.trading_agent import TradingAgent
+from trading_platform.agent.trading_agent import TradingAgent, SCAN_UNDERLYINGS
 
 
 @dataclass
@@ -111,6 +118,19 @@ class TradingRuntime:
         self.live_feed = LiveTickFeed(self.settings)
         self.event_bus = InMemoryEventBus()
         self.news_intelligence = NewsIntelligence()
+        # Live-readiness scaffolding: freshness tracker tells the gate
+        # whether the instrument master is real, staleness tracker
+        # tells the gate whether subscribed symbols are ticking.
+        self.instrument_freshness = InstrumentFreshnessTracker()
+        # Boot loaded synthetic universe — record it so the gate fails
+        # until refresh_angel_one_instruments() succeeds.
+        self.instrument_freshness.mark_synthetic(
+            parsed_count=len(self.instrument_master.instruments)
+        )
+        self.live_readiness = LiveReadinessAggregator(
+            instrument_freshness=self.instrument_freshness,
+            feed_staleness=self.live_feed.staleness_tracker,
+        )
 
         # Async execution layer
         self.oms = OMSEventStore()
@@ -182,6 +202,8 @@ class TradingRuntime:
             live_feed=self.live_feed,
             history_provider=self.angel_one_history if self.settings.angel_one_configured else None,
             feature_store=self.feature_store,
+            regime_classifier=self.regime_classifier,
+            meta_model=self.meta_model,
         )
         self.agent = TradingAgent(self)
 
@@ -222,14 +244,35 @@ class TradingRuntime:
         return self.state_payload()
 
     def arm_live(self, armed: bool) -> dict:
-        if armed and not self._can_submit_live_orders():
-            raise ValueError(
-                "Live trading requires EXECUTION_MODE=LIVE, LIVE_TRADING_ENABLED=true, "
-                "LIVE_ORDER_CONFIRMATION=I_ACCEPT_REAL_MONEY_LIVE_ORDERS, and Angel One credentials"
-            )
+        if armed:
+            readiness = self.live_readiness_payload()
+            if not readiness["armed_eligible"]:
+                reasons = ", ".join(readiness["blocking_reasons"]) or "unknown"
+                raise ValueError(f"live_readiness_blocked: {reasons}")
         self.live_armed = armed
-        self.monitor.record_event("live_arm_changed", f"Live armed set to {armed}", severity="WARN" if armed else "INFO")
+        self.monitor.record_event(
+            "live_arm_changed",
+            f"Live armed set to {armed}",
+            severity="WARN" if armed else "INFO",
+        )
         return self.state_payload()
+
+    def live_readiness_payload(self) -> dict:
+        """Evaluates the seven readiness gates and returns a dict
+        suitable for ``GET /live/readiness``.
+        """
+        feed_snap = self.live_feed.snapshot()
+        readiness = self.live_readiness.evaluate(
+            execution_mode=self.execution_mode.value,
+            live_trading_enabled=bool(self.settings.live_trading_enabled),
+            real_money_confirmation=self.settings.live_order_confirmation or "",
+            broker_configured=bool(self.settings.angel_one_configured),
+            broker_name="angel_one" if self.settings.angel_one_configured else "simulated",
+            kill_switch_active=self.kill_switch_active,
+            feed_running=bool(feed_snap.get("running", False)),
+            subscribed_symbols=feed_snap.get("subscribed_symbols", []),
+        )
+        return readiness.to_dict()
 
     def set_kill_switch(self, active: bool) -> dict:
         self.kill_switch_active = active
@@ -255,6 +298,21 @@ class TradingRuntime:
         strategy_name = intent.signal.strategy_name
         fill_price = getattr(trade, "fill_price", None) or intent.signal.price
         side = intent.signal.side.value
+
+        # ── Persist fill to DB + update monitor (both entry and exit) ──────
+        exec_mode = self.execution_mode.value
+        try:
+            self.db.save_trade(trade, execution_mode=exec_mode)
+            mark_prices: dict[str, float] = {}
+            for sym in list(self.portfolio.positions.keys()):
+                tick = self.live_feed.latest_tick(sym)
+                if tick and tick.last_price > 0:
+                    mark_prices[sym] = tick.last_price
+            snap = self.portfolio.mark_to_market(datetime.now(timezone.utc), mark_prices)
+            self.db.save_snapshot(snap, execution_mode=exec_mode)
+            self.monitor.record_order({"status": "FILLED"})
+        except Exception as _persist_err:
+            logger.warning("_on_fill DB persist error: %s", _persist_err)
 
         # ── Exit fill: compute P&L-based score → update MetaModel ──────────
         if intent.priority != OrderPriority.ENTRY:
@@ -372,7 +430,7 @@ class TradingRuntime:
 
     def run_backtest(self, payload: dict | None = None) -> dict:
         payload = payload or {}
-        underlyings = tuple(payload.get("underlyings") or ("NIFTY", "BANKNIFTY", "MIDCPNIFTY", "RELIANCE", "TCS"))
+        underlyings = tuple(payload.get("underlyings") or SCAN_UNDERLYINGS)
         start_raw = payload.get("start", "2026-01-01")
         start = date.fromisoformat(start_raw) if isinstance(start_raw, str) else start_raw
         config = BacktestConfig(
@@ -427,6 +485,12 @@ class TradingRuntime:
         result = self.angel_one_instruments.refresh()
         self.instrument_master = self.angel_one_instruments.load_cached()
         self._rebuild_market_engines()
+        # Record this as a real refresh so the readiness gate flips
+        # from "synthetic" to "fresh".
+        self.instrument_freshness.record_refresh(
+            source=result.source,
+            parsed_count=result.parsed_count,
+        )
         return {
             "source": result.source,
             "cache_path": result.cache_path,
@@ -438,9 +502,17 @@ class TradingRuntime:
     def load_cached_angel_one_instruments(self) -> dict:
         self.instrument_master = self.angel_one_instruments.load_cached()
         self._rebuild_market_engines()
+        parsed = len(self.instrument_master.instruments)
+        # Cached load counts as a real refresh — the cache file came
+        # from a real Angel One pull. Source stamps the cache path so
+        # operators can tell which file was loaded.
+        self.instrument_freshness.record_refresh(
+            source=f"cache:{self.angel_one_instruments.cache_path}",
+            parsed_count=parsed,
+        )
         return {
             "cache_path": str(self.angel_one_instruments.cache_path),
-            "parsed_count": len(self.instrument_master.instruments),
+            "parsed_count": parsed,
         }
 
     def historical_candles(self, payload: dict) -> dict:
@@ -500,6 +572,8 @@ class TradingRuntime:
             live_feed=self.live_feed,
             history_provider=self.angel_one_history if self.settings.angel_one_configured else None,
             feature_store=self.feature_store,
+            regime_classifier=self.regime_classifier,
+            meta_model=self.meta_model,
         )
 
     def preview_order(self, payload: dict) -> dict:
@@ -618,12 +692,20 @@ class TradingRuntime:
         if intent.priority < OrderPriority.ENTRY:
             return False
         event_risk_state = self.event_risk.check()
-        return (
-            self.execution_mode == ExecutionMode.LIVE_MANUAL_APPROVAL
-            or self.execution_mode == ExecutionMode.LIVE
-            or event_risk_state.recommended_action == "MANUAL_APPROVAL"
-            or self.manual_approval.requires_approval(intent)
-        )
+        # LIVE_MANUAL_APPROVAL always gates every order through human review.
+        if self.execution_mode == ExecutionMode.LIVE_MANUAL_APPROVAL:
+            return True
+        # Event-risk or large-notional orders always require approval regardless of source.
+        if event_risk_state.recommended_action == "MANUAL_APPROVAL":
+            return True
+        if self.manual_approval.requires_approval(intent):
+            return True
+        # Plain LIVE mode: agent-generated orders (flagged agent_auto=True) bypass
+        # the blanket manual gate so the autonomous agent can actually trade.
+        # Manual/API-submitted orders in LIVE mode still require approval.
+        if self.execution_mode == ExecutionMode.LIVE:
+            return not bool(intent.signal.metadata.get("agent_auto", False))
+        return False
 
     def manual_approval_status(self) -> dict:
         pending = self.manual_approval.pending_requests()
@@ -875,7 +957,7 @@ class TradingRuntime:
 
     def evaluate_strategies(self, payload: dict | None = None) -> dict:
         payload = payload or {}
-        underlyings = tuple(payload.get("underlyings") or ("NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY", "RELIANCE", "TCS"))
+        underlyings = tuple(payload.get("underlyings") or SCAN_UNDERLYINGS)
         start_raw = payload.get("start", "2026-01-01")
         start = date.fromisoformat(start_raw) if isinstance(start_raw, str) else start_raw
         names = tuple(payload["strategy_names"]) if payload.get("strategy_names") else None
@@ -896,7 +978,7 @@ class TradingRuntime:
 
     def signal_scan(self, payload: dict | None = None) -> dict:
         payload = payload or {}
-        underlyings = [str(item).upper() for item in payload.get("underlyings", ["NIFTY", "RELIANCE"])]
+        underlyings = [str(item).upper() for item in payload.get("underlyings", SCAN_UNDERLYINGS)]
         start = date.fromisoformat(str(payload.get("start", "2026-01-01")))
         days = int(payload.get("days", 30))
         strategy_names = [str(item) for item in payload["strategy_names"]] if payload.get("strategy_names") else None
@@ -953,7 +1035,7 @@ class TradingRuntime:
         if self.execution_mode != ExecutionMode.PAPER:
             raise ValueError("Shadow paper run requires runtime mode PAPER")
         payload = payload or {}
-        underlyings = [str(item).upper() for item in payload.get("underlyings", ["NIFTY", "RELIANCE"])]
+        underlyings = [str(item).upper() for item in payload.get("underlyings", SCAN_UNDERLYINGS)]
         start = date.fromisoformat(str(payload.get("start", "2026-01-01")))
         days = int(payload.get("days", 30))
         strategy_names = [str(item) for item in payload["strategy_names"]] if payload.get("strategy_names") else None
@@ -1074,18 +1156,73 @@ class TradingRuntime:
 
     def option_chain(self, underlying: str, expiry: str | None = None, spot_price: float | None = None) -> dict:
         underlying = underlying.upper()
+        if spot_price is None:
+            tick = self.live_feed.latest_tick(underlying)
+            if tick and tick.last_price > 0:
+                spot_price = tick.last_price
+        spot = float(spot_price or 0.0)
         expiry_date = date.fromisoformat(expiry) if expiry else self.expiry_calendar.nearest(underlying, date.today())
         chain = self.option_chain_builder.build(underlying, expiry_date)
-        liquid_strikes = chain.liquid_strikes(spot_price) if spot_price else chain.strikes
+        dte = max(1, (expiry_date - date.today()).days)
+        liquid_strikes = chain.liquid_strikes(spot) if spot else chain.strikes
+
+        def enrich(instrument, option_type: str) -> dict:
+            payload = self._serialize_instrument(instrument)
+            tick = self.live_feed.latest_tick(instrument.symbol)
+            ltp = tick.last_price if tick and tick.last_price > 0 else None
+            delta = None
+            if spot > 0 and instrument.strike:
+                try:
+                    greeks = self.calculate_greeks(
+                        {
+                            "spot_price": spot,
+                            "strike": instrument.strike,
+                            "days_to_expiry": dte,
+                            "volatility": 0.18,
+                            "option_type": option_type,
+                        }
+                    )
+                    delta = round(float(greeks.get("delta", 0.0)), 3)
+                except Exception:
+                    delta = None
+            payload["ltp"] = ltp
+            payload["delta"] = delta
+            payload["live"] = ltp is not None
+            return payload
+
+        calls = [enrich(instrument, "CE") for instrument in chain.calls]
+        puts = [enrich(instrument, "PE") for instrument in chain.puts]
+        calls_by_strike = {item["strike"]: item for item in calls}
+        puts_by_strike = {item["strike"]: item for item in puts}
+        rows = [
+            {
+                "strike": strike,
+                "call": calls_by_strike.get(strike),
+                "put": puts_by_strike.get(strike),
+            }
+            for strike in chain.strikes
+            if not liquid_strikes or strike in liquid_strikes
+        ]
+        option_symbols = [
+            leg["symbol"]
+            for row in rows
+            for leg in (row.get("call"), row.get("put"))
+            if leg and leg.get("symbol")
+        ]
+        if option_symbols:
+            self.live_feed.add_subscriptions(option_symbols)
         return {
             "underlying": chain.underlying,
             "expiry": chain.expiry.isoformat(),
+            "dte": dte,
+            "spot_price": spot,
             "call_count": len(chain.calls),
             "put_count": len(chain.puts),
             "strikes": chain.strikes,
             "liquid_strikes": liquid_strikes,
-            "calls": [self._serialize_instrument(instrument) for instrument in chain.calls],
-            "puts": [self._serialize_instrument(instrument) for instrument in chain.puts],
+            "calls": calls,
+            "puts": puts,
+            "rows": rows,
         }
 
     def calculate_greeks(self, payload: dict) -> dict:
@@ -1136,6 +1273,67 @@ class TradingRuntime:
             model_performance=performance,
         )
         return asdict(decision)
+
+    def option_chain_live(self, underlying: str, expiry: str | None = None, spot_price: float | None = None) -> dict:
+        """Option chain enriched with live tick prices and BS-calculated greeks."""
+        underlying = underlying.upper()
+        # Use live feed spot if not provided
+        if spot_price is None:
+            tick = self.live_feed.latest_tick(underlying)
+            if tick and tick.last_price > 0:
+                spot_price = tick.last_price
+        spot = spot_price or 0.0
+
+        expiry_date = (
+            date.fromisoformat(expiry) if expiry
+            else self.expiry_calendar.nearest(underlying, date.today())
+        )
+        chain = self.option_chain_builder.build(underlying, expiry_date)
+        dte = max(1, (expiry_date - date.today()).days)
+
+        def _enrich(instrument, opt_type: str) -> dict:
+            base = self._serialize_instrument(instrument)
+            tick = self.live_feed.latest_tick(instrument.symbol)
+            ltp = tick.last_price if (tick and tick.last_price > 0) else None
+            delta = None
+            if spot > 0:
+                try:
+                    g = self.calculate_greeks({
+                        "spot_price": spot,
+                        "strike": instrument.strike,
+                        "days_to_expiry": dte,
+                        "volatility": 0.18,
+                        "option_type": opt_type,
+                    })
+                    delta = round(g.get("delta", 0.0), 3)
+                except Exception:
+                    pass
+            base["ltp"] = ltp
+            base["delta"] = delta
+            base["live"] = ltp is not None
+            return base
+
+        liquid = chain.liquid_strikes(spot) if spot else chain.strikes
+        calls_map = {i.strike: _enrich(i, "CE") for i in chain.calls}
+        puts_map  = {i.strike: _enrich(i, "PE") for i in chain.puts}
+
+        strikes = sorted(set(calls_map) | set(puts_map))
+        rows = []
+        for s in strikes:
+            if liquid and s not in liquid:
+                continue
+            rows.append({
+                "strike": s,
+                "call": calls_map.get(s),
+                "put": puts_map.get(s),
+            })
+        return {
+            "underlying": underlying,
+            "expiry": expiry_date.isoformat(),
+            "dte": dte,
+            "spot_price": spot,
+            "rows": rows,
+        }
 
     def _serialize_instrument(self, instrument) -> dict:
         return {
@@ -1336,7 +1534,7 @@ class TradingRuntime:
     def walk_forward_backtest(self, payload: dict | None = None) -> dict:
         payload = payload or {}
         strategy_name = str(payload.get("strategy_name", "futures_trend"))
-        underlyings = tuple(payload.get("underlyings") or ("NIFTY", "BANKNIFTY"))
+        underlyings = tuple(payload.get("underlyings") or SCAN_UNDERLYINGS)
         start_raw = payload.get("start", "2026-01-01")
         start = date.fromisoformat(start_raw) if isinstance(start_raw, str) else start_raw
         result = self.walk_forward_evaluator.evaluate(
@@ -1762,7 +1960,7 @@ class TradingRuntime:
     def performance_summary(self, payload: dict | None = None) -> dict:
         payload = payload or {}
         days = int(payload.get("days", 30))
-        underlyings = tuple(payload.get("underlyings") or ("NIFTY", "BANKNIFTY", "RELIANCE"))
+        underlyings = tuple(payload.get("underlyings") or SCAN_UNDERLYINGS)
         evaluation = self.strategy_evaluator.evaluate(
             start=date.fromisoformat(str(payload.get("start", "2026-01-01"))),
             days=days,

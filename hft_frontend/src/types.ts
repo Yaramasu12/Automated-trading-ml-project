@@ -272,6 +272,36 @@ export interface LiveFeedSnapshot {
   tick_count: number
 }
 
+// ─── Live Portfolio (from WS) ─────────────────────────────────────────────────
+
+export interface LivePortfolioMetrics {
+  cash: number
+  equity: number
+  unrealized_pnl: number
+  realized_pnl: number
+  drawdown: number
+  peak_equity: number
+  open_positions: number
+}
+
+export interface LivePosition {
+  symbol: string
+  quantity: number
+  side: string
+  average_price: number
+  mark_price: number
+  unrealized_pnl: number
+  realized_pnl: number
+  pnl_pct: number
+  live: boolean
+}
+
+export interface LivePortfolioSnapshot {
+  count: number
+  positions: LivePosition[]
+  portfolio: LivePortfolioMetrics
+}
+
 // ─── WebSocket message ────────────────────────────────────────────────────────
 
 export interface WsDashboardMessage {
@@ -283,4 +313,5 @@ export interface WsDashboardMessage {
   db: DBSummary
   manual_approvals?: number
   event_bus?: EventBusSummary
+  portfolio?: LivePortfolioSnapshot
 }
