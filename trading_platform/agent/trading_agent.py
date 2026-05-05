@@ -55,7 +55,7 @@ SCAN_UNDERLYINGS = [
 ]
 DEFAULT_SCAN_INTERVAL = 300   # 5 minutes
 MIN_SCAN_INTERVAL = 30        # 30 seconds (frontend can lower for demo)
-LOOKBACK_DAYS = 30
+LOOKBACK_DAYS = 60
 
 
 @dataclass

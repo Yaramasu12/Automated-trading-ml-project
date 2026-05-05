@@ -1,30 +1,34 @@
-version: "3.9"
-
 services:
+
+  # ── FastAPI trading backend ──────────────────────────────────────────────
   trading-api:
-    build: .
+    build:
+      context: .
+      dockerfile: Dockerfile
     container_name: trading-api
     restart: unless-stopped
     ports:
       - "8000:8000"
     volumes:
-      # Persist database and feature store outside the container
       - ./data:/app/data
       - ./backtest_results:/app/backtest_results
+      - ./models:/app/models
     env_file:
       - .env
     environment:
       - PYTHONUNBUFFERED=1
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
       interval: 30s
       timeout: 10s
-      retries: 3
-      start_period: 15s
+      retries: 5
+      start_period: 60s
 
-  # Scheduler runs daily tasks (instrument refresh, EOD square-off, daily report)
+  # ── Daily scheduler (EOD square-off, instrument refresh, reports) ────────
   scheduler:
-    build: .
+    build:
+      context: .
+      dockerfile: Dockerfile
     container_name: trading-scheduler
     restart: unless-stopped
     command: ["python", "scripts/daily_scheduler.py"]
@@ -38,18 +42,19 @@ services:
       trading-api:
         condition: service_healthy
 
-  # React frontend dev server (only needed locally — replace with nginx in prod)
+  # ── React frontend (built → Nginx, proxies /api and /ws to backend) ──────
   frontend:
-    image: node:20-alpine
+    build:
+      context: ./hft_frontend
+      dockerfile: Dockerfile
     container_name: trading-frontend
-    working_dir: /app
-    command: ["sh", "-c", "npm install && npm run build && npx serve -s build -l 3000"]
+    restart: unless-stopped
     ports:
       - "3000:3000"
-    volumes:
-      - ./hft_frontend:/app
-    environment:
-      - REACT_APP_API_URL=http://localhost:8000
-      - REACT_APP_WS_URL=ws://localhost:8000/ws/dashboard
-    profiles:
-      - frontend
+    depends_on:
+      trading-api:
+        condition: service_healthy
+
+networks:
+  default:
+    name: trading-network

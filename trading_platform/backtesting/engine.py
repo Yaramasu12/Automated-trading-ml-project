@@ -149,7 +149,7 @@ class BacktestEngine:
                     instrument = self._select_instrument(strategy_name, underlying, history_bars[-1], now.date())
                     strategy = self.strategy_factory.get(strategy_name)
                     signal = strategy.generate_signal(instrument, history_bars, now)
-                    if signal is None or signal.confidence < 0.55:
+                    if signal is None or signal.confidence < 0.65:
                         continue
                     if signal_filter is not None and not signal_filter(signal):
                         continue

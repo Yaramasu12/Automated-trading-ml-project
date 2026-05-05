@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import asdict, dataclass
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 
 logger = logging.getLogger(__name__)
 
@@ -163,6 +163,7 @@ class TradingRuntime:
             event_risk=self.event_risk,
             portfolio=self.portfolio,
             event_bus=self.event_bus,
+            charges_model=self.charges_model,
         )
 
         self.exit_manager = ExitManager(
@@ -296,7 +297,7 @@ class TradingRuntime:
         now_ts = datetime.now(timezone.utc).isoformat()
         symbol = intent.instrument.symbol
         strategy_name = intent.signal.strategy_name
-        fill_price = getattr(trade, "fill_price", None) or intent.signal.price
+        fill_price = getattr(trade, "price", None) or intent.signal.price
         side = intent.signal.side.value
 
         # ── Persist fill to DB + update monitor (both entry and exit) ──────
@@ -359,15 +360,31 @@ class TradingRuntime:
         if len(self._agent_trade_log) > 500:
             self._agent_trade_log = self._agent_trade_log[-500:]
 
-        # ── Create ExitPlan ─────────────────────────────────────────────────
+        # ── Create ExitPlan — use strategy-specific exit rules and ATR stops ──
         expiry_date = intent.instrument.expiry
+        # Read exit rules from the strategy that generated this signal
+        strategy_name_raw = intent.signal.strategy_name.replace("exit_manager:", "")
+        try:
+            _strat = self.strategy_factory.get(strategy_name_raw)
+            _rules = _strat.exit_rules()
+            sl_pct = _rules.stop_loss_pct
+            tgt_pct = _rules.target_pct
+            trail_pct = sl_pct * 0.7   # trail at 70% of stop — locks in gains as price moves
+        except Exception:
+            sl_pct, tgt_pct, trail_pct = 0.015, 0.038, 0.010
+        # ATR-based stop overrides percentage stop when available: 2× ATR is
+        # adaptive to current volatility and avoids noise-induced exits
+        atr_value = float(intent.signal.metadata.get("atr_14", 0.0))
         plan = ExitPlan.from_trade(
             trade,
             instrument=intent.instrument,
-            stop_loss_pct=0.015,
-            target_pct=0.025,
-            trailing_pct=0.010,
+            stop_loss_pct=sl_pct,
+            target_pct=tgt_pct,
+            trailing_pct=trail_pct,
             expiry_date=expiry_date,
+            atr=atr_value if atr_value > 0 else None,
+            atr_stop_multiplier=2.0,
+            partial_exit=True,   # book 50% at target, trail the rest for extended gains
         )
         self.exit_manager.register(plan)
         broker_name = getattr(self.broker_client(), "name", self.settings.broker)
@@ -695,16 +712,21 @@ class TradingRuntime:
         # LIVE_MANUAL_APPROVAL always gates every order through human review.
         if self.execution_mode == ExecutionMode.LIVE_MANUAL_APPROVAL:
             return True
-        # Event-risk or large-notional orders always require approval regardless of source.
+        # Event-risk escalation requires approval regardless of source.
         if event_risk_state.recommended_action == "MANUAL_APPROVAL":
             return True
+        # PAPER mode: agent-generated orders bypass notional threshold — no human
+        # is available to approve paper trades and blocking them means the system
+        # never generates fills, making the paper run useless.
+        is_agent_auto = bool(intent.signal.metadata.get("agent_auto", False))
+        if self.execution_mode == ExecutionMode.PAPER and is_agent_auto:
+            return False
+        # Notional-threshold check (applies to PAPER manual orders and all LIVE orders).
         if self.manual_approval.requires_approval(intent):
             return True
-        # Plain LIVE mode: agent-generated orders (flagged agent_auto=True) bypass
-        # the blanket manual gate so the autonomous agent can actually trade.
-        # Manual/API-submitted orders in LIVE mode still require approval.
+        # Plain LIVE mode: agent-generated orders bypass the blanket manual gate.
         if self.execution_mode == ExecutionMode.LIVE:
-            return not bool(intent.signal.metadata.get("agent_auto", False))
+            return not is_agent_auto
         return False
 
     def manual_approval_status(self) -> dict:
@@ -979,8 +1001,9 @@ class TradingRuntime:
     def signal_scan(self, payload: dict | None = None) -> dict:
         payload = payload or {}
         underlyings = [str(item).upper() for item in payload.get("underlyings", SCAN_UNDERLYINGS)]
-        start = date.fromisoformat(str(payload.get("start", "2026-01-01")))
-        days = int(payload.get("days", 30))
+        _default_start = (date.today() - timedelta(days=60)).isoformat()
+        start = date.fromisoformat(str(payload.get("start", _default_start)))
+        days = int(payload.get("days", 60))
         strategy_names = [str(item) for item in payload["strategy_names"]] if payload.get("strategy_names") else None
         # Allow caller to override execution_mode (e.g. BACKTEST to bypass market-hours gate)
         mode_override = payload.get("execution_mode")
@@ -1036,8 +1059,9 @@ class TradingRuntime:
             raise ValueError("Shadow paper run requires runtime mode PAPER")
         payload = payload or {}
         underlyings = [str(item).upper() for item in payload.get("underlyings", SCAN_UNDERLYINGS)]
-        start = date.fromisoformat(str(payload.get("start", "2026-01-01")))
-        days = int(payload.get("days", 30))
+        _default_start = (date.today() - timedelta(days=60)).isoformat()
+        start = date.fromisoformat(str(payload.get("start", _default_start)))
+        days = int(payload.get("days", 60))
         strategy_names = [str(item) for item in payload["strategy_names"]] if payload.get("strategy_names") else None
         scans = [
             self.decision_pipeline.scan(
