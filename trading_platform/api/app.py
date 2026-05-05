@@ -115,7 +115,7 @@ def strategy_catalog():
     return runtime.strategy_catalog()
 
 
-@app.post("/strategies/evaluate")
+@app.post("/strategies/evaluate", dependencies=[_AuthDep])
 def evaluate_strategies(payload: dict):
     try:
         return runtime.evaluate_strategies(payload)
@@ -123,7 +123,7 @@ def evaluate_strategies(payload: dict):
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
-@app.post("/signals/scan")
+@app.post("/signals/scan", dependencies=[_AuthDep])
 def signal_scan(payload: dict):
     try:
         return runtime.signal_scan(payload)
@@ -155,17 +155,17 @@ def agent_set_interval(payload: dict):
     return runtime.set_agent_interval(seconds)
 
 
-@app.get("/agent/trades")
+@app.get("/agent/trades", dependencies=[_AuthDep])
 def agent_trade_log(limit: int = 100):
     return runtime.agent_trade_log(limit=limit)
 
 
-@app.get("/portfolio/positions")
+@app.get("/portfolio/positions", dependencies=[_AuthDep])
 def portfolio_positions():
     return runtime.portfolio_positions()
 
 
-@app.get("/risk/rejections")
+@app.get("/risk/rejections", dependencies=[_AuthDep])
 def risk_rejection_log(limit: int = 100):
     return runtime.risk_rejection_log(limit=limit)
 
@@ -241,7 +241,7 @@ def load_cached_instruments():
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
-@app.post("/data/candles")
+@app.post("/data/candles", dependencies=[_AuthDep])
 def historical_candles(payload: dict):
     try:
         return runtime.historical_candles(payload)
@@ -273,7 +273,7 @@ def simulate_order(payload: dict):
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
-@app.post("/models/retraining-decision")
+@app.post("/models/retraining-decision", dependencies=[_AuthDep])
 def retraining_decision(payload: dict):
     return runtime.retraining_decision(payload)
 
@@ -283,7 +283,7 @@ def model_catalog():
     return runtime.model_catalog()
 
 
-@app.post("/models/volatility-forecast")
+@app.post("/models/volatility-forecast", dependencies=[_AuthDep])
 def volatility_forecast(payload: dict):
     try:
         return runtime.volatility_forecast(payload)
@@ -291,7 +291,7 @@ def volatility_forecast(payload: dict):
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
-@app.post("/models/sentiment")
+@app.post("/models/sentiment", dependencies=[_AuthDep])
 def sentiment(payload: dict):
     try:
         return runtime.sentiment(payload)
@@ -299,7 +299,7 @@ def sentiment(payload: dict):
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
-@app.post("/models/select")
+@app.post("/models/select", dependencies=[_AuthDep])
 def model_selection(payload: dict):
     return runtime.model_selection(payload)
 
@@ -332,7 +332,7 @@ def monitoring_events(limit: int = 20):
 # ---------------------------------------------------------------------------
 
 
-@app.post("/models/garch-forecast")
+@app.post("/models/garch-forecast", dependencies=[_AuthDep])
 def garch_forecast(payload: dict):
     try:
         return runtime.garch_forecast(payload)
@@ -345,7 +345,7 @@ def garch_forecast(payload: dict):
 # ---------------------------------------------------------------------------
 
 
-@app.post("/derivatives/iv-surface")
+@app.post("/derivatives/iv-surface", dependencies=[_AuthDep])
 def iv_surface(payload: dict):
     try:
         return runtime.iv_surface_compute(payload)
@@ -371,7 +371,7 @@ def walk_forward(payload: dict):
 # ---------------------------------------------------------------------------
 
 
-@app.post("/models/regime-classify")
+@app.post("/models/regime-classify", dependencies=[_AuthDep])
 def regime_classify(payload: dict):
     try:
         return runtime.regime_classify(payload)
@@ -384,7 +384,7 @@ def regime_classify(payload: dict):
 # ---------------------------------------------------------------------------
 
 
-@app.post("/features/record")
+@app.post("/features/record", dependencies=[_AuthDep])
 def feature_record(payload: dict):
     try:
         return runtime.feature_record(payload)
@@ -402,7 +402,7 @@ def feature_history(symbol: str, limit: int = 100):
 # ---------------------------------------------------------------------------
 
 
-@app.post("/models/meta-rank")
+@app.post("/models/meta-rank", dependencies=[_AuthDep])
 def meta_model_rank(payload: dict):
     try:
         return runtime.meta_model_rank(payload)
@@ -410,7 +410,7 @@ def meta_model_rank(payload: dict):
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
-@app.post("/models/meta-update")
+@app.post("/models/meta-update", dependencies=[_AuthDep])
 def meta_model_update(payload: dict):
     try:
         return runtime.meta_model_update(payload)
@@ -423,27 +423,27 @@ def meta_model_update(payload: dict):
 # ---------------------------------------------------------------------------
 
 
-@app.get("/db/summary")
+@app.get("/db/summary", dependencies=[_AuthDep])
 def db_summary():
     return runtime.db_summary()
 
 
-@app.get("/db/trades")
+@app.get("/db/trades", dependencies=[_AuthDep])
 def db_trades(symbol: str | None = None, execution_mode: str | None = None, limit: int = 100):
     return runtime.db_trades(symbol=symbol, execution_mode=execution_mode, limit=limit)
 
 
-@app.get("/db/equity-curve")
+@app.get("/db/equity-curve", dependencies=[_AuthDep])
 def db_equity_curve(execution_mode: str | None = None, limit: int = 200):
     return runtime.db_equity_curve(execution_mode=execution_mode, limit=limit)
 
 
-@app.get("/db/daily-pnl")
+@app.get("/db/daily-pnl", dependencies=[_AuthDep])
 def db_daily_pnl(limit: int = 30):
     return runtime.db_daily_pnl(limit=limit)
 
 
-@app.get("/db/risk-events")
+@app.get("/db/risk-events", dependencies=[_AuthDep])
 def db_risk_events(limit: int = 50):
     return runtime.db_risk_events(limit=limit)
 
@@ -531,7 +531,7 @@ async def enqueue_order(payload: dict):
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
-@app.get("/execution/manual-approvals")
+@app.get("/execution/manual-approvals", dependencies=[_AuthDep])
 def manual_approvals():
     return runtime.manual_approval_status()
 
@@ -560,7 +560,7 @@ async def submit_multi_leg(payload: dict):
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
-@app.get("/execution/multi-leg")
+@app.get("/execution/multi-leg", dependencies=[_AuthDep])
 def multi_leg_orders():
     return {"orders": runtime.multi_leg_manager.all_orders()}
 
@@ -593,7 +593,7 @@ def event_recent(limit: int = 100, stream: str | None = None):
 # ---------------------------------------------------------------------------
 
 
-@app.get("/execution/exit-plans")
+@app.get("/execution/exit-plans", dependencies=[_AuthDep])
 def active_exit_plans():
     return runtime.active_exit_plans()
 
@@ -609,7 +609,7 @@ def update_exit_marks(payload: dict):
 # ---------------------------------------------------------------------------
 
 
-@app.get("/risk/compliance")
+@app.get("/risk/compliance", dependencies=[_AuthDep])
 def compliance_status():
     return runtime.compliance_status()
 
@@ -624,7 +624,7 @@ def economic_calendar(from_date: str | None = None, days: int = 30):
     return runtime.economic_calendar_events(from_date, days)
 
 
-@app.post("/news/analyze")
+@app.post("/news/analyze", dependencies=[_AuthDep])
 def analyze_news(payload: dict):
     try:
         return runtime.news_analyze(payload)

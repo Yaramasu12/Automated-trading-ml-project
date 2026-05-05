@@ -1,12 +1,16 @@
 from __future__ import annotations
 
+import fcntl
 import json
+import logging
 import math
 from dataclasses import asdict
 from datetime import date
 from pathlib import Path
 
 from trading_platform.ai.features import FeatureSnapshot
+
+logger = logging.getLogger(__name__)
 
 _DEFAULT_STORE_DIR = Path(__file__).parent.parent.parent / "data" / "feature_store"
 
@@ -25,7 +29,7 @@ class FeatureStore:
         return self.store_dir / f"{safe}.jsonl"
 
     def append(self, symbol: str, as_of: date, features: FeatureSnapshot, regime: str) -> None:
-        """Append one feature record. No-op if symbol is empty."""
+        """Append one feature record atomically using an exclusive file lock."""
         if not symbol:
             return
         record = {
@@ -34,8 +38,14 @@ class FeatureStore:
             "regime": regime,
             **asdict(features),
         }
-        with self._path(symbol).open("a") as fp:
-            fp.write(json.dumps(record) + "\n")
+        path = self._path(symbol)
+        with path.open("a") as fp:
+            fcntl.flock(fp.fileno(), fcntl.LOCK_EX)
+            try:
+                fp.write(json.dumps(record) + "\n")
+                fp.flush()
+            finally:
+                fcntl.flock(fp.fileno(), fcntl.LOCK_UN)
 
     def load(self, symbol: str, limit: int | None = None) -> list[dict]:
         """Return records for symbol, newest last. Optionally cap to `limit` most recent."""
@@ -49,7 +59,8 @@ class FeatureStore:
                 if line:
                     try:
                         records.append(json.loads(line))
-                    except json.JSONDecodeError:
+                    except json.JSONDecodeError as exc:
+                        logger.warning("Skipping malformed JSONL line in %s: %s", path.name, exc)
                         continue
         return records[-limit:] if limit else records
 
