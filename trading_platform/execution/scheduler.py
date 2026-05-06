@@ -274,7 +274,7 @@ class ExecutionScheduler:
 
     async def _submit_to_broker(self, intent: OrderIntent) -> None:
         now = datetime.now(timezone.utc)
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
 
         result = await loop.run_in_executor(None, self.broker.submit_order, intent)
 

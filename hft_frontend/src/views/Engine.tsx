@@ -10,8 +10,9 @@ import { useStore } from '../store'
 import {
   getAgentStatus, startAgent, stopAgent, setAgentInterval,
   getBatchTicks, getSchedulerStats, getOmsEvents,
-  getAgentTrades, getPortfolioPositions, getRiskRejections,
+  getPortfolioPositions, getRiskRejections,
   getGovernanceDashboard, getActiveExitPlans, getOptionChain, getUniverse,
+  getRecentTrades,
 } from '../api'
 import { inr, pct } from '../utils'
 
@@ -336,7 +337,7 @@ export function Engine() {
   const fetchAllSections = useCallback(async () => {
     const [posRes, tradeRes, rejRes, govRes, epRes, omsRes] = await Promise.allSettled([
       getPortfolioPositions(),
-      getAgentTrades(200),
+      getRecentTrades(200),
       getRiskRejections(200),
       getGovernanceDashboard(),
       getActiveExitPlans(),
@@ -755,9 +756,9 @@ export function Engine() {
 
           <SectionDivider title="Trade Log" />
 
-          {/* Trade Log */}
+          {/* Trade Log — reads from persistent SQLite so history survives restarts */}
           <Card>
-            <CardHeader title={`Agent Trade Log (${trades.length} fills)`} />
+            <CardHeader title={`Trade Log (${trades.length} fills)`} subtitle="persisted across restarts" />
             <CardBody>
               {trades.length === 0 ? (
                 <div className="text-center text-gray-600 py-6 text-sm">
@@ -769,53 +770,34 @@ export function Engine() {
                     <thead>
                       <tr className="text-gray-500 border-b border-surface-border text-left">
                         <th className="py-1 pr-3">Time</th>
-                        <th className="py-1 pr-3">Type</th>
                         <th className="py-1 pr-3">Symbol</th>
                         <th className="py-1 pr-3">Side</th>
+                        <th className="py-1 pr-3 text-right">Qty</th>
+                        <th className="py-1 pr-3 text-right">Fill ₹</th>
                         <th className="py-1 pr-3">Strategy</th>
-                        <th className="py-1 pr-3">Regime</th>
-                        <th className="py-1 pr-3 text-right">Entry ₹</th>
-                        <th className="py-1 pr-3 text-right">Exit ₹</th>
-                        <th className="py-1 pr-3 text-right">P&L %</th>
-                        <th className="py-1 text-right">ML Score</th>
+                        <th className="py-1 text-right">Mode</th>
                       </tr>
                     </thead>
                     <tbody>
                       {trades.map((t: any, i: number) => (
-                        <tr key={i} className="border-b border-surface-border/30 hover:bg-gray-800/20">
-                          <td className="py-1 pr-3 font-mono text-[10px] text-gray-500">{t.ts?.substring(0, 19)}</td>
-                          <td className="py-1 pr-3">
-                            <span className={clsx('px-1 py-0.5 rounded text-[9px] font-bold',
-                              t.type === 'ENTRY' ? 'bg-emerald-900/50 text-emerald-400' : 'bg-blue-900/50 text-blue-400')}>
-                              {t.type}
-                            </span>
-                          </td>
+                        <tr key={t.trade_id ?? i} className="border-b border-surface-border/30 hover:bg-gray-800/20">
+                          <td className="py-1 pr-3 font-mono text-[10px] text-gray-500">{(t.timestamp ?? t.ts)?.substring(0, 19)}</td>
                           <td className="py-1 pr-3 font-mono font-semibold text-gray-200">{t.symbol}</td>
                           <td className="py-1 pr-3">
                             <span className={clsx('font-bold', t.side === 'BUY' ? 'text-emerald-400' : 'text-red-400')}>{t.side}</span>
                           </td>
-                          <td className="py-1 pr-3 text-gray-400 text-[10px]">{t.strategy ?? '—'}</td>
-                          <td className="py-1 pr-3 text-[10px]">
-                            {t.regime ? (
-                              <span className={clsx(
-                                t.regime === 'TRENDING' ? 'text-emerald-400' :
-                                t.regime === 'HIGH_VOLATILITY' ? 'text-red-400' :
-                                t.regime === 'BREAKOUT' ? 'text-amber-400' : 'text-blue-400')}>
-                                {t.regime}
-                              </span>
-                            ) : '—'}
-                          </td>
+                          <td className="py-1 pr-3 text-right font-mono">{t.quantity ?? '—'}</td>
                           <td className="py-1 pr-3 text-right font-mono">
-                            {t.entry_price != null ? `₹${t.entry_price.toFixed(2)}` : '—'}
+                            {(t.price ?? t.entry_price) != null ? `₹${Number(t.price ?? t.entry_price).toFixed(2)}` : '—'}
                           </td>
-                          <td className="py-1 pr-3 text-right font-mono">
-                            {t.exit_price != null ? `₹${t.exit_price.toFixed(2)}` : '—'}
-                          </td>
-                          <td className="py-1 pr-3 text-right">
-                            {t.pnl_pct != null ? <PnlBadge value={t.pnl_pct} /> : '—'}
-                          </td>
-                          <td className="py-1 text-right font-mono text-[10px] text-indigo-300">
-                            {t.ml_score != null ? t.ml_score.toFixed(3) : '—'}
+                          <td className="py-1 pr-3 text-gray-400 text-[10px]">{t.strategy_name ?? t.strategy ?? '—'}</td>
+                          <td className="py-1 text-right">
+                            <span className={clsx('px-1 py-0.5 rounded text-[9px] font-bold',
+                              t.execution_mode === 'LIVE' ? 'bg-red-900/50 text-red-400' :
+                              t.execution_mode === 'PAPER' ? 'bg-amber-900/50 text-amber-400' :
+                              'bg-gray-800 text-gray-500')}>
+                              {t.execution_mode ?? '—'}
+                            </span>
                           </td>
                         </tr>
                       ))}

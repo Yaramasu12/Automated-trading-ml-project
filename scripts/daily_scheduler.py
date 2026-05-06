@@ -15,14 +15,17 @@ wakes exactly when the next job is due — no busy-loop, no Kafka required.
 from __future__ import annotations
 
 import logging
+import os
 import sys
 import time
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone, timedelta, time as dtime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
 # Make sure the project root is on sys.path when run directly
 sys.path.insert(0, str(Path(__file__).parent.parent))
+
+from trading_platform.agent.market_hours import is_trading_day as _platform_is_trading_day
 
 logging.basicConfig(
     level=logging.INFO,
@@ -40,16 +43,12 @@ _JOBS: list[tuple[int, int, str]] = [
     (15, 35, "daily_pnl_report"),
 ]
 
-# Monday=0 … Friday=4
-_TRADING_DAYS = {0, 1, 2, 3, 4}
-
-
 def _now_ist() -> datetime:
     return datetime.now(IST)
 
 
 def _is_trading_day(dt: datetime) -> bool:
-    return dt.weekday() in _TRADING_DAYS
+    return _platform_is_trading_day(dt.date())
 
 
 def _next_run(hour: int, minute: int) -> datetime:
@@ -116,10 +115,14 @@ def run_eod_square_off() -> None:
             # POST to the local API to activate kill-switch (safest approach)
             try:
                 import urllib.request
+                token = os.environ.get("API_AUTH_TOKEN", "")
+                headers = {"Content-Type": "application/json"}
+                if token:
+                    headers["Authorization"] = f"Bearer {token}"
                 req = urllib.request.Request(
                     "http://localhost:8000/kill-switch",
                     data=b'{"active": true}',
-                    headers={"Content-Type": "application/json"},
+                    headers=headers,
                     method="POST",
                 )
                 urllib.request.urlopen(req, timeout=5)
@@ -138,13 +141,13 @@ def run_daily_pnl_report() -> None:
 
         db = TradingDatabase()
         today = date.today()
-        today_str = today.isoformat()
+        today_start = datetime.combine(today, dtime.min, tzinfo=timezone.utc)
 
-        # Count today's trades
-        trades = db.trades(since=None, execution_mode="LIVE")
-        today_trades = [t for t in trades if t["timestamp"].startswith(today_str)]
+        # Count today's trades, pushing the date filter into SQLite
+        today_trades = db.trades(since=today_start, execution_mode="LIVE", limit=2000)
         total = len(today_trades)
-        wins = sum(1 for t in today_trades if t.get("side") == "SELL")  # simplified
+        # Cannot derive wins from side alone (a SELL may close a loss); set 0
+        wins = 0
 
         snapshot = db.latest_snapshot(execution_mode="LIVE")
         equity = snapshot["equity"] if snapshot else 0.0
