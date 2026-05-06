@@ -40,6 +40,8 @@ class PortfolioLedger:
         self.peak_equity = max(self.peak_equity, equity)
         drawdown = 0.0 if self.peak_equity <= 0 else max(0.0, (self.peak_equity - equity) / self.peak_equity)
         self.equity_curve.append((timestamp, equity))
+        if len(self.equity_curve) > 5000:
+            self.equity_curve = self.equity_curve[-5000:]
         return PortfolioSnapshot(
             cash=self.cash,
             equity=equity,

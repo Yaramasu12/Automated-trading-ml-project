@@ -1,8 +1,8 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import {
   Play, Square, Activity, Shield,
-  Brain, Cpu, Bot, AlertTriangle,
-  Target, DollarSign, BarChart2, List, Eye, Layers,
+  Cpu, Bot, AlertTriangle,
+  DollarSign, List, Eye, Layers,
 } from 'lucide-react'
 import { clsx } from 'clsx'
 import { Card, CardBody, CardHeader } from '../components/shared/Card'
@@ -10,8 +10,9 @@ import { useStore } from '../store'
 import {
   getAgentStatus, startAgent, stopAgent, setAgentInterval,
   getBatchTicks, getSchedulerStats, getOmsEvents,
-  getAgentTrades, getPortfolioPositions, getRiskRejections,
+  getPortfolioPositions, getRiskRejections,
   getGovernanceDashboard, getActiveExitPlans, getOptionChain, getUniverse,
+  getRecentTrades,
 } from '../api'
 import { inr, pct } from '../utils'
 
@@ -87,14 +88,10 @@ const INTERVALS = [
 ]
 
 const TABS = [
-  { id: 'overview',    label: 'Overview',    icon: <Cpu size={13} /> },
-  { id: 'positions',   label: 'Positions',   icon: <DollarSign size={13} /> },
-  { id: 'trades',      label: 'Trade Log',   icon: <List size={13} /> },
-  { id: 'governance',  label: 'Governance',  icon: <Shield size={13} /> },
-  { id: 'prices',      label: 'Live Prices', icon: <Activity size={13} /> },
-  { id: 'options',     label: 'Options',     icon: <Layers size={13} /> },
-  { id: 'risk',        label: 'Risk Log',    icon: <AlertTriangle size={13} /> },
-  { id: 'activity',    label: 'Activity',    icon: <Eye size={13} /> },
+  { id: 'overview', label: 'Overview',  icon: <Cpu size={13} /> },
+  { id: 'monitor',  label: 'Monitor',   icon: <DollarSign size={13} />, hint: 'Positions & Trades' },
+  { id: 'market',   label: 'Market',    icon: <Activity size={13} />,   hint: 'Live Prices & Options' },
+  { id: 'debug',    label: 'Debug',     icon: <Shield size={13} />,     hint: 'Governance, Risk & Activity' },
 ]
 
 // ── Tiny components ──────────────────────────────────────────────────────────
@@ -218,6 +215,17 @@ function OptionsTable({ chain }: { chain?: OptionChainPayload }) {
   )
 }
 
+// ── Section divider for merged tabs ─────────────────────────────────────────
+function SectionDivider({ title }: { title: string }) {
+  return (
+    <div className="flex items-center gap-3 pt-2">
+      <div className="h-px flex-1 bg-surface-border" />
+      <span className="text-[10px] font-semibold text-gray-500 uppercase tracking-widest shrink-0">{title}</span>
+      <div className="h-px flex-1 bg-surface-border" />
+    </div>
+  )
+}
+
 // ── Main component ────────────────────────────────────────────────────────────
 export function Engine() {
   const livePortfolio = useStore((s) => s.livePortfolio)
@@ -320,18 +328,16 @@ export function Engine() {
     }
   }, [])
 
-  // Fetch agent status + scheduler every 5s (always, regardless of active tab)
   const fetchCore = useCallback(async () => {
     const [ag, sched] = await Promise.allSettled([getAgentStatus(), getSchedulerStats()])
     if (ag.status === 'fulfilled') setAgent(ag.value)
     if (sched.status === 'fulfilled') setScheduler(sched.value as any)
   }, [])
 
-  // Fetch all tab-specific data every 8s regardless of which tab is active
   const fetchAllSections = useCallback(async () => {
     const [posRes, tradeRes, rejRes, govRes, epRes, omsRes] = await Promise.allSettled([
       getPortfolioPositions(),
-      getAgentTrades(200),
+      getRecentTrades(200),
       getRiskRejections(200),
       getGovernanceDashboard(),
       getActiveExitPlans(),
@@ -345,7 +351,6 @@ export function Engine() {
     if (omsRes.status === 'fulfilled') setOms(((omsRes.value as any).events) ?? [])
   }, [])
 
-  // Batch tick fetch — single request instead of 22
   const fetchTicks = useCallback(async () => {
     try {
       if (tickRequestSymbols.length === 0) return
@@ -390,7 +395,7 @@ export function Engine() {
   }, [fetchCore, fetchAllSections, fetchTicks])
 
   useEffect(() => {
-    if (activeTab !== 'options') return
+    if (activeTab !== 'market') return
     fetchOptionChain()
     const chainIv = setInterval(fetchOptionChain, 8000)
     return () => clearInterval(chainIv)
@@ -469,7 +474,7 @@ export function Engine() {
       {/* ── Pipeline status strip ────────────────────────────────────────── */}
       <div className="flex items-center gap-1 text-[10px] font-mono overflow-x-auto pb-1">
         {[
-          { label: 'Live Feed',  ok: Object.keys(ticks).length > 0 },
+          { label: 'Live Feed',   ok: Object.keys(ticks).length > 0 },
           { label: 'Features',   ok: scanCount > 0 },
           { label: 'Regime',     ok: scanCount > 0 },
           { label: 'Strategy',   ok: scanCount > 0 },
@@ -493,6 +498,7 @@ export function Engine() {
         {TABS.map(tab => (
           <button key={tab.id}
             onClick={() => setActiveTab(tab.id)}
+            title={tab.hint}
             className={clsx(
               'flex items-center gap-1 px-3 py-1.5 text-xs font-medium whitespace-nowrap border-b-2 -mb-px transition-colors',
               activeTab === tab.id
@@ -502,6 +508,9 @@ export function Engine() {
             {tab.icon} {tab.label}
           </button>
         ))}
+        <div className="ml-auto flex items-center text-[10px] text-gray-600 pr-1 whitespace-nowrap">
+          {TABS.find(t => t.id === activeTab)?.hint}
+        </div>
       </div>
 
       {/* ════════════════════════════════════════════════════════════════
@@ -509,16 +518,47 @@ export function Engine() {
       ═══════════════════════════════════════════════════════════════ */}
       {activeTab === 'overview' && (
         <div className="space-y-4">
+          {/* Getting started guide — only shown before first scan */}
+          {!isRunning && scanCount === 0 && (
+            <div className="bg-indigo-950/30 border border-indigo-800/50 rounded-lg p-4">
+              <h3 className="text-sm font-semibold text-indigo-300 mb-3 flex items-center gap-2">
+                <Play size={13} /> Getting Started
+              </h3>
+              <ol className="space-y-2">
+                {[
+                  { label: 'Server running — API and database connected', done: true },
+                  { label: 'Click Start Agent above to begin autonomous market scanning', done: isRunning },
+                  { label: 'Agent scans all underlyings for regime + strategy signals', done: scanCount > 0 },
+                  { label: 'Check Monitor tab — see open positions and trade log', done: totalEnq > 0 },
+                  { label: 'Go to Dashboard — view live P&L, equity curve, and daily performance', done: false },
+                ].map((step, i) => (
+                  <li key={i} className="flex items-start gap-2 text-xs">
+                    <span className={clsx(
+                      'w-4 h-4 rounded-full flex items-center justify-center text-[9px] shrink-0 mt-0.5 font-bold',
+                      step.done ? 'bg-emerald-700 text-emerald-100' : 'bg-gray-700 text-gray-400',
+                    )}>
+                      {step.done ? '✓' : i + 1}
+                    </span>
+                    <span className={step.done ? 'text-gray-300' : 'text-gray-500'}>{step.label}</span>
+                  </li>
+                ))}
+              </ol>
+              <p className="text-[10px] text-indigo-500/70 mt-3">
+                Tip: Use the Signals view to manually run a one-off scan at any time without the agent.
+              </p>
+            </div>
+          )}
+
           {/* KPI row */}
           <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-2">
-            <StatBox label="Status"   value={isRunning ? 'RUNNING' : 'STOPPED'} color={isRunning ? 'text-emerald-400' : 'text-red-400'} />
-            <StatBox label="Scans"    value={scanCount} />
-            <StatBox label="Enqueued" value={totalEnq} />
-            <StatBox label="Universe" value={(universe.length || tickSymbols.length).toLocaleString('en-IN')} sub="instruments" />
+            <StatBox label="Status"     value={isRunning ? 'RUNNING' : 'STOPPED'} color={isRunning ? 'text-emerald-400' : 'text-red-400'} />
+            <StatBox label="Scans"      value={scanCount} />
+            <StatBox label="Enqueued"   value={totalEnq} />
+            <StatBox label="Universe"   value={(universe.length || tickSymbols.length).toLocaleString('en-IN')} sub="instruments" />
             <StatBox label="Live Ticks" value={Object.keys(ticks).length} sub={`/ ${tickSymbols.length.toLocaleString('en-IN')}`} color="text-emerald-400" />
             <StatBox label="Exit Plans" value={exitPlans.length} />
             <StatBox label="Rejections" value={rejections.length} sub="session" color="text-amber-400" />
-            <StatBox label="Interval" value={`${intervalSec}s`} />
+            <StatBox label="Interval"   value={`${intervalSec}s`} />
           </div>
 
           {/* Last cycle */}
@@ -536,7 +576,6 @@ export function Engine() {
                   <StatBox label="Duration"   value={`${lastCycle.duration_ms}ms`} />
                   <StatBox label="Errors"     value={lastCycle.errors?.length ?? 0} color={lastCycle.errors?.length ? 'text-red-400' : 'text-gray-400'} />
                 </div>
-                {/* Regimes */}
                 {Object.keys(lastCycle.regimes ?? {}).length > 0 && (
                   <div className="mt-3">
                     <div className="text-[10px] text-gray-500 mb-1">Regimes per underlying</div>
@@ -555,7 +594,6 @@ export function Engine() {
                     </div>
                   </div>
                 )}
-                {/* Signals enqueued this cycle */}
                 {(lastCycle.signals?.length ?? 0) > 0 && (
                   <div className="mt-3 space-y-1">
                     <div className="text-[10px] text-gray-500 mb-1">Signals enqueued this cycle</div>
@@ -570,7 +608,6 @@ export function Engine() {
                     ))}
                   </div>
                 )}
-                {/* Errors */}
                 {(lastCycle.errors?.length ?? 0) > 0 && (
                   <div className="mt-2 space-y-0.5">
                     {lastCycle.errors.map((e: string, i: number) => (
@@ -582,7 +619,6 @@ export function Engine() {
             </Card>
           )}
 
-          {/* Activity log */}
           <Card>
             <CardHeader title="Agent Activity Log (last 20)" />
             <CardBody>
@@ -593,7 +629,7 @@ export function Engine() {
                     <span className={entry.level === 'error' ? 'text-red-400' : 'text-gray-300'}>{entry.msg}</span>
                   </div>
                 ))}
-                {actLog.length === 0 && <span className="text-gray-600">No activity yet</span>}
+                {actLog.length === 0 && <span className="text-gray-600">No activity yet — start the agent to see logs here</span>}
               </div>
             </CardBody>
           </Card>
@@ -601,11 +637,11 @@ export function Engine() {
       )}
 
       {/* ════════════════════════════════════════════════════════════════
-          TAB: POSITIONS
+          TAB: MONITOR — Positions + Exit Plans + Trade Log
       ═══════════════════════════════════════════════════════════════ */}
-      {activeTab === 'positions' && (
+      {activeTab === 'monitor' && (
         <div className="space-y-4">
-          {/* Portfolio summary — WS snapshot (live) preferred over HTTP poll */}
+          {/* Portfolio summary */}
           {(positions?.portfolio || livePortfolio?.portfolio) && (() => {
             const p = livePortfolio?.portfolio ?? positions?.portfolio
             const drawdownPct = livePortfolio ? p.drawdown : (p.drawdown_pct ?? p.drawdown ?? 0)
@@ -621,63 +657,68 @@ export function Engine() {
               </div>
             )
           })()}
-          {/* Positions table — WS snapshot preferred */}
+
+          {/* Open Positions */}
           {(() => {
             const posList = livePortfolio?.positions ?? positions?.positions ?? []
             const count = livePortfolio?.count ?? positions?.count ?? 0
             return (
-          <Card>
-            <CardHeader title={`Open Positions (${count})`} />
-            <CardBody>
-              {posList.length === 0 ? (
-                <div className="text-center text-gray-600 py-8 text-sm">No open positions</div>
-              ) : (
-                <div className="overflow-x-auto">
-                  <table className="w-full text-xs">
-                    <thead>
-                      <tr className="text-gray-500 border-b border-surface-border text-left">
-                        <th className="py-1 pr-3">Symbol</th>
-                        <th className="py-1 pr-3">Side</th>
-                        <th className="py-1 pr-3 text-right">Qty</th>
-                        <th className="py-1 pr-3 text-right">Avg Price</th>
-                        <th className="py-1 pr-3 text-right">Mark</th>
-                        <th className="py-1 pr-3 text-right">Unreal P&L</th>
-                        <th className="py-1 pr-3 text-right">P&L %</th>
-                        <th className="py-1">Live</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {posList.map((pos: any) => (
-                        <tr key={pos.symbol} className="border-b border-surface-border/30 hover:bg-gray-800/30">
-                          <td className="py-1 pr-3 font-mono font-semibold text-gray-200">{pos.symbol}</td>
-                          <td className="py-1 pr-3">
-                            <span className={clsx('font-semibold', pos.side === 'BUY' ? 'text-emerald-400' : 'text-red-400')}>
-                              {pos.side}
-                            </span>
-                          </td>
-                          <td className="py-1 pr-3 text-right font-mono">{pos.quantity}</td>
-                          <td className="py-1 pr-3 text-right font-mono">₹{pos.average_price.toFixed(2)}</td>
-                          <td className="py-1 pr-3 text-right font-mono">₹{pos.mark_price.toFixed(2)}</td>
-                          <td className={clsx('py-1 pr-3 text-right font-mono', pos.unrealized_pnl >= 0 ? 'text-emerald-400' : 'text-red-400')}>
-                            {pos.unrealized_pnl >= 0 ? '+' : ''}₹{pos.unrealized_pnl.toFixed(2)}
-                          </td>
-                          <td className="py-1 pr-3 text-right"><PnlBadge value={pos.pnl_pct} /></td>
-                          <td className="py-1"><LiveDot live={pos.live} /></td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              )}
-            </CardBody>
-          </Card>
-          )})()}
+              <Card>
+                <CardHeader title={`Open Positions (${count})`} />
+                <CardBody>
+                  {posList.length === 0 ? (
+                    <div className="text-center text-gray-600 py-6 text-sm">
+                      No open positions — positions appear here once the agent executes trades
+                    </div>
+                  ) : (
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-xs">
+                        <thead>
+                          <tr className="text-gray-500 border-b border-surface-border text-left">
+                            <th className="py-1 pr-3">Symbol</th>
+                            <th className="py-1 pr-3">Side</th>
+                            <th className="py-1 pr-3 text-right">Qty</th>
+                            <th className="py-1 pr-3 text-right">Avg Price</th>
+                            <th className="py-1 pr-3 text-right">Mark</th>
+                            <th className="py-1 pr-3 text-right">Unreal P&L</th>
+                            <th className="py-1 pr-3 text-right">P&L %</th>
+                            <th className="py-1">Live</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {posList.map((pos: any) => (
+                            <tr key={pos.symbol} className="border-b border-surface-border/30 hover:bg-gray-800/30">
+                              <td className="py-1 pr-3 font-mono font-semibold text-gray-200">{pos.symbol}</td>
+                              <td className="py-1 pr-3">
+                                <span className={clsx('font-semibold', pos.side === 'BUY' ? 'text-emerald-400' : 'text-red-400')}>
+                                  {pos.side}
+                                </span>
+                              </td>
+                              <td className="py-1 pr-3 text-right font-mono">{pos.quantity}</td>
+                              <td className="py-1 pr-3 text-right font-mono">₹{pos.average_price.toFixed(2)}</td>
+                              <td className="py-1 pr-3 text-right font-mono">₹{pos.mark_price.toFixed(2)}</td>
+                              <td className={clsx('py-1 pr-3 text-right font-mono', pos.unrealized_pnl >= 0 ? 'text-emerald-400' : 'text-red-400')}>
+                                {pos.unrealized_pnl >= 0 ? '+' : ''}₹{pos.unrealized_pnl.toFixed(2)}
+                              </td>
+                              <td className="py-1 pr-3 text-right"><PnlBadge value={pos.pnl_pct} /></td>
+                              <td className="py-1"><LiveDot live={pos.live} /></td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </CardBody>
+              </Card>
+            )
+          })()}
+
           {/* Active exit plans */}
           <Card>
-            <CardHeader title={`Active Exit Plans (${exitPlans.length}) — SL / Target / Trailing`} />
+            <CardHeader title={`Active Exit Plans (${exitPlans.length}) — Stop Loss / Target / Trailing`} />
             <CardBody>
               {exitPlans.length === 0 ? (
-                <div className="text-center text-gray-600 py-6 text-sm">No active exit plans</div>
+                <div className="text-center text-gray-600 py-4 text-sm">No active exit plans</div>
               ) : (
                 <div className="overflow-x-auto">
                   <table className="w-full text-xs">
@@ -712,198 +753,69 @@ export function Engine() {
               )}
             </CardBody>
           </Card>
-        </div>
-      )}
 
-      {/* ════════════════════════════════════════════════════════════════
-          TAB: TRADE LOG
-      ═══════════════════════════════════════════════════════════════ */}
-      {activeTab === 'trades' && (
-        <Card>
-          <CardHeader title={`Agent Trade Log (${trades.length} fills)`} />
-          <CardBody>
-            {trades.length === 0 ? (
-              <div className="text-center text-gray-600 py-8 text-sm">
-                No trades yet — agent enqueues trades during market hours (9:15–15:20 IST)
-              </div>
-            ) : (
-              <div className="overflow-x-auto">
-                <table className="w-full text-xs">
-                  <thead>
-                    <tr className="text-gray-500 border-b border-surface-border text-left">
-                      <th className="py-1 pr-3">Time</th>
-                      <th className="py-1 pr-3">Type</th>
-                      <th className="py-1 pr-3">Symbol</th>
-                      <th className="py-1 pr-3">Side</th>
-                      <th className="py-1 pr-3">Strategy</th>
-                      <th className="py-1 pr-3">Regime</th>
-                      <th className="py-1 pr-3 text-right">Entry ₹</th>
-                      <th className="py-1 pr-3 text-right">Exit ₹</th>
-                      <th className="py-1 pr-3 text-right">P&L %</th>
-                      <th className="py-1 text-right">ML Score</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {trades.map((t: any, i: number) => (
-                      <tr key={i} className="border-b border-surface-border/30 hover:bg-gray-800/20">
-                        <td className="py-1 pr-3 font-mono text-[10px] text-gray-500">{t.ts?.substring(0, 19)}</td>
-                        <td className="py-1 pr-3">
-                          <span className={clsx('px-1 py-0.5 rounded text-[9px] font-bold',
-                            t.type === 'ENTRY' ? 'bg-emerald-900/50 text-emerald-400' : 'bg-blue-900/50 text-blue-400')}>
-                            {t.type}
-                          </span>
-                        </td>
-                        <td className="py-1 pr-3 font-mono font-semibold text-gray-200">{t.symbol}</td>
-                        <td className="py-1 pr-3">
-                          <span className={clsx('font-bold', t.side === 'BUY' ? 'text-emerald-400' : 'text-red-400')}>{t.side}</span>
-                        </td>
-                        <td className="py-1 pr-3 text-gray-400 text-[10px]">{t.strategy ?? '—'}</td>
-                        <td className="py-1 pr-3 text-[10px]">
-                          {t.regime ? (
-                            <span className={clsx(
-                              t.regime === 'TRENDING' ? 'text-emerald-400' :
-                              t.regime === 'HIGH_VOLATILITY' ? 'text-red-400' :
-                              t.regime === 'BREAKOUT' ? 'text-amber-400' : 'text-blue-400')}>
-                              {t.regime}
-                            </span>
-                          ) : '—'}
-                        </td>
-                        <td className="py-1 pr-3 text-right font-mono">
-                          {t.entry_price != null ? `₹${t.entry_price.toFixed(2)}` : '—'}
-                        </td>
-                        <td className="py-1 pr-3 text-right font-mono">
-                          {t.exit_price != null ? `₹${t.exit_price.toFixed(2)}` : '—'}
-                        </td>
-                        <td className="py-1 pr-3 text-right">
-                          {t.pnl_pct != null ? <PnlBadge value={t.pnl_pct} /> : '—'}
-                        </td>
-                        <td className="py-1 text-right font-mono text-[10px] text-indigo-300">
-                          {t.ml_score != null ? t.ml_score.toFixed(3) : '—'}
-                        </td>
+          <SectionDivider title="Trade Log" />
+
+          {/* Trade Log — reads from persistent SQLite so history survives restarts */}
+          <Card>
+            <CardHeader title={`Trade Log (${trades.length} fills)`} subtitle="persisted across restarts" />
+            <CardBody>
+              {trades.length === 0 ? (
+                <div className="text-center text-gray-600 py-6 text-sm">
+                  No trades yet — agent executes paper trades during market hours (9:15–15:20 IST)
+                </div>
+              ) : (
+                <div className="overflow-x-auto">
+                  <table className="w-full text-xs">
+                    <thead>
+                      <tr className="text-gray-500 border-b border-surface-border text-left">
+                        <th className="py-1 pr-3">Time</th>
+                        <th className="py-1 pr-3">Symbol</th>
+                        <th className="py-1 pr-3">Side</th>
+                        <th className="py-1 pr-3 text-right">Qty</th>
+                        <th className="py-1 pr-3 text-right">Fill ₹</th>
+                        <th className="py-1 pr-3">Strategy</th>
+                        <th className="py-1 text-right">Mode</th>
                       </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
-          </CardBody>
-        </Card>
-      )}
-
-      {/* ════════════════════════════════════════════════════════════════
-          TAB: GOVERNANCE
-      ═══════════════════════════════════════════════════════════════ */}
-      {activeTab === 'governance' && (
-        <div className="space-y-4">
-          {governance ? (
-            <>
-              {/* Goal */}
-              <Card>
-                <CardHeader title="Annual Goal Governance" />
-                <CardBody>
-                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mb-3">
-                    <StatBox label="Phase"      value={governance.goal?.phase ?? '—'}
-                      color={governance.goal?.phase === 'ON_TRACK' ? 'text-emerald-400' :
-                             governance.goal?.phase === 'LAGGING' ? 'text-amber-400' :
-                             governance.goal?.phase === 'HALTED' ? 'text-red-400' : 'text-gray-200'} />
-                    <StatBox label="Annual Target" value={`${governance.goal?.annual_target_pct ?? 0}%`} />
-                    <StatBox label="Actual Run Rate" value={`${governance.goal?.actual_run_rate?.toFixed(2) ?? 0}%`} />
-                    <StatBox label="Req. Run Rate"  value={`${governance.goal?.required_run_rate?.toFixed(2) ?? 0}%`} />
-                    <StatBox label="Scaling Factor" value={governance.goal?.scaling_factor ?? '—'}
-                      color={governance.goal?.scaling_factor < 1 ? 'text-amber-400' : 'text-gray-200'} />
-                    <StatBox label="Gap to Target"  value={`${governance.goal?.gap_pct?.toFixed(2) ?? 0}%`} />
-                    <StatBox label="Days Elapsed"   value={governance.goal?.days_elapsed ?? '—'} />
-                    <StatBox label="Days Remaining" value={governance.goal?.days_remaining ?? '—'} />
-                  </div>
-                  {/* Progress bar */}
-                  <div className="mb-2">
-                    <div className="flex justify-between text-[10px] text-gray-500 mb-1">
-                      <span>₹{governance.goal?.current_equity?.toFixed(0)}</span>
-                      <span>Target ₹{governance.goal?.target_equity?.toFixed(0)}</span>
-                    </div>
-                    <div className="h-2 bg-gray-800 rounded overflow-hidden">
-                      <div className="h-full bg-emerald-600 rounded"
-                        style={{ width: `${Math.min(100, Math.max(0, (governance.goal?.current_equity / governance.goal?.target_equity) * 100))}%` }} />
-                    </div>
-                  </div>
-                  <p className="text-xs text-gray-400">{governance.goal?.message}</p>
-                </CardBody>
-              </Card>
-              {/* ML Models */}
-              <Card>
-                <CardHeader title="ML Model Health" />
-                <CardBody>
-                  <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 mb-3">
-                    <StatBox label="Regime Classifier" value={governance.ml_models?.regime_classifier_trained ? 'TRAINED' : 'RULE-BASED'}
-                      color={governance.ml_models?.regime_classifier_trained ? 'text-emerald-400' : 'text-amber-400'} />
-                    <StatBox label="Feature Store Symbols" value={governance.ml_models?.feature_store_symbols?.length ?? 0} />
-                    <StatBox label="Risk Rejections (session)" value={governance.risk?.rejection_count_session ?? 0}
-                      color="text-amber-400" />
-                  </div>
-                  {/* Feature drift */}
-                  {Object.keys(governance.ml_models?.feature_drift_scores ?? {}).length > 0 && (
-                    <div className="mb-3">
-                      <div className="text-[10px] text-gray-500 mb-1">Feature Drift Scores ({'>'} 0.25 = retrain needed)</div>
-                      <div className="flex flex-wrap gap-1">
-                        {Object.entries(governance.ml_models.feature_drift_scores).map(([sym, score]) => (
-                          <span key={sym} className={clsx(
-                            'px-1.5 py-0.5 rounded text-[10px] font-mono',
-                            (score as number) > 0.25 ? 'bg-red-900/50 text-red-400' : 'bg-gray-800 text-gray-400',
-                          )}>
-                            {sym}: {(score as number).toFixed(3)}
-                          </span>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-                  {/* MetaModel summary */}
-                  {Object.keys(governance.ml_models?.meta_model_summary ?? {}).length > 0 && (
-                    <div>
-                      <div className="text-[10px] text-gray-500 mb-1">MetaModel Strategy Scores by Regime</div>
-                      {Object.entries(governance.ml_models.meta_model_summary).map(([regime, strategies]) => (
-                        <div key={regime} className="mb-2">
-                          <div className="text-[10px] font-bold text-gray-300 mb-0.5">{regime}</div>
-                          <div className="flex flex-wrap gap-1">
-                            {Object.entries(strategies as Record<string, number>)
-                              .sort((a, b) => b[1] - a[1])
-                              .map(([strat, score]) => (
-                                <span key={strat} className="px-1.5 py-0.5 rounded text-[10px] font-mono bg-indigo-900/30 text-indigo-300">
-                                  {strat}: {score.toFixed(3)}
-                                </span>
-                              ))}
-                          </div>
-                        </div>
+                    </thead>
+                    <tbody>
+                      {trades.map((t: any, i: number) => (
+                        <tr key={t.trade_id ?? i} className="border-b border-surface-border/30 hover:bg-gray-800/20">
+                          <td className="py-1 pr-3 font-mono text-[10px] text-gray-500">{(t.timestamp ?? t.ts)?.substring(0, 19)}</td>
+                          <td className="py-1 pr-3 font-mono font-semibold text-gray-200">{t.symbol}</td>
+                          <td className="py-1 pr-3">
+                            <span className={clsx('font-bold', t.side === 'BUY' ? 'text-emerald-400' : 'text-red-400')}>{t.side}</span>
+                          </td>
+                          <td className="py-1 pr-3 text-right font-mono">{t.quantity ?? '—'}</td>
+                          <td className="py-1 pr-3 text-right font-mono">
+                            {(t.price ?? t.entry_price) != null ? `₹${Number(t.price ?? t.entry_price).toFixed(2)}` : '—'}
+                          </td>
+                          <td className="py-1 pr-3 text-gray-400 text-[10px]">{t.strategy_name ?? t.strategy ?? '—'}</td>
+                          <td className="py-1 text-right">
+                            <span className={clsx('px-1 py-0.5 rounded text-[9px] font-bold',
+                              t.execution_mode === 'LIVE' ? 'bg-red-900/50 text-red-400' :
+                              t.execution_mode === 'PAPER' ? 'bg-amber-900/50 text-amber-400' :
+                              'bg-gray-800 text-gray-500')}>
+                              {t.execution_mode ?? '—'}
+                            </span>
+                          </td>
+                        </tr>
                       ))}
-                    </div>
-                  )}
-                  {/* Risk controls */}
-                  <div className="mt-3 flex gap-2 flex-wrap">
-                    <span className={clsx('px-2 py-0.5 rounded text-[10px]',
-                      governance.risk?.kill_switch ? 'bg-red-900 text-red-300' : 'bg-gray-800 text-gray-400')}>
-                      Kill Switch: {governance.risk?.kill_switch ? 'ACTIVE' : 'OFF'}
-                    </span>
-                    <span className={clsx('px-2 py-0.5 rounded text-[10px]',
-                      governance.risk?.live_armed ? 'bg-amber-900 text-amber-300' : 'bg-gray-800 text-gray-400')}>
-                      Live Armed: {governance.risk?.live_armed ? 'YES' : 'NO'}
-                    </span>
-                    <span className="px-2 py-0.5 rounded text-[10px] bg-gray-800 text-gray-400">
-                      Orders today: {governance.risk?.compliance_orders_today ?? 0}/{governance.risk?.compliance_max_orders ?? 200}
-                    </span>
-                  </div>
-                </CardBody>
-              </Card>
-            </>
-          ) : (
-            <div className="text-center text-gray-600 py-8">Loading governance data…</div>
-          )}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </CardBody>
+          </Card>
         </div>
       )}
 
       {/* ════════════════════════════════════════════════════════════════
-          TAB: LIVE PRICES
+          TAB: MARKET — Live Prices + Options Chain
       ═══════════════════════════════════════════════════════════════ */}
-      {activeTab === 'prices' && (
+      {activeTab === 'market' && (
         <div className="space-y-4">
+          {/* Live prices */}
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div className="text-xs text-gray-500">
               {tickSymbols.length.toLocaleString('en-IN')} cash/index symbols · {Object.keys(ticks).length.toLocaleString('en-IN')} live ticks
@@ -938,17 +850,12 @@ export function Engine() {
             </div>
           </div>
           <p className="text-[10px] text-gray-600 text-center">
-            Live ticks via Angel One SmartWebSocketV2. Prices stream at 9:15 AM IST.
-            F&O tokens loaded at pre-market (9:00 AM) from Angel One instrument master.
+            Live ticks via Angel One SmartWebSocketV2 · prices stream from 9:15 AM IST · F&O tokens loaded at pre-market (9:00 AM)
           </p>
-        </div>
-      )}
 
-      {/* ════════════════════════════════════════════════════════════════
-          TAB: OPTIONS
-      ═══════════════════════════════════════════════════════════════ */}
-      {activeTab === 'options' && (
-        <div className="space-y-4">
+          <SectionDivider title="Options Chain" />
+
+          {/* Options chain */}
           <div className="flex flex-wrap items-end justify-between gap-3">
             <div>
               <label className="block text-xs text-gray-500 mb-1">Underlying</label>
@@ -992,67 +899,165 @@ export function Engine() {
       )}
 
       {/* ════════════════════════════════════════════════════════════════
-          TAB: RISK LOG
+          TAB: DEBUG — Governance + Risk Log + Activity
       ═══════════════════════════════════════════════════════════════ */}
-      {activeTab === 'risk' && (
-        <Card>
-          <CardHeader title={`Risk Engine Rejection Log (${rejections.length})`} />
-          <CardBody>
-            {rejections.length === 0 ? (
-              <div className="text-center text-gray-600 py-8 text-sm">
-                No risk rejections this session — all scanned candidates were either approved or had no signal
-              </div>
-            ) : (
-              <div className="overflow-x-auto">
-                <table className="w-full text-xs">
-                  <thead>
-                    <tr className="text-gray-500 border-b border-surface-border text-left">
-                      <th className="py-1 pr-3">Time</th>
-                      <th className="py-1 pr-3">Symbol</th>
-                      <th className="py-1 pr-3">Strategy</th>
-                      <th className="py-1 pr-3">Regime</th>
-                      <th className="py-1 pr-3">Rejection Reason</th>
-                      <th className="py-1 text-right">Risk Score</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {rejections.map((r: any, i: number) => (
-                      <tr key={i} className="border-b border-surface-border/30 hover:bg-gray-800/20">
-                        <td className="py-1 pr-3 font-mono text-[10px] text-gray-500">{r.ts?.substring(11, 19)}</td>
-                        <td className="py-1 pr-3 font-mono font-semibold text-gray-200">{r.symbol || r.underlying}</td>
-                        <td className="py-1 pr-3 text-[10px] text-gray-400">{r.strategy}</td>
-                        <td className="py-1 pr-3 text-[10px]">
-                          <span className={clsx(
-                            r.regime === 'TRENDING' ? 'text-emerald-400' :
-                            r.regime === 'HIGH_VOLATILITY' ? 'text-red-400' :
-                            r.regime === 'BREAKOUT' ? 'text-amber-400' : 'text-blue-400')}>
-                            {r.regime}
-                          </span>
-                        </td>
-                        <td className="py-1 pr-3">
-                          <span className="px-1.5 py-0.5 rounded text-[10px] bg-red-900/30 text-red-300 font-mono">
-                            {r.reason}
-                          </span>
-                        </td>
-                        <td className="py-1 text-right font-mono text-[10px] text-amber-400">
-                          {(r.risk_score * 100).toFixed(0)}%
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
-          </CardBody>
-        </Card>
-      )}
-
-      {/* ════════════════════════════════════════════════════════════════
-          TAB: ACTIVITY (OMS events + exit plans + raw log)
-      ═══════════════════════════════════════════════════════════════ */}
-      {activeTab === 'activity' && (
+      {activeTab === 'debug' && (
         <div className="space-y-4">
-          {/* Scheduler */}
+          {/* Governance */}
+          {governance ? (
+            <>
+              <Card>
+                <CardHeader title="Annual Goal Governance" />
+                <CardBody>
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mb-3">
+                    <StatBox label="Phase"      value={governance.goal?.phase ?? '—'}
+                      color={governance.goal?.phase === 'ON_TRACK' ? 'text-emerald-400' :
+                             governance.goal?.phase === 'LAGGING' ? 'text-amber-400' :
+                             governance.goal?.phase === 'HALTED' ? 'text-red-400' : 'text-gray-200'} />
+                    <StatBox label="Annual Target" value={`${governance.goal?.annual_target_pct ?? 0}%`} />
+                    <StatBox label="Actual Run Rate" value={`${governance.goal?.actual_run_rate?.toFixed(2) ?? 0}%`} />
+                    <StatBox label="Req. Run Rate"  value={`${governance.goal?.required_run_rate?.toFixed(2) ?? 0}%`} />
+                    <StatBox label="Scaling Factor" value={governance.goal?.scaling_factor ?? '—'}
+                      color={governance.goal?.scaling_factor < 1 ? 'text-amber-400' : 'text-gray-200'} />
+                    <StatBox label="Gap to Target"  value={`${governance.goal?.gap_pct?.toFixed(2) ?? 0}%`} />
+                    <StatBox label="Days Elapsed"   value={governance.goal?.days_elapsed ?? '—'} />
+                    <StatBox label="Days Remaining" value={governance.goal?.days_remaining ?? '—'} />
+                  </div>
+                  <div className="mb-2">
+                    <div className="flex justify-between text-[10px] text-gray-500 mb-1">
+                      <span>₹{governance.goal?.current_equity?.toFixed(0)}</span>
+                      <span>Target ₹{governance.goal?.target_equity?.toFixed(0)}</span>
+                    </div>
+                    <div className="h-2 bg-gray-800 rounded overflow-hidden">
+                      <div className="h-full bg-emerald-600 rounded"
+                        style={{ width: `${Math.min(100, Math.max(0, (governance.goal?.current_equity / governance.goal?.target_equity) * 100))}%` }} />
+                    </div>
+                  </div>
+                  <p className="text-xs text-gray-400">{governance.goal?.message}</p>
+                </CardBody>
+              </Card>
+
+              <Card>
+                <CardHeader title="ML Model Health" />
+                <CardBody>
+                  <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 mb-3">
+                    <StatBox label="Regime Classifier" value={governance.ml_models?.regime_classifier_trained ? 'TRAINED' : 'RULE-BASED'}
+                      color={governance.ml_models?.regime_classifier_trained ? 'text-emerald-400' : 'text-amber-400'} />
+                    <StatBox label="Feature Store Symbols" value={governance.ml_models?.feature_store_symbols?.length ?? 0} />
+                    <StatBox label="Risk Rejections (session)" value={governance.risk?.rejection_count_session ?? 0}
+                      color="text-amber-400" />
+                  </div>
+                  {Object.keys(governance.ml_models?.feature_drift_scores ?? {}).length > 0 && (
+                    <div className="mb-3">
+                      <div className="text-[10px] text-gray-500 mb-1">Feature Drift Scores ({'>'} 0.25 = retrain needed)</div>
+                      <div className="flex flex-wrap gap-1">
+                        {Object.entries(governance.ml_models.feature_drift_scores).map(([sym, score]) => (
+                          <span key={sym} className={clsx(
+                            'px-1.5 py-0.5 rounded text-[10px] font-mono',
+                            (score as number) > 0.25 ? 'bg-red-900/50 text-red-400' : 'bg-gray-800 text-gray-400',
+                          )}>
+                            {sym}: {(score as number).toFixed(3)}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                  {Object.keys(governance.ml_models?.meta_model_summary ?? {}).length > 0 && (
+                    <div>
+                      <div className="text-[10px] text-gray-500 mb-1">MetaModel Strategy Scores by Regime</div>
+                      {Object.entries(governance.ml_models.meta_model_summary).map(([regime, strategies]) => (
+                        <div key={regime} className="mb-2">
+                          <div className="text-[10px] font-bold text-gray-300 mb-0.5">{regime}</div>
+                          <div className="flex flex-wrap gap-1">
+                            {Object.entries(strategies as Record<string, number>)
+                              .sort((a, b) => b[1] - a[1])
+                              .map(([strat, score]) => (
+                                <span key={strat} className="px-1.5 py-0.5 rounded text-[10px] font-mono bg-indigo-900/30 text-indigo-300">
+                                  {strat}: {score.toFixed(3)}
+                                </span>
+                              ))}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  <div className="mt-3 flex gap-2 flex-wrap">
+                    <span className={clsx('px-2 py-0.5 rounded text-[10px]',
+                      governance.risk?.kill_switch ? 'bg-red-900 text-red-300' : 'bg-gray-800 text-gray-400')}>
+                      Kill Switch: {governance.risk?.kill_switch ? 'ACTIVE' : 'OFF'}
+                    </span>
+                    <span className={clsx('px-2 py-0.5 rounded text-[10px]',
+                      governance.risk?.live_armed ? 'bg-amber-900 text-amber-300' : 'bg-gray-800 text-gray-400')}>
+                      Live Armed: {governance.risk?.live_armed ? 'YES' : 'NO'}
+                    </span>
+                    <span className="px-2 py-0.5 rounded text-[10px] bg-gray-800 text-gray-400">
+                      Orders today: {governance.risk?.compliance_orders_today ?? 0}/{governance.risk?.compliance_max_orders ?? 200}
+                    </span>
+                  </div>
+                </CardBody>
+              </Card>
+            </>
+          ) : (
+            <div className="text-center text-gray-600 py-6">Loading governance data…</div>
+          )}
+
+          <SectionDivider title="Risk Rejection Log" />
+
+          {/* Risk rejections */}
+          <Card>
+            <CardHeader title={`Risk Engine Rejection Log (${rejections.length})`} />
+            <CardBody>
+              {rejections.length === 0 ? (
+                <div className="text-center text-gray-600 py-6 text-sm">
+                  No risk rejections this session — approved candidates were either executed or had no signal
+                </div>
+              ) : (
+                <div className="overflow-x-auto">
+                  <table className="w-full text-xs">
+                    <thead>
+                      <tr className="text-gray-500 border-b border-surface-border text-left">
+                        <th className="py-1 pr-3">Time</th>
+                        <th className="py-1 pr-3">Symbol</th>
+                        <th className="py-1 pr-3">Strategy</th>
+                        <th className="py-1 pr-3">Regime</th>
+                        <th className="py-1 pr-3">Rejection Reason</th>
+                        <th className="py-1 text-right">Risk Score</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {rejections.map((r: any, i: number) => (
+                        <tr key={i} className="border-b border-surface-border/30 hover:bg-gray-800/20">
+                          <td className="py-1 pr-3 font-mono text-[10px] text-gray-500">{r.ts?.substring(11, 19)}</td>
+                          <td className="py-1 pr-3 font-mono font-semibold text-gray-200">{r.symbol || r.underlying}</td>
+                          <td className="py-1 pr-3 text-[10px] text-gray-400">{r.strategy}</td>
+                          <td className="py-1 pr-3 text-[10px]">
+                            <span className={clsx(
+                              r.regime === 'TRENDING' ? 'text-emerald-400' :
+                              r.regime === 'HIGH_VOLATILITY' ? 'text-red-400' :
+                              r.regime === 'BREAKOUT' ? 'text-amber-400' : 'text-blue-400')}>
+                              {r.regime}
+                            </span>
+                          </td>
+                          <td className="py-1 pr-3">
+                            <span className="px-1.5 py-0.5 rounded text-[10px] bg-red-900/30 text-red-300 font-mono">
+                              {r.reason}
+                            </span>
+                          </td>
+                          <td className="py-1 text-right font-mono text-[10px] text-amber-400">
+                            {(r.risk_score * 100).toFixed(0)}%
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </CardBody>
+          </Card>
+
+          <SectionDivider title="System Activity" />
+
+          {/* Scheduler stats */}
           {scheduler && (
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
               <StatBox label="Orders Queued" value={scheduler.queue_depth ?? 0} />
@@ -1062,11 +1067,12 @@ export function Engine() {
                 color={scheduler.kill_switch_active ? 'text-red-400' : 'text-gray-400'} />
             </div>
           )}
+
           {/* OMS events */}
           <Card>
             <CardHeader title="OMS Event Stream (last 50)" />
             <CardBody>
-              <div className="space-y-0.5 max-h-72 overflow-y-auto font-mono text-[10px]">
+              <div className="space-y-0.5 max-h-60 overflow-y-auto font-mono text-[10px]">
                 {oms.length === 0 && <span className="text-gray-600">No OMS events yet</span>}
                 {oms.map((ev: any, i: number) => (
                   <div key={i} className="flex gap-2 items-start border-b border-surface-border/20 py-0.5">
@@ -1086,11 +1092,12 @@ export function Engine() {
               </div>
             </CardBody>
           </Card>
+
           {/* Full activity log */}
           <Card>
             <CardHeader title={`Agent Activity Log (all ${actLog.length})`} />
             <CardBody>
-              <div className="space-y-0.5 max-h-80 overflow-y-auto font-mono text-[11px]">
+              <div className="space-y-0.5 max-h-72 overflow-y-auto font-mono text-[11px]">
                 {actLog.slice().reverse().map((entry: any, i: number) => (
                   <div key={i} className="flex gap-2 border-b border-surface-border/20 py-0.5">
                     <span className="text-gray-600 shrink-0">{entry.ts}</span>

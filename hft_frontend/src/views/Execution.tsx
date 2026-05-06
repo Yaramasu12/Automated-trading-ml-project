@@ -133,6 +133,15 @@ export function Execution() {
             subtitle={`${approvals?.pending_count ?? 0} pending · threshold ${inr(approvals?.approval_threshold_notional ?? 0)}`}
             icon={<CheckCircle size={14} />}
           />
+          {!approvals?.pending?.length && (
+            <CardBody>
+              <p className="text-xs text-gray-500 mb-3">
+                Large orders (above the notional threshold) require human review before execution.
+                Approve to submit the order to the broker, or Reject to discard it.
+                Pending approvals expire automatically after a short window.
+              </p>
+            </CardBody>
+          )}
           {approvals?.pending?.length ? (
             <div className="divide-y divide-surface-border">
               {approvals.pending.map((request) => (

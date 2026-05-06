@@ -269,8 +269,8 @@ class TradingAgent:
     async def _scan_and_execute(self) -> None:
         start_ms = _now_ms()
         cycle = AgentCycleResult(
-            ts=now_ist().strftime("%H:%M:%S"),
-            market_status=market_status(),
+            ts=now.strftime("%H:%M:%S"),
+            market_status=market_status(now),
             underlyings_scanned=SCAN_UNDERLYINGS,
             total_candidates=0,
             approved=0,
@@ -418,6 +418,7 @@ class TradingAgent:
             BULLISH_THRESHOLD = 0.02
             BEARISH_THRESHOLD = -0.015
             LOW_VOL_THRESHOLD = 0.01
+            HIGH_VOL_THRESHOLD = 0.03
 
             records_by_symbol: dict[str, list[dict]] = {}
             for r in fs.all_records():
@@ -432,9 +433,9 @@ class TradingAgent:
                         continue
                     future_mom = recs[i + FORWARD_STEPS].get("momentum_5", 0.0)
                     vol = rec.get("realized_volatility", 0.0)
-                    if future_mom > BULLISH_THRESHOLD:
+                    if future_mom > BULLISH_THRESHOLD or future_mom < BEARISH_THRESHOLD:
                         label = "TRENDING"
-                    elif future_mom < BEARISH_THRESHOLD:
+                    elif vol > HIGH_VOL_THRESHOLD:
                         label = "HIGH_VOLATILITY"
                     elif abs(vol) < LOW_VOL_THRESHOLD:
                         label = "MEAN_REVERTING"

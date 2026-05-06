@@ -314,6 +314,7 @@ class TradingRuntime:
                     mark_prices[sym] = tick.last_price
             snap = self.portfolio.mark_to_market(datetime.now(timezone.utc), mark_prices)
             self.db.save_snapshot(snap, execution_mode=exec_mode)
+            self.db.save_positions(self.portfolio.positions, execution_mode=exec_mode)
             self.monitor.record_order({"status": "FILLED"})
         except Exception as _persist_err:
             logger.warning("_on_fill DB persist error: %s", _persist_err)
@@ -346,6 +347,11 @@ class TradingRuntime:
                 })
             if len(self._agent_trade_log) > 500:
                 self._agent_trade_log = self._agent_trade_log[-500:]
+            # Remove persisted exit plan now that the position is closed
+            try:
+                self.db.delete_exit_plans_for_symbol(symbol, execution_mode=exec_mode)
+            except Exception:
+                pass
             return
 
         # ── Entry fill: record context for ML feedback later ────────────────
@@ -390,6 +396,10 @@ class TradingRuntime:
             partial_exit=True,   # book 50% at target, trail the rest for extended gains
         )
         self.exit_manager.register(plan)
+        try:
+            self.db.save_exit_plan(plan.to_dict(), execution_mode=exec_mode)
+        except Exception:
+            pass
         broker_name = getattr(self.broker_client(), "name", self.settings.broker)
         capabilities = self.broker_capabilities.get(broker_name)
         self.oms.append(
@@ -415,6 +425,72 @@ class TradingRuntime:
             "positions",
         )
 
+    async def restore_state(self) -> None:
+        """Reconstruct portfolio positions and exit plans from DB after a restart.
+
+        Called once during lifespan startup so open positions and their
+        stop-loss/target watches survive container restarts and redeployments.
+        """
+        exec_mode = self.execution_mode.value
+        restored_positions = 0
+        restored_plans = 0
+
+        # ── Restore portfolio positions ────────────────────────────────────
+        snapshot = self.db.latest_snapshot(execution_mode=exec_mode)
+        if snapshot:
+            self.portfolio.cash = snapshot["cash"]
+            self.portfolio.peak_equity = max(self.portfolio.peak_equity, snapshot["equity"])
+
+        from trading_platform.domain.models import Position
+        for pos_data in self.db.load_positions(execution_mode=exec_mode):
+            symbol = pos_data["symbol"]
+            instrument = self.instrument_master.get(symbol)
+            if instrument is None:
+                logger.warning("restore_state: unknown instrument %s — position skipped", symbol)
+                continue
+            self.portfolio.positions[symbol] = Position(
+                instrument=instrument,
+                quantity=pos_data["quantity"],
+                average_price=pos_data["average_price"],
+                realized_pnl=pos_data["realized_pnl"],
+            )
+            restored_positions += 1
+
+        # ── Restore active exit plans ──────────────────────────────────────
+        for plan_data in self.db.load_exit_plans(execution_mode=exec_mode):
+            symbol = plan_data["symbol"]
+            instrument = self.instrument_master.get(symbol)
+            if instrument is None:
+                logger.warning("restore_state: unknown instrument %s — exit plan skipped", symbol)
+                continue
+            expiry = date.fromisoformat(plan_data["expiry_date"]) if plan_data.get("expiry_date") else None
+            plan = ExitPlan(
+                plan_id=plan_data["plan_id"],
+                instrument=instrument,
+                symbol=symbol,
+                entry_price=plan_data["entry_price"],
+                quantity=plan_data["quantity"],
+                strategy_name=plan_data["strategy_name"],
+                side=plan_data["side"],
+                stop_loss_price=plan_data.get("stop_loss_price"),
+                target_price=plan_data.get("target_price"),
+                trailing_pct=plan_data.get("trailing_pct"),
+                expiry_date=expiry,
+                partial_exit_enabled=bool(plan_data.get("partial_exit_enabled", 0)),
+            )
+            self.exit_manager.register(plan)
+            restored_plans += 1
+
+        if restored_positions or restored_plans:
+            logger.info(
+                "restore_state: recovered %d position(s) and %d exit plan(s) for mode=%s",
+                restored_positions, restored_plans, exec_mode,
+            )
+            self.monitor.record_event(
+                "state_restored",
+                f"Recovered {restored_positions} position(s) and {restored_plans} exit plan(s) from DB",
+            )
+
     async def start_async_services(self) -> None:
         """Start scheduler, exit manager, live feed, and trading agent."""
         await self.scheduler.start()
@@ -422,6 +498,7 @@ class TradingRuntime:
         if self.settings.angel_one_configured:
             self.start_live_feed()
         self.agent.start()
+        await self.restore_state()
         self.monitor.record_event("async_services_started", "Scheduler, ExitManager, and Agent started")
 
     async def stop_async_services(self) -> None:

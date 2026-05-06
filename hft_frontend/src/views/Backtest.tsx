@@ -157,11 +157,59 @@ export function Backtest() {
           {/* Reports table */}
           {backtestResult.reports.length > 0 && (
             <Card>
-              <CardHeader title="Trade Reports" subtitle={`${backtestResult.reports.length} entries`} />
-              <div className="overflow-x-auto max-h-64 overflow-y-auto">
-                <pre className="text-xs text-gray-400 p-4 font-mono whitespace-pre-wrap">
-                  {JSON.stringify(backtestResult.reports.slice(0, 20), null, 2)}
-                </pre>
+              <CardHeader title="Trade Reports" subtitle={`${backtestResult.reports.length} trades (showing first 50)`} />
+              <div className="overflow-x-auto max-h-80 overflow-y-auto">
+                <table className="w-full text-xs">
+                  <thead className="sticky top-0 bg-surface-card">
+                    <tr className="text-gray-500 border-b border-surface-border text-left">
+                      <th className="px-3 py-2">Time</th>
+                      <th className="px-3 py-2">Symbol</th>
+                      <th className="px-3 py-2">Strategy</th>
+                      <th className="px-3 py-2">Side</th>
+                      <th className="px-3 py-2 text-right">Entry ₹</th>
+                      <th className="px-3 py-2 text-right">Exit ₹</th>
+                      <th className="px-3 py-2 text-right">P&L ₹</th>
+                      <th className="px-3 py-2 text-right">P&L %</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {(backtestResult.reports.slice(0, 50) as any[]).map((r, i) => {
+                      const pnl = r.pnl ?? r.realized_pnl ?? null
+                      const pnlPct = r.pnl_pct ?? r.return_pct ?? null
+                      const side = r.side ?? r.direction ?? null
+                      return (
+                        <tr key={i} className="border-b border-surface-border/40 hover:bg-surface-elevated/40">
+                          <td className="px-3 py-1.5 font-mono text-gray-500 text-[10px]">
+                            {(r.ts ?? r.entry_time ?? r.timestamp ?? '—').toString().substring(0, 19)}
+                          </td>
+                          <td className="px-3 py-1.5 font-mono font-semibold text-brand-blue">
+                            {r.symbol ?? r.underlying ?? '—'}
+                          </td>
+                          <td className="px-3 py-1.5 text-gray-400">{r.strategy ?? r.strategy_name ?? '—'}</td>
+                          <td className="px-3 py-1.5">
+                            {side ? (
+                              <span className={side === 'BUY' ? 'text-brand-green font-semibold' : 'text-brand-red font-semibold'}>
+                                {side}
+                              </span>
+                            ) : '—'}
+                          </td>
+                          <td className="px-3 py-1.5 text-right font-mono">
+                            {r.entry_price != null ? inr(r.entry_price, 2) : '—'}
+                          </td>
+                          <td className="px-3 py-1.5 text-right font-mono">
+                            {r.exit_price != null ? inr(r.exit_price, 2) : '—'}
+                          </td>
+                          <td className={`px-3 py-1.5 text-right font-mono ${pnl == null ? '' : pnl >= 0 ? 'text-brand-green' : 'text-brand-red'}`}>
+                            {pnl != null ? `${pnl >= 0 ? '+' : ''}${inr(pnl, 2)}` : '—'}
+                          </td>
+                          <td className={`px-3 py-1.5 text-right font-mono ${pnlPct == null ? '' : pnlPct >= 0 ? 'text-brand-green' : 'text-brand-red'}`}>
+                            {pnlPct != null ? `${pnlPct >= 0 ? '+' : ''}${pct(pnlPct)}` : '—'}
+                          </td>
+                        </tr>
+                      )
+                    })}
+                  </tbody>
+                </table>
               </div>
             </Card>
           )}
