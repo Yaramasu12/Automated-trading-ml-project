@@ -75,6 +75,36 @@ CREATE TABLE IF NOT EXISTS risk_events (
 )
 """
 
+_CREATE_OPEN_POSITIONS = """
+CREATE TABLE IF NOT EXISTS open_positions (
+    symbol          TEXT NOT NULL,
+    execution_mode  TEXT NOT NULL,
+    quantity        INTEGER NOT NULL,
+    average_price   REAL NOT NULL,
+    realized_pnl    REAL NOT NULL DEFAULT 0,
+    updated_at      TEXT NOT NULL,
+    PRIMARY KEY (symbol, execution_mode)
+)
+"""
+
+_CREATE_ACTIVE_EXIT_PLANS = """
+CREATE TABLE IF NOT EXISTS active_exit_plans (
+    plan_id              TEXT PRIMARY KEY,
+    symbol               TEXT NOT NULL,
+    execution_mode       TEXT NOT NULL,
+    side                 TEXT NOT NULL,
+    entry_price          REAL NOT NULL,
+    quantity             INTEGER NOT NULL,
+    strategy_name        TEXT NOT NULL,
+    stop_loss_price      REAL,
+    target_price         REAL,
+    trailing_pct         REAL,
+    expiry_date          TEXT,
+    partial_exit_enabled INTEGER NOT NULL DEFAULT 0,
+    created_at           TEXT NOT NULL
+)
+"""
+
 
 class TradingDatabase:
     """Thread-safe SQLite journal for trades, portfolio snapshots, and risk events.
@@ -122,6 +152,11 @@ class TradingDatabase:
             cur.execute(_CREATE_DAILY_PNL)
             cur.execute(_CREATE_MODEL_RUNS)
             cur.execute(_CREATE_RISK_EVENTS)
+            cur.execute(_CREATE_OPEN_POSITIONS)
+            cur.execute(_CREATE_ACTIVE_EXIT_PLANS)
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_trades_timestamp ON trades (timestamp)")
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_trades_mode ON trades (execution_mode)")
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_snapshots_mode ON portfolio_snapshots (execution_mode)")
 
     # ------------------------------------------------------------------
     # Trades
@@ -349,8 +384,90 @@ class TradingDatabase:
             "risk_blocks": risk_blocks,
         }
 
+    # ------------------------------------------------------------------
+    # Open positions (restart recovery)
+    # ------------------------------------------------------------------
+
+    def save_positions(self, positions: dict, execution_mode: str) -> None:
+        """Upsert every position. Rows with quantity=0 are deleted (closed)."""
+        now = datetime.now(timezone.utc).isoformat()
+        with self._cursor() as cur:
+            for symbol, pos in positions.items():
+                if pos.quantity == 0:
+                    cur.execute(
+                        "DELETE FROM open_positions WHERE symbol=? AND execution_mode=?",
+                        (symbol, execution_mode),
+                    )
+                else:
+                    cur.execute(
+                        """INSERT INTO open_positions
+                           (symbol, execution_mode, quantity, average_price, realized_pnl, updated_at)
+                           VALUES (?,?,?,?,?,?)
+                           ON CONFLICT(symbol, execution_mode) DO UPDATE SET
+                             quantity=excluded.quantity,
+                             average_price=excluded.average_price,
+                             realized_pnl=excluded.realized_pnl,
+                             updated_at=excluded.updated_at""",
+                        (symbol, execution_mode, pos.quantity, pos.average_price,
+                         pos.realized_pnl, now),
+                    )
+
+    def load_positions(self, execution_mode: str) -> list[dict]:
+        with self._cursor() as cur:
+            cur.execute(
+                "SELECT * FROM open_positions WHERE execution_mode=? AND quantity != 0",
+                (execution_mode,),
+            )
+            return [dict(row) for row in cur.fetchall()]
+
+    # ------------------------------------------------------------------
+    # Active exit plans (restart recovery)
+    # ------------------------------------------------------------------
+
+    def save_exit_plan(self, plan: dict, execution_mode: str) -> None:
+        with self._cursor() as cur:
+            cur.execute(
+                """INSERT INTO active_exit_plans
+                   (plan_id, symbol, execution_mode, side, entry_price, quantity,
+                    strategy_name, stop_loss_price, target_price, trailing_pct,
+                    expiry_date, partial_exit_enabled, created_at)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+                   ON CONFLICT(plan_id) DO UPDATE SET
+                     stop_loss_price=excluded.stop_loss_price,
+                     target_price=excluded.target_price,
+                     trailing_pct=excluded.trailing_pct""",
+                (
+                    plan["plan_id"], plan["symbol"], execution_mode, plan["side"],
+                    plan["entry_price"], plan["quantity"], plan["strategy_name"],
+                    plan.get("stop_loss_price"), plan.get("target_price"),
+                    plan.get("trailing_pct"), plan.get("expiry_date"),
+                    int(plan.get("partial_exit_enabled", False)),
+                    datetime.now(timezone.utc).isoformat(),
+                ),
+            )
+
+    def delete_exit_plan(self, plan_id: str) -> None:
+        with self._cursor() as cur:
+            cur.execute("DELETE FROM active_exit_plans WHERE plan_id=?", (plan_id,))
+
+    def delete_exit_plans_for_symbol(self, symbol: str, execution_mode: str) -> None:
+        with self._cursor() as cur:
+            cur.execute(
+                "DELETE FROM active_exit_plans WHERE symbol=? AND execution_mode=?",
+                (symbol, execution_mode),
+            )
+
+    def load_exit_plans(self, execution_mode: str) -> list[dict]:
+        with self._cursor() as cur:
+            cur.execute(
+                "SELECT * FROM active_exit_plans WHERE execution_mode=?",
+                (execution_mode,),
+            )
+            return [dict(row) for row in cur.fetchall()]
+
     def close(self) -> None:
         conn = getattr(self._local, "conn", None)
         if conn:
+            conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
             conn.close()
             self._local.conn = None
