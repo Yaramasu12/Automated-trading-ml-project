@@ -112,6 +112,8 @@ export function Dashboard() {
     ? Math.min(100, (targetProgress.realized_pnl / targetProgress.annual_target) * 100)
     : 0
 
+  const isSystemFresh = equityCurve.length === 0 && recentTrades.length === 0 && !livePortfolio
+
   return (
     <div className="space-y-5">
       {/* Header row */}
@@ -131,6 +133,32 @@ export function Dashboard() {
           </button>
         </div>
       </div>
+
+      {/* Onboarding guide — shown when system is fresh */}
+      {isSystemFresh && (
+        <div className="bg-indigo-950/30 border border-indigo-800/50 rounded-lg p-4">
+          <h3 className="text-sm font-semibold text-indigo-300 mb-3">Welcome — No trading data yet</h3>
+          <p className="text-xs text-gray-400 mb-3">
+            This dashboard shows live P&L, equity curve, and trade history once the engine has run.
+            Follow these steps to get started:
+          </p>
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+            {[
+              { step: '1', title: 'Start the Agent', desc: 'Go to Engine view → click Start Agent. The agent scans markets every 5 minutes during trading hours (9:15–15:20 IST).' },
+              { step: '2', title: 'Run a Manual Scan', desc: 'Go to Signal Scanner → click Run Scan to preview signals right now without waiting for the agent cycle.' },
+              { step: '3', title: 'Come back here', desc: 'After trades are executed (paper mode), this dashboard populates with equity curve, P&L bars, and trade history.' },
+            ].map(({ step, title, desc }) => (
+              <div key={step} className="flex gap-3">
+                <span className="w-6 h-6 rounded-full bg-indigo-700 text-indigo-100 flex items-center justify-center text-xs font-bold shrink-0 mt-0.5">{step}</span>
+                <div>
+                  <div className="text-xs font-semibold text-gray-200">{title}</div>
+                  <div className="text-[11px] text-gray-500 mt-0.5">{desc}</div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* KPI strip */}
       <div className="grid grid-cols-2 md:grid-cols-4 xl:grid-cols-7 gap-3">

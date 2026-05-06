@@ -74,6 +74,36 @@ export function Signals() {
         </div>
       </div>
 
+      {/* How-to guide */}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+        <div className="bg-surface-card border border-surface-border rounded-lg p-4 space-y-2">
+          <div className="text-xs font-semibold text-gray-300 mb-2">Scan vs Shadow mode</div>
+          <div className="flex items-start gap-2 text-xs">
+            <span className="px-2 py-0.5 rounded bg-brand-blue/20 text-brand-blue font-semibold shrink-0">SCAN</span>
+            <span className="text-gray-500">Analyzes regime + strategies for each underlying and generates candidates. Does <em>not</em> place any orders. Use this to preview signals before running the agent.</span>
+          </div>
+          <div className="flex items-start gap-2 text-xs">
+            <span className="px-2 py-0.5 rounded bg-indigo-900/60 text-indigo-300 font-semibold shrink-0">SHADOW</span>
+            <span className="text-gray-500">Same analysis as Scan, but also submits approved candidates as paper orders. Use to test the full execution pipeline without risking capital.</span>
+          </div>
+        </div>
+        <div className="bg-surface-card border border-surface-border rounded-lg p-4 space-y-2">
+          <div className="text-xs font-semibold text-gray-300 mb-2">Reading the results</div>
+          <div className="flex items-center gap-2 text-xs">
+            <span className="px-2 py-0.5 rounded bg-brand-green/20 text-brand-green font-semibold">APPROVED</span>
+            <span className="text-gray-500">Signal passed regime, strategy, and risk checks. In Shadow mode, an order was submitted.</span>
+          </div>
+          <div className="flex items-center gap-2 text-xs">
+            <span className="px-2 py-0.5 rounded bg-brand-red/20 text-brand-red font-semibold">BLOCKED</span>
+            <span className="text-gray-500">Rejected by the risk engine. Check the Reason column for the specific limit that triggered. Common: drawdown, position size, daily loss.</span>
+          </div>
+          <div className="flex items-center gap-2 text-xs">
+            <span className="px-2 py-0.5 rounded bg-gray-700 text-gray-400 font-semibold">—</span>
+            <span className="text-gray-500">Strategy generated no signal for this underlying given the current regime.</span>
+          </div>
+        </div>
+      </div>
+
       {/* Controls */}
       <Card>
         <CardBody className="flex flex-wrap items-end gap-4">
@@ -197,9 +227,11 @@ export function Signals() {
                         <td className="px-4 py-2 text-right font-mono">{c.quantity}</td>
                         <td className="px-4 py-2">
                           {c.risk_decision ? (
-                            <Badge variant={c.risk_decision.approved ? 'green' : 'red'}>
-                              {c.risk_decision.approved ? 'OK' : 'BLOCKED'}
-                            </Badge>
+                            <span title={!c.risk_decision.approved ? c.risk_decision.reason : undefined}>
+                              <Badge variant={c.risk_decision.approved ? 'green' : 'red'}>
+                                {c.risk_decision.approved ? 'OK' : 'BLOCKED'}
+                              </Badge>
+                            </span>
                           ) : '—'}
                         </td>
                         <td className="px-4 py-2 text-gray-400 max-w-48 truncate">{c.reason}</td>
