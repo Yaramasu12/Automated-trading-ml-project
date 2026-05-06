@@ -22,6 +22,8 @@ from typing import TYPE_CHECKING
 from trading_platform.agent.market_hours import (
     is_entry_allowed,
     is_eod_squareoff,
+    is_mcx_entry_allowed,
+    is_mcx_eod_squareoff,
     is_premarket,
     is_trading_day,
     market_status,
@@ -36,7 +38,8 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-SCAN_UNDERLYINGS = [
+# ── Equity underlyings (NSE/BSE F&O) — session 09:15–15:20 IST ───────────────
+EQUITY_UNDERLYINGS = [
     # NSE Indices (F&O on NFO — weekly expiry Thursday)
     "NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY",
     # BSE Indices (F&O on BFO — SENSEX weekly Friday, BANKEX weekly Monday)
@@ -53,6 +56,18 @@ SCAN_UNDERLYINGS = [
     "ADANIENT", "ADANIPORTS", "APOLLOHOSP", "TATACONSUM", "TRENT",
     "BAJAJFINSV", "DIVISLAB", "SHRIRAMFIN",
 ]
+
+# ── MCX commodity underlyings — session 09:00–23:25 IST ──────────────────────
+COMMODITY_UNDERLYINGS = [
+    "GOLD", "GOLDM",            # precious metals
+    "SILVER", "SILVERMIC",
+    "CRUDEOIL", "CRUDEOILM",    # energy
+    "NATURALGAS",
+    "COPPER", "ZINC", "NICKEL", # base metals
+]
+
+SCAN_UNDERLYINGS = EQUITY_UNDERLYINGS + COMMODITY_UNDERLYINGS
+COMMODITY_SET = set(COMMODITY_UNDERLYINGS)
 DEFAULT_SCAN_INTERVAL = 300   # 5 minutes
 MIN_SCAN_INTERVAL = 30        # 30 seconds (frontend can lower for demo)
 LOOKBACK_DAYS = 60
@@ -85,6 +100,7 @@ class AgentState:
     premarket_done: bool = False
     premarket_date: date | None = None
     eod_done: bool = False
+    mcx_eod_done: bool = False
     started_at: str | None = None
     activity_log: list[dict] = field(default_factory=list)
 
@@ -184,24 +200,43 @@ class TradingAgent:
             self._state.premarket_done = True
             return
 
-        # EOD square-off
+        # Equity EOD square-off (15:25–15:30 IST)
         if is_eod_squareoff(now) and not self._state.eod_done:
             await self._eod_routine()
             self._state.eod_done = True
             return
 
-        # Reset EOD flag on a new day
+        # Reset equity EOD flag once the window passes
         if not is_eod_squareoff(now):
             self._state.eod_done = False
 
-        # Only scan + execute during open market with entry allowed
-        if not is_entry_allowed(now):
+        # MCX commodity EOD square-off (23:25–23:30 IST)
+        if is_mcx_eod_squareoff(now) and not self._state.mcx_eod_done:
+            await self._mcx_eod_routine()
+            self._state.mcx_eod_done = True
+            return
+
+        if not is_mcx_eod_squareoff(now):
+            self._state.mcx_eod_done = False
+
+        # Determine which markets are open right now
+        equity_open = is_entry_allowed(now)
+        mcx_open = is_mcx_entry_allowed(now)
+
+        if not equity_open and not mcx_open:
             wait = seconds_to_next_open(now)
             self._log_activity(f"Market {ms} — sleeping until next open ({wait/3600:.1f}h)")
             return
 
+        # Filter underlyings to whichever session(s) are active
+        active_underlyings = []
+        if equity_open:
+            active_underlyings.extend(EQUITY_UNDERLYINGS)
+        if mcx_open:
+            active_underlyings.extend(COMMODITY_UNDERLYINGS)
+
         # Main trading cycle
-        await self._scan_and_execute()
+        await self._scan_and_execute(active_underlyings)
 
     # ──────────────────────────────────────────────────────────────── routines
 
@@ -249,29 +284,52 @@ class TradingAgent:
             self._log_activity(f"Pre-market error: {exc}", level="error")
 
     async def _eod_routine(self) -> None:
-        self._log_activity("EOD: squaring off all open positions")
+        self._log_activity("EOD: squaring off all equity positions (15:25 IST)")
         try:
             positions = self._runtime.portfolio.position_symbols()
-            if positions:
+            # Only square off equity positions (not MCX — those close at 23:25)
+            equity_positions = [s for s in positions if s not in COMMODITY_SET]
+            if equity_positions:
                 result = await self._runtime.square_off_manager.square_off()
                 self._log_activity(
                     f"EOD square-off issued for {result.get('positions_targeted', 0)} positions "
                     f"({result.get('intents_enqueued', 0)} enqueued)"
                 )
             else:
-                self._log_activity("EOD: no open positions to square off")
+                self._log_activity("EOD: no open equity positions to square off")
                 result = {}
-            self._publish("agent.eod_done", {"positions_squared": len(positions) if positions else 0})
+            self._publish("agent.eod_done", {"positions_squared": len(equity_positions)})
         except Exception as exc:
             logger.error("EOD routine error: %s", exc)
             self._log_activity(f"EOD error: {exc}", level="error")
 
-    async def _scan_and_execute(self) -> None:
+    async def _mcx_eod_routine(self) -> None:
+        self._log_activity("MCX EOD: squaring off all commodity positions (23:25 IST)")
+        try:
+            positions = self._runtime.portfolio.position_symbols()
+            commodity_positions = [s for s in positions if s in COMMODITY_SET]
+            if commodity_positions:
+                result = await self._runtime.square_off_manager.square_off()
+                self._log_activity(
+                    f"MCX EOD square-off issued for {result.get('positions_targeted', 0)} positions "
+                    f"({result.get('intents_enqueued', 0)} enqueued)"
+                )
+            else:
+                self._log_activity("MCX EOD: no open commodity positions to square off")
+                result = {}
+            self._publish("agent.mcx_eod_done", {"positions_squared": len(commodity_positions)})
+        except Exception as exc:
+            logger.error("MCX EOD routine error: %s", exc)
+            self._log_activity(f"MCX EOD error: {exc}", level="error")
+
+    async def _scan_and_execute(self, active_underlyings: list[str] | None = None) -> None:
+        now = now_ist()
+        underlyings = active_underlyings or SCAN_UNDERLYINGS
         start_ms = _now_ms()
         cycle = AgentCycleResult(
             ts=now.strftime("%H:%M:%S"),
             market_status=market_status(now),
-            underlyings_scanned=SCAN_UNDERLYINGS,
+            underlyings_scanned=underlyings,
             total_candidates=0,
             approved=0,
             rejected=0,
@@ -292,7 +350,7 @@ class TradingAgent:
             scans = await asyncio.to_thread(
                 self._runtime.signal_scan,
                 {
-                    "underlyings": SCAN_UNDERLYINGS,
+                    "underlyings": underlyings,
                     "start": scan_start.isoformat(),
                     "days": LOOKBACK_DAYS,
                 },

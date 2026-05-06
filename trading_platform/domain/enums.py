@@ -44,6 +44,7 @@ class Exchange(str, Enum):
     BSE = "BSE"
     NFO = "NFO"
     BFO = "BFO"
+    MCX = "MCX"
 
 
 class Segment(str, Enum):
@@ -55,6 +56,7 @@ class Segment(str, Enum):
 class AssetClass(str, Enum):
     EQUITY = "EQUITY"
     INDEX = "INDEX"
+    COMMODITY = "COMMODITY"
 
 
 class InstrumentType(str, Enum):
@@ -62,6 +64,7 @@ class InstrumentType(str, Enum):
     INDEX = "INDEX"
     FUTURE = "FUTURE"
     OPTION = "OPTION"
+    COMMODITY_FUTURE = "COMMODITY_FUTURE"
 
 
 class OptionType(str, Enum):

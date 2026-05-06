@@ -38,9 +38,10 @@ IST = ZoneInfo("Asia/Kolkata")
 
 # (hour, minute) in IST
 _JOBS: list[tuple[int, int, str]] = [
-    (8, 55, "instrument_refresh"),
-    (15, 20, "eod_square_off"),
+    (8,  55, "instrument_refresh"),
+    (15, 20, "eod_square_off"),        # equity EOD — NSE/BSE close at 15:30
     (15, 35, "daily_pnl_report"),
+    (23, 25, "mcx_eod_square_off"),    # commodity EOD — MCX close at 23:30
 ]
 
 def _now_ist() -> datetime:
@@ -170,10 +171,39 @@ def run_daily_pnl_report() -> None:
         logger.error("daily_pnl_report failed: %s", exc)
 
 
+def run_mcx_eod_square_off() -> None:
+    logger.info("JOB: mcx_eod_square_off — squaring off open MCX commodity positions at 23:25 IST")
+    try:
+        from trading_platform.config import load_settings
+
+        settings = load_settings()
+        if settings.angel_one_configured:
+            try:
+                import urllib.request
+                token = os.environ.get("API_AUTH_TOKEN", "")
+                headers = {"Content-Type": "application/json"}
+                if token:
+                    headers["Authorization"] = f"Bearer {token}"
+                # Use the square-off API endpoint for commodity scope
+                req = urllib.request.Request(
+                    "http://localhost:8000/square-off",
+                    data=b'{"scope": "GLOBAL", "reason": "mcx_eod_squareoff_23:25"}',
+                    headers=headers,
+                    method="POST",
+                )
+                urllib.request.urlopen(req, timeout=5)
+                logger.info("MCX EOD square-off triggered via API")
+            except Exception as api_exc:
+                logger.warning("Could not reach API for MCX EOD square-off: %s", api_exc)
+    except Exception as exc:
+        logger.error("mcx_eod_square_off failed: %s", exc)
+
+
 _JOB_FNS = {
     "instrument_refresh": run_instrument_refresh,
     "eod_square_off": run_eod_square_off,
     "daily_pnl_report": run_daily_pnl_report,
+    "mcx_eod_square_off": run_mcx_eod_square_off,
 }
 
 
