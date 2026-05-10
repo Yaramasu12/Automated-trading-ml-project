@@ -1,235 +1,330 @@
-import { useEffect, useRef, useState } from 'react'
-import { Brain, Loader2, Newspaper, Play, RefreshCw } from 'lucide-react'
+import { useEffect, useState, useCallback } from 'react'
+import { Newspaper, Loader2, Brain, Calendar } from 'lucide-react'
+import { clsx } from 'clsx'
 import { Card, CardBody, CardHeader } from '../components/shared/Card'
-import { Badge, regimeBadge } from '../components/shared/Badge'
-import { analyzeNews, getCurrentRegime, getNewsEvents, getPerformanceSummary } from '../api'
-import { fmtDateTime, num, pct } from '../utils'
+import { Table } from '../components/shared/Table'
+import { Tag, regimeBadge } from '../components/shared/Badge'
+import { analyzeNews, getCurrentRegime, getNewsEvents, getEconomicCalendar } from '../api'
+import { fmtDateTime } from '../utils'
 
-interface NewsEvent {
-  event_id: string
-  headline: string
-  source: string
-  event_type: string
-  recommended_action: string
-  global_risk_score: number
-  importance_score: number
-  sentiment_score: number
-  received_at: string
-}
-
-interface StrategyQuality {
-  strategy_id: string
-  profit_factor: number
-  sharpe: number
-  max_drawdown: number
-  win_rate: number
-  score: number
-  scaling_eligible: boolean
-}
+const TABS = ['News', 'Regime', 'Calendar']
+const REGIME_SYMBOLS = ['NIFTY', 'BANKNIFTY', 'FINNIFTY', 'SENSEX']
 
 export function Intelligence() {
-  const [headline, setHeadline] = useState('Breaking RBI policy shock may increase banking volatility')
-  const [summary, setSummary] = useState('RBI event risk can affect BANKNIFTY, FINNIFTY, and rate-sensitive sectors.')
-  const [newsEvents, setNewsEvents] = useState<NewsEvent[]>([])
-  const [newsFeatures, setNewsFeatures] = useState<Record<string, unknown> | null>(null)
-  const [regime, setRegime] = useState<Record<string, unknown> | null>(null)
-  const [performance, setPerformance] = useState<Record<string, unknown> | null>(null)
-  const [loading, setLoading] = useState(false)
+  const [tab, setTab] = useState('News')
 
-  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  // News state
+  const [headline, setHeadline]         = useState('')
+  const [newsResult, setNewsResult]     = useState<Record<string, unknown> | null>(null)
+  const [newsLoading, setNewsLoading]   = useState(false)
+  const [newsEvents, setNewsEvents]     = useState<Record<string, unknown>[]>([])
+  const [eventsLoading, setEventsLoading] = useState(false)
 
-  async function refresh() {
-    setLoading(true)
-    try {
-      const [news, current, perf] = await Promise.allSettled([
-        getNewsEvents(30),
-        getCurrentRegime('NIFTY'),
-        getPerformanceSummary(30),
-      ])
-      if (news.status === 'fulfilled') {
-        setNewsEvents(news.value.events as NewsEvent[])
-        setNewsFeatures(news.value.features)
-      }
-      if (current.status === 'fulfilled') setRegime(current.value)
-      if (perf.status === 'fulfilled') setPerformance(perf.value)
-    } finally {
-      setLoading(false)
-    }
-  }
+  // Regime state
+  const [regimeSymbol, setRegimeSymbol]     = useState('NIFTY')
+  const [regimeResult, setRegimeResult]     = useState<Record<string, unknown> | null>(null)
+  const [regimeLoading, setRegimeLoading]   = useState(false)
 
-  async function submitNews() {
-    setLoading(true)
-    try {
-      await analyzeNews({ headline, summary, country: 'IN', source: 'dashboard' })
-      await refresh()
-    } finally {
-      setLoading(false)
-    }
-  }
+  // Calendar state
+  const [calendarEvents, setCalendarEvents] = useState<Record<string, unknown>[]>([])
+  const [calendarLoading, setCalendarLoading] = useState(false)
 
   useEffect(() => {
-    refresh()
-    // News + regime refresh every 30s; performance summary is expensive so only fetched on mount
-    pollRef.current = setInterval(async () => {
-      const [news, current] = await Promise.allSettled([
-        getNewsEvents(30),
-        getCurrentRegime('NIFTY'),
-      ])
-      if (news.status === 'fulfilled') {
-        setNewsEvents(news.value.events as NewsEvent[])
-        setNewsFeatures(news.value.features)
-      }
-      if (current.status === 'fulfilled') setRegime(current.value)
-    }, 30_000)
-    return () => { if (pollRef.current) clearInterval(pollRef.current) }
+    setEventsLoading(true)
+    getNewsEvents(30)
+      .then(r => {
+        const v = r as { events?: Record<string, unknown>[] }
+        setNewsEvents(v.events ?? [])
+      })
+      .catch(() => {})
+      .finally(() => setEventsLoading(false))
   }, [])
 
-  const qualityScores = ((performance?.strategy_quality_scores as StrategyQuality[] | undefined) ?? []).slice(0, 8)
-  const adjustedRegime = String(regime?.adjusted_regime ?? regime?.regime ?? '—')
+  useEffect(() => {
+    if (tab === 'Calendar' && calendarEvents.length === 0) {
+      setCalendarLoading(true)
+      getEconomicCalendar()
+        .then(r => {
+          const v = r as { events?: Record<string, unknown>[] }
+          setCalendarEvents(v.events ?? [])
+        })
+        .catch(() => {})
+        .finally(() => setCalendarLoading(false))
+    }
+  }, [tab])
+
+  const runNewsAnalysis = useCallback(async () => {
+    if (!headline.trim()) return
+    setNewsLoading(true)
+    try {
+      const res = await analyzeNews({ text: headline })
+      setNewsResult(res)
+    } catch { /* ignore */ }
+    finally { setNewsLoading(false) }
+  }, [headline])
+
+  const runRegime = useCallback(async () => {
+    setRegimeLoading(true)
+    try {
+      const res = await getCurrentRegime(regimeSymbol)
+      setRegimeResult(res)
+    } catch { /* ignore */ }
+    finally { setRegimeLoading(false) }
+  }, [regimeSymbol])
 
   return (
     <div className="space-y-5">
-      <div className="flex items-center justify-between">
+
+      {/* Header */}
+      <div className="flex items-center gap-2">
+        <Newspaper size={16} className="text-brand-yellow" />
         <div>
-          <h1 className="text-lg font-bold text-gray-100">Intelligence</h1>
-          <p className="text-xs text-gray-500 mt-0.5">Regime, event risk, and strategy quality</p>
+          <h1 className="text-lg font-bold text-gray-100">Market Intelligence</h1>
+          <p className="text-xs text-gray-500 mt-0.5">News analysis, regime detection, economic calendar</p>
         </div>
-        <button
-          onClick={refresh}
-          disabled={loading}
-          className="flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-surface-elevated border border-surface-border text-xs text-gray-400 hover:text-gray-200 disabled:opacity-50"
-        >
-          {loading ? <Loader2 size={12} className="animate-spin" /> : <RefreshCw size={12} />}
-          Refresh
-        </button>
       </div>
 
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-        <Stat label="Regime" value={adjustedRegime} />
-        <Stat label="News Risk" value={num(Number(newsFeatures?.global_risk_score ?? 0), 3)} />
-        <Stat label="Active Events" value={Number(newsFeatures?.active_event_count ?? 0)} />
-        <Stat label="Action" value={String(newsFeatures?.recommended_action ?? 'MONITOR')} />
+      {/* Tabs */}
+      <div className="flex items-center gap-1">
+        {TABS.map((t) => (
+          <button
+            key={t}
+            onClick={() => setTab(t)}
+            className={clsx(
+              'flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium border transition-colors',
+              tab === t
+                ? 'bg-brand-yellow/15 border-brand-yellow/30 text-brand-yellow'
+                : 'text-gray-400 hover:text-gray-200 hover:bg-surface-elevated border-transparent',
+            )}
+          >
+            {t === 'News'     && <Newspaper size={12} />}
+            {t === 'Regime'   && <Brain size={12} />}
+            {t === 'Calendar' && <Calendar size={12} />}
+            {t}
+          </button>
+        ))}
       </div>
 
-      <div className="grid grid-cols-1 xl:grid-cols-2 gap-5">
-        <Card>
-          <CardHeader title="News Intake" subtitle="Normalized event-risk scoring" icon={<Newspaper size={14} />} />
-          <CardBody className="space-y-3">
-            <input
-              value={headline}
-              onChange={(e) => setHeadline(e.target.value)}
-              className="w-full bg-surface-elevated border border-surface-border rounded-md px-3 py-2 text-sm text-gray-200 focus:outline-none focus:border-brand-blue"
-            />
-            <textarea
-              value={summary}
-              onChange={(e) => setSummary(e.target.value)}
-              rows={3}
-              className="w-full bg-surface-elevated border border-surface-border rounded-md px-3 py-2 text-sm text-gray-200 focus:outline-none focus:border-brand-blue resize-none"
-            />
-            <button
-              onClick={submitNews}
-              disabled={loading}
-              className="flex items-center gap-2 px-4 py-1.5 rounded-md bg-brand-blue text-surface text-sm font-medium hover:bg-brand-blue/80 disabled:opacity-50"
-            >
-              {loading ? <Loader2 size={14} className="animate-spin" /> : <Play size={14} />}
-              Analyze
-            </button>
-          </CardBody>
-        </Card>
+      {/* Tab: News */}
+      {tab === 'News' && (
+        <div className="space-y-4">
+          <Card>
+            <CardHeader title="News Sentiment Analysis" icon={<Newspaper size={14} />} />
+            <CardBody className="space-y-3">
+              <div>
+                <label className="block text-xs text-gray-400 mb-2 uppercase tracking-wider">Headline / Article Text</label>
+                <textarea
+                  value={headline}
+                  onChange={(e) => setHeadline(e.target.value)}
+                  rows={3}
+                  placeholder="Enter news headline or article..."
+                  className="w-full bg-surface-elevated border border-surface-border text-xs text-gray-200 rounded px-3 py-2 font-mono focus:outline-none focus:border-brand-yellow resize-none"
+                />
+              </div>
+              <button
+                onClick={runNewsAnalysis}
+                disabled={newsLoading || !headline.trim()}
+                className="flex items-center gap-2 px-4 py-2 rounded-md bg-brand-yellow/15 border border-brand-yellow/30 text-brand-yellow text-xs font-medium hover:bg-brand-yellow/25 disabled:opacity-50 transition-colors"
+              >
+                {newsLoading ? <Loader2 size={12} className="animate-spin" /> : <Newspaper size={12} />}
+                Analyze
+              </button>
 
-        <Card>
-          <CardHeader title="Current Regime" subtitle={String(regime?.symbol ?? 'NIFTY')} icon={<Brain size={14} />} />
-          <CardBody className="space-y-4">
-            <div className="flex items-center justify-between">
-              <span className="text-sm text-gray-400">Adjusted Regime</span>
-              {regimeBadge(adjustedRegime)}
-            </div>
-            <div className="grid grid-cols-2 gap-3">
-              {Object.entries((regime?.probabilities as Record<string, number> | undefined) ?? {}).map(([key, value]) => (
-                <div key={key} className="rounded-md bg-surface-elevated px-3 py-2">
-                  <div className="text-xs text-gray-500">{key}</div>
-                  <div className="font-mono text-gray-100">{pct(value * 100)}</div>
+              {newsResult && (
+                <div className="mt-3 space-y-3 border-t border-surface-border pt-3">
+                  <div className="flex items-center gap-3 flex-wrap">
+                    <Tag
+                      label={String(newsResult.sentiment ?? newsResult.label ?? 'NEUTRAL')}
+                      color={
+                        String(newsResult.sentiment ?? '').includes('POS') ? 'green'
+                        : String(newsResult.sentiment ?? '').includes('NEG') ? 'red'
+                        : 'gray'
+                      }
+                    />
+                    {newsResult.score != null && (
+                      <span className="text-sm font-mono text-gray-200">
+                        Score: <strong>{Number(newsResult.score).toFixed(3)}</strong>
+                      </span>
+                    )}
+                  </div>
+                  {Boolean(newsResult.features) && (
+                    <div>
+                      <div className="text-xs text-gray-400 mb-1">Features</div>
+                      <div className="grid grid-cols-2 gap-2">
+                        {Object.entries(newsResult.features as Record<string, unknown>).slice(0, 6).map(([k, v]) => (
+                          <div key={k} className="text-xs bg-surface-elevated rounded p-1.5">
+                            <span className="text-gray-500">{k}: </span>
+                            <span className="text-gray-200 font-mono">{String(v)}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                  {Array.isArray(newsResult.entities) && newsResult.entities.length > 0 && (
+                    <div>
+                      <div className="text-xs text-gray-400 mb-1">Entities</div>
+                      <div className="flex flex-wrap gap-1.5">
+                        {(newsResult.entities as string[]).map((e, i) => (
+                          <Tag key={i} label={e} color="blue" />
+                        ))}
+                      </div>
+                    </div>
+                  )}
                 </div>
+              )}
+            </CardBody>
+          </Card>
+
+          <Card>
+            <CardHeader title="Recent News Events" subtitle={`${newsEvents.length} events`} />
+            {eventsLoading ? (
+              <div className="flex items-center justify-center py-8">
+                <Loader2 size={16} className="animate-spin text-gray-500" />
+              </div>
+            ) : (
+              <Table
+                columns={[
+                  {
+                    key: 'timestamp', label: 'Time',
+                    render: (v) => <span className="text-xs text-gray-500">{fmtDateTime(String(v))}</span>,
+                  },
+                  { key: 'headline', label: 'Headline' },
+                  {
+                    key: 'sentiment', label: 'Sentiment',
+                    render: (v) => v ? (
+                      <Tag
+                        label={String(v)}
+                        color={
+                          String(v).includes('POS') ? 'green'
+                          : String(v).includes('NEG') ? 'red'
+                          : 'gray'
+                        }
+                      />
+                    ) : <span className="text-gray-600">—</span>,
+                  },
+                ]}
+                rows={newsEvents.slice(0, 30)}
+                keyFn={(r) => String(r.id ?? r.timestamp ?? Math.random())}
+                emptyMessage="No news events"
+                compact
+              />
+            )}
+          </Card>
+        </div>
+      )}
+
+      {/* Tab: Regime */}
+      {tab === 'Regime' && (
+        <Card>
+          <CardHeader title="Regime Detection" icon={<Brain size={14} />} />
+          <CardBody className="space-y-4">
+            <div className="flex flex-wrap items-center gap-3">
+              <span className="text-xs text-gray-400">Symbol:</span>
+              {REGIME_SYMBOLS.map((s) => (
+                <button
+                  key={s}
+                  onClick={() => setRegimeSymbol(s)}
+                  className={clsx(
+                    'px-2.5 py-1 rounded text-xs font-mono border transition-colors',
+                    regimeSymbol === s
+                      ? 'bg-brand-blue/15 border-brand-blue/30 text-brand-blue'
+                      : 'bg-surface-elevated border-surface-border text-gray-400 hover:text-gray-200',
+                  )}
+                >
+                  {s}
+                </button>
               ))}
+              <button
+                onClick={runRegime}
+                disabled={regimeLoading}
+                className="flex items-center gap-2 px-4 py-2 rounded-md bg-brand-blue/15 border border-brand-blue/30 text-brand-blue text-xs font-medium hover:bg-brand-blue/25 disabled:opacity-50 transition-colors"
+              >
+                {regimeLoading ? <Loader2 size={12} className="animate-spin" /> : <Brain size={12} />}
+                Detect Regime
+              </button>
             </div>
+
+            {regimeResult && (
+              <div className="space-y-4 pt-3 border-t border-surface-border">
+                <div className="flex items-center gap-3">
+                  <span className="text-sm text-gray-400">Current Regime:</span>
+                  {regimeBadge(String(regimeResult.regime ?? 'UNKNOWN'))}
+                </div>
+
+                {Boolean(regimeResult.probabilities) && (
+                  <div className="space-y-2">
+                    <div className="text-xs text-gray-400 uppercase tracking-wider">Probability Breakdown</div>
+                    {Object.entries(regimeResult.probabilities as Record<string, number>)
+                      .sort(([, a], [, b]) => b - a)
+                      .map(([regime, prob]) => (
+                        <div key={regime} className="space-y-1">
+                          <div className="flex items-center justify-between text-xs">
+                            <span className="text-gray-300">{regime}</span>
+                            <span className="font-mono text-gray-400">{(prob * 100).toFixed(1)}%</span>
+                          </div>
+                          <div className="h-1.5 bg-surface-elevated rounded-full overflow-hidden">
+                            <div
+                              className={clsx(
+                                'h-full rounded-full transition-all',
+                                regime.toLowerCase().includes('bull') ? 'bg-brand-green'
+                                : regime.toLowerCase().includes('bear') ? 'bg-brand-red'
+                                : 'bg-brand-blue',
+                              )}
+                              style={{ width: `${prob * 100}%` }}
+                            />
+                          </div>
+                        </div>
+                      ))}
+                  </div>
+                )}
+              </div>
+            )}
           </CardBody>
         </Card>
-      </div>
+      )}
 
-      <Card>
-        <CardHeader title="Strategy Quality" subtitle={`${qualityScores.length} ranked strategies`} />
-        <div className="overflow-x-auto">
-          <table className="w-full text-xs">
-            <thead>
-              <tr className="border-b border-surface-border text-gray-500 uppercase tracking-wider">
-                <th className="px-4 py-2 text-left">Strategy</th>
-                <th className="px-4 py-2 text-right">Score</th>
-                <th className="px-4 py-2 text-right">PF</th>
-                <th className="px-4 py-2 text-right">Sharpe</th>
-                <th className="px-4 py-2 text-right">Drawdown</th>
-                <th className="px-4 py-2 text-left">Scaling</th>
-              </tr>
-            </thead>
-            <tbody>
-              {qualityScores.map((row) => (
-                <tr key={row.strategy_id} className="border-b border-surface-border/40 hover:bg-surface-elevated/40">
-                  <td className="px-4 py-2 font-medium text-gray-200">{row.strategy_id}</td>
-                  <td className="px-4 py-2 text-right font-mono">{num(row.score, 3)}</td>
-                  <td className="px-4 py-2 text-right font-mono">{num(row.profit_factor, 2)}</td>
-                  <td className="px-4 py-2 text-right font-mono">{num(row.sharpe, 2)}</td>
-                  <td className="px-4 py-2 text-right font-mono">{pct(row.max_drawdown * 100)}</td>
-                  <td className="px-4 py-2">
-                    <Badge variant={row.scaling_eligible ? 'green' : 'gray'}>
-                      {row.scaling_eligible ? 'ELIGIBLE' : 'HOLD'}
-                    </Badge>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </Card>
+      {/* Tab: Calendar */}
+      {tab === 'Calendar' && (
+        <Card>
+          <CardHeader title="Economic Calendar" subtitle={`${calendarEvents.length} events`} icon={<Calendar size={14} />} />
+          {calendarLoading ? (
+            <div className="flex items-center justify-center py-8">
+              <Loader2 size={16} className="animate-spin text-gray-500" />
+            </div>
+          ) : (
+            <Table
+              columns={[
+                {
+                  key: 'date', label: 'Date',
+                  render: (v) => <span className="text-xs font-mono text-gray-300">{String(v)}</span>,
+                },
+                { key: 'event', label: 'Event' },
+                { key: 'country', label: 'Country' },
+                {
+                  key: 'impact', label: 'Impact',
+                  render: (v) => (
+                    <Tag
+                      label={String(v ?? 'LOW')}
+                      color={
+                        String(v) === 'HIGH' ? 'red'
+                        : String(v) === 'MEDIUM' ? 'yellow'
+                        : 'gray'
+                      }
+                    />
+                  ),
+                },
+                { key: 'forecast', label: 'Forecast' },
+                { key: 'previous', label: 'Previous' },
+              ]}
+              rows={calendarEvents.slice(0, 50)}
+              keyFn={(r) => String(r.id ?? r.event ?? Math.random())}
+              emptyMessage="No calendar events"
+              compact
+            />
+          )}
+        </Card>
+      )}
 
-      <Card>
-        <CardHeader title="News Events" subtitle={`${newsEvents.length} recent`} />
-        <div className="overflow-x-auto">
-          <table className="w-full text-xs">
-            <thead>
-              <tr className="border-b border-surface-border text-gray-500 uppercase tracking-wider">
-                <th className="px-4 py-2 text-left">Time</th>
-                <th className="px-4 py-2 text-left">Headline</th>
-                <th className="px-4 py-2 text-left">Type</th>
-                <th className="px-4 py-2 text-right">Risk</th>
-                <th className="px-4 py-2 text-left">Action</th>
-              </tr>
-            </thead>
-            <tbody>
-              {newsEvents.map((event) => (
-                <tr key={event.event_id} className="border-b border-surface-border/40 hover:bg-surface-elevated/40">
-                  <td className="px-4 py-2 font-mono text-gray-500">{fmtDateTime(event.received_at)}</td>
-                  <td className="px-4 py-2 text-gray-300 max-w-md truncate">{event.headline}</td>
-                  <td className="px-4 py-2 text-gray-500">{event.event_type}</td>
-                  <td className="px-4 py-2 text-right font-mono">{num(event.global_risk_score, 3)}</td>
-                  <td className="px-4 py-2">
-                    <Badge variant={event.recommended_action === 'BLOCK_ENTRIES' ? 'red' : event.recommended_action === 'MONITOR' ? 'gray' : 'yellow'}>
-                      {event.recommended_action}
-                    </Badge>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </Card>
-    </div>
-  )
-}
-
-function Stat({ label, value }: { label: string; value: string | number }) {
-  return (
-    <div className="bg-surface-card border border-surface-border rounded-lg p-4 min-w-0">
-      <div className="text-xs text-gray-500 mb-1">{label}</div>
-      <div className="text-lg font-bold font-mono text-gray-100 truncate">{value}</div>
     </div>
   )
 }

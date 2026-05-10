@@ -1,19 +1,17 @@
-import { useState } from 'react'
+import { useState, useCallback } from 'react'
 import {
-  CartesianGrid,
-  Line,
-  LineChart,
-  ResponsiveContainer,
-  Tooltip,
-  XAxis,
-  YAxis,
+  Area, AreaChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis,
 } from 'recharts'
 import { BookOpen, Loader2, Play } from 'lucide-react'
+import { clsx } from 'clsx'
 import { Card, CardBody, CardHeader } from '../components/shared/Card'
-import { Badge } from '../components/shared/Badge'
+import { Table } from '../components/shared/Table'
+import { Tag } from '../components/shared/Badge'
 import { useStore } from '../store'
 import { runBacktest } from '../api'
-import { inr, pct, num } from '../utils'
+import { inr, pct, fmtDate } from '../utils'
+
+const UNDERLYINGS = ['NIFTY', 'BANKNIFTY', 'FINNIFTY', 'MIDCPNIFTY', 'RELIANCE', 'TCS', 'INFY', 'HDFCBANK']
 
 const TOOLTIP_STYLE = {
   backgroundColor: '#161b22',
@@ -24,101 +22,148 @@ const TOOLTIP_STYLE = {
 }
 
 export function Backtest() {
-  const backtestResult = useStore((s) => s.backtestResult)
+  const backtestResult    = useStore((s) => s.backtestResult)
   const setBacktestResult = useStore((s) => s.setBacktestResult)
-  const loading = useStore((s) => s.loading.backtest)
-  const setLoading = useStore((s) => s.setLoading)
-  const setError = useStore((s) => s.setError)
+  const loading           = useStore((s) => s.loading.backtest)
+  const setLoading        = useStore((s) => s.setLoading)
+  const setError          = useStore((s) => s.setError)
 
-  const [underlyings, setUnderlyings] = useState('NIFTY, BANKNIFTY')
-  const [days, setDays] = useState('30')
-  const [capital, setCapital] = useState('2000000')
-  const [strategy, setStrategy] = useState('')
+  const [capital, setCapital]   = useState(2000000)
+  const [startDate, setStartDate] = useState(() => {
+    const d = new Date(); d.setMonth(d.getMonth() - 1)
+    return d.toISOString().split('T')[0]
+  })
+  const [days, setDays]         = useState(30)
+  const [selectedUnderlyings, setSelectedUnderlyings] = useState<string[]>(['NIFTY', 'BANKNIFTY'])
+  const [strategyFilter, setStrategyFilter] = useState('')
+  const [tradeLogExpanded, setTradeLogExpanded] = useState(false)
 
-  async function run() {
+  function toggleUnderlying(u: string) {
+    setSelectedUnderlyings(prev =>
+      prev.includes(u) ? prev.filter(x => x !== u) : [...prev, u]
+    )
+  }
+
+  const runBt = useCallback(async () => {
     setLoading('backtest', true)
     setError(null)
     try {
-      const payload: Record<string, unknown> = {
-        underlyings: underlyings.split(',').map((s) => s.trim()).filter(Boolean),
-        days: parseInt(days, 10),
-        starting_capital: parseFloat(capital),
+      const payload = {
+        starting_capital: capital,
+        start: startDate,
+        days,
+        underlyings: selectedUnderlyings,
+        strategy_name: strategyFilter || undefined,
       }
-      if (strategy.trim()) payload.strategy_name = strategy.trim()
-      const result = await runBacktest(payload)
-      setBacktestResult(result)
+      const res = await runBacktest(payload)
+      setBacktestResult(res)
     } catch (e) {
-      setError(String(e))
+      setError(e instanceof Error ? e.message : 'Backtest failed')
     } finally {
       setLoading('backtest', false)
     }
-  }
+  }, [capital, startDate, days, selectedUnderlyings, strategyFilter, setLoading, setError, setBacktestResult])
 
   const m = backtestResult?.metrics
 
-  const summaryItems = m
-    ? [
-        { label: 'Starting Capital', value: inr(m.starting_capital) },
-        { label: 'Ending Equity', value: inr(m.ending_equity), accent: m.ending_equity >= m.starting_capital ? 'text-brand-green' : 'text-brand-red' },
-        { label: 'Total P&L', value: inr(m.total_pnl), accent: m.total_pnl >= 0 ? 'text-brand-green' : 'text-brand-red' },
-        { label: 'Return', value: pct(m.return_pct), accent: m.return_pct >= 0 ? 'text-brand-green' : 'text-brand-red' },
-        { label: 'Max Drawdown', value: pct(m.max_drawdown * 100), accent: 'text-brand-red' },
-        { label: 'Trades', value: m.trade_count.toString() },
-        { label: 'Win Rate', value: pct(m.win_rate * 100) },
-        { label: 'Profit Factor', value: num(m.profit_factor, 2), accent: m.profit_factor >= 1 ? 'text-brand-green' : 'text-brand-red' },
-        { label: 'Sharpe-like', value: num(m.sharpe_like, 2), accent: m.sharpe_like >= 1 ? 'text-brand-cyan' : 'text-gray-400' },
-      ]
-    : []
+  // Fake equity curve from starting capital + total pnl
+  const equityCurveData = m ? [
+    { day: 'Start', equity: m.starting_capital },
+    { day: 'End',   equity: m.ending_equity },
+  ] : []
 
   return (
     <div className="space-y-5">
-      <div>
-        <h1 className="text-lg font-bold text-gray-100">Backtest</h1>
-        <p className="text-xs text-gray-500 mt-0.5">Simulate strategy performance on historical data</p>
+
+      {/* Header */}
+      <div className="flex items-center gap-2">
+        <BookOpen size={16} className="text-brand-blue" />
+        <div>
+          <h1 className="text-lg font-bold text-gray-100">Backtest Engine</h1>
+          <p className="text-xs text-gray-500 mt-0.5">Historical strategy simulation with full trade log</p>
+        </div>
       </div>
 
-      {/* Controls */}
+      {/* Form */}
       <Card>
-        <CardBody className="flex flex-wrap items-end gap-4">
-          <div className="flex-1 min-w-48">
-            <label className="block text-xs text-gray-500 mb-1">Underlyings</label>
-            <input
-              value={underlyings}
-              onChange={(e) => setUnderlyings(e.target.value)}
-              className="w-full bg-surface-elevated border border-surface-border rounded-md px-3 py-1.5 text-sm text-gray-200 font-mono focus:outline-none focus:border-brand-blue"
-            />
+        <CardHeader title="Backtest Configuration" icon={<BookOpen size={14} />} />
+        <CardBody className="space-y-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-3">
+            <div>
+              <label className="block text-xs text-gray-400 mb-1 uppercase tracking-wider">Starting Capital</label>
+              <input
+                type="number"
+                value={capital}
+                onChange={(e) => setCapital(Number(e.target.value))}
+                step={100000}
+                className="w-full bg-surface-elevated border border-surface-border text-xs text-gray-200 rounded px-2 py-2 font-mono focus:outline-none focus:border-brand-blue"
+              />
+            </div>
+            <div>
+              <label className="block text-xs text-gray-400 mb-1 uppercase tracking-wider">Start Date</label>
+              <input
+                type="date"
+                value={startDate}
+                onChange={(e) => setStartDate(e.target.value)}
+                className="w-full bg-surface-elevated border border-surface-border text-xs text-gray-200 rounded px-2 py-2 font-mono focus:outline-none focus:border-brand-blue"
+              />
+            </div>
+            <div>
+              <label className="block text-xs text-gray-400 mb-1 uppercase tracking-wider">Days</label>
+              <div className="flex gap-1">
+                {[7, 14, 30, 60].map((d) => (
+                  <button
+                    key={d}
+                    onClick={() => setDays(d)}
+                    className={clsx(
+                      'flex-1 py-2 rounded text-xs font-mono border transition-colors',
+                      days === d
+                        ? 'bg-brand-cyan/15 border-brand-cyan/30 text-brand-cyan'
+                        : 'bg-surface-elevated border-surface-border text-gray-400 hover:text-gray-200',
+                    )}
+                  >
+                    {d}d
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div>
+              <label className="block text-xs text-gray-400 mb-1 uppercase tracking-wider">Strategy Filter</label>
+              <input
+                type="text"
+                value={strategyFilter}
+                onChange={(e) => setStrategyFilter(e.target.value)}
+                placeholder="All strategies"
+                className="w-full bg-surface-elevated border border-surface-border text-xs text-gray-200 rounded px-2 py-2 font-mono focus:outline-none focus:border-brand-blue"
+              />
+            </div>
           </div>
+
+          {/* Underlyings */}
           <div>
-            <label className="block text-xs text-gray-500 mb-1">Strategy (optional)</label>
-            <input
-              value={strategy}
-              onChange={(e) => setStrategy(e.target.value)}
-              placeholder="e.g. iron_condor"
-              className="w-40 bg-surface-elevated border border-surface-border rounded-md px-3 py-1.5 text-sm text-gray-200 font-mono focus:outline-none focus:border-brand-blue placeholder-gray-600"
-            />
+            <label className="block text-xs text-gray-400 mb-2 uppercase tracking-wider">Underlyings</label>
+            <div className="flex flex-wrap gap-1.5">
+              {UNDERLYINGS.map((u) => (
+                <button
+                  key={u}
+                  onClick={() => toggleUnderlying(u)}
+                  className={clsx(
+                    'px-2.5 py-1 rounded text-xs font-mono border transition-colors',
+                    selectedUnderlyings.includes(u)
+                      ? 'bg-brand-blue/15 border-brand-blue/30 text-brand-blue'
+                      : 'bg-surface-elevated border-surface-border text-gray-400 hover:text-gray-200',
+                  )}
+                >
+                  {u}
+                </button>
+              ))}
+            </div>
           </div>
-          <div>
-            <label className="block text-xs text-gray-500 mb-1">Days</label>
-            <input
-              type="number"
-              value={days}
-              onChange={(e) => setDays(e.target.value)}
-              className="w-20 bg-surface-elevated border border-surface-border rounded-md px-3 py-1.5 text-sm text-gray-200 font-mono focus:outline-none focus:border-brand-blue"
-            />
-          </div>
-          <div>
-            <label className="block text-xs text-gray-500 mb-1">Capital (₹)</label>
-            <input
-              type="number"
-              value={capital}
-              onChange={(e) => setCapital(e.target.value)}
-              className="w-36 bg-surface-elevated border border-surface-border rounded-md px-3 py-1.5 text-sm text-gray-200 font-mono focus:outline-none focus:border-brand-blue"
-            />
-          </div>
+
           <button
-            onClick={run}
-            disabled={loading}
-            className="flex items-center gap-2 px-4 py-1.5 rounded-md bg-brand-blue text-surface text-sm font-medium hover:bg-brand-blue/80 disabled:opacity-50 transition-colors"
+            onClick={runBt}
+            disabled={loading || selectedUnderlyings.length === 0}
+            className="flex items-center gap-2 px-4 py-2 rounded-md bg-brand-blue/15 border border-brand-blue/30 text-brand-blue text-sm font-medium hover:bg-brand-blue/25 disabled:opacity-50 transition-colors"
           >
             {loading ? <Loader2 size={14} className="animate-spin" /> : <Play size={14} />}
             Run Backtest
@@ -126,102 +171,101 @@ export function Backtest() {
         </CardBody>
       </Card>
 
-      {loading && (
-        <div className="flex flex-col items-center justify-center py-20 text-gray-500">
-          <Loader2 size={32} className="animate-spin mb-3" />
-          <p className="text-sm">Running backtest simulation…</p>
-        </div>
-      )}
-
-      {backtestResult && !loading && (
-        <>
-          {/* Config badge row */}
-          <div className="flex flex-wrap items-center gap-2">
-            <Badge variant="blue">{backtestResult.config.days}d</Badge>
-            {backtestResult.config.underlyings.map((u) => (
-              <Badge key={u} variant="gray">{u}</Badge>
-            ))}
-            <Badge variant="green">Start: {backtestResult.config.start}</Badge>
-          </div>
-
-          {/* Metrics grid */}
-          <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-5 gap-3">
-            {summaryItems.map(({ label, value, accent }) => (
-              <div key={label} className="bg-surface-card border border-surface-border rounded-lg p-4">
-                <div className="text-xs text-gray-500 mb-1 uppercase tracking-wider">{label}</div>
-                <div className={`text-lg font-bold font-mono ${accent ?? 'text-gray-100'}`}>{value}</div>
+      {/* Results */}
+      {m && backtestResult && (
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
+          {/* Metrics */}
+          <Card>
+            <CardHeader title="Backtest Results" subtitle={`${days}d · ${selectedUnderlyings.join(', ')}`} />
+            <CardBody>
+              <div className="grid grid-cols-2 gap-3">
+                {[
+                  { label: 'Total P&L', value: inr(m.total_pnl), color: m.total_pnl >= 0 ? 'text-brand-green' : 'text-brand-red' },
+                  { label: 'Return%', value: pct(m.return_pct), color: m.return_pct >= 0 ? 'text-brand-green' : 'text-brand-red' },
+                  { label: 'Sharpe Ratio', value: m.sharpe_like.toFixed(2), color: m.sharpe_like > 1 ? 'text-brand-green' : 'text-gray-300' },
+                  { label: 'Max Drawdown', value: pct(m.max_drawdown * 100), color: m.max_drawdown > 0.1 ? 'text-brand-red' : 'text-brand-yellow' },
+                  { label: 'Win Rate', value: pct(m.win_rate * 100), color: m.win_rate > 0.55 ? 'text-brand-green' : 'text-gray-300' },
+                  { label: 'Profit Factor', value: m.profit_factor.toFixed(2), color: m.profit_factor > 1.5 ? 'text-brand-green' : 'text-gray-300' },
+                  { label: 'Trade Count', value: String(m.trade_count), color: 'text-gray-200' },
+                  { label: 'End Equity', value: inr(m.ending_equity), color: 'text-brand-blue' },
+                ].map(({ label, value, color }) => (
+                  <div key={label} className="bg-surface-elevated rounded-lg p-3">
+                    <div className="text-[10px] text-gray-500 uppercase tracking-wider">{label}</div>
+                    <div className={clsx('text-lg font-bold font-mono mt-1', color)}>{value}</div>
+                  </div>
+                ))}
               </div>
-            ))}
-          </div>
+            </CardBody>
+          </Card>
 
-          {/* Reports table */}
-          {backtestResult.reports.length > 0 && (
-            <Card>
-              <CardHeader title="Trade Reports" subtitle={`${backtestResult.reports.length} trades (showing first 50)`} />
-              <div className="overflow-x-auto max-h-80 overflow-y-auto">
-                <table className="w-full text-xs">
-                  <thead className="sticky top-0 bg-surface-card">
-                    <tr className="text-gray-500 border-b border-surface-border text-left">
-                      <th className="px-3 py-2">Time</th>
-                      <th className="px-3 py-2">Symbol</th>
-                      <th className="px-3 py-2">Strategy</th>
-                      <th className="px-3 py-2">Side</th>
-                      <th className="px-3 py-2 text-right">Entry ₹</th>
-                      <th className="px-3 py-2 text-right">Exit ₹</th>
-                      <th className="px-3 py-2 text-right">P&L ₹</th>
-                      <th className="px-3 py-2 text-right">P&L %</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {(backtestResult.reports.slice(0, 50) as any[]).map((r, i) => {
-                      const pnl = r.pnl ?? r.realized_pnl ?? null
-                      const pnlPct = r.pnl_pct ?? r.return_pct ?? null
-                      const side = r.side ?? r.direction ?? null
-                      return (
-                        <tr key={i} className="border-b border-surface-border/40 hover:bg-surface-elevated/40">
-                          <td className="px-3 py-1.5 font-mono text-gray-500 text-[10px]">
-                            {(r.ts ?? r.entry_time ?? r.timestamp ?? '—').toString().substring(0, 19)}
-                          </td>
-                          <td className="px-3 py-1.5 font-mono font-semibold text-brand-blue">
-                            {r.symbol ?? r.underlying ?? '—'}
-                          </td>
-                          <td className="px-3 py-1.5 text-gray-400">{r.strategy ?? r.strategy_name ?? '—'}</td>
-                          <td className="px-3 py-1.5">
-                            {side ? (
-                              <span className={side === 'BUY' ? 'text-brand-green font-semibold' : 'text-brand-red font-semibold'}>
-                                {side}
-                              </span>
-                            ) : '—'}
-                          </td>
-                          <td className="px-3 py-1.5 text-right font-mono">
-                            {r.entry_price != null ? inr(r.entry_price, 2) : '—'}
-                          </td>
-                          <td className="px-3 py-1.5 text-right font-mono">
-                            {r.exit_price != null ? inr(r.exit_price, 2) : '—'}
-                          </td>
-                          <td className={`px-3 py-1.5 text-right font-mono ${pnl == null ? '' : pnl >= 0 ? 'text-brand-green' : 'text-brand-red'}`}>
-                            {pnl != null ? `${pnl >= 0 ? '+' : ''}${inr(pnl, 2)}` : '—'}
-                          </td>
-                          <td className={`px-3 py-1.5 text-right font-mono ${pnlPct == null ? '' : pnlPct >= 0 ? 'text-brand-green' : 'text-brand-red'}`}>
-                            {pnlPct != null ? `${pnlPct >= 0 ? '+' : ''}${pct(pnlPct)}` : '—'}
-                          </td>
-                        </tr>
-                      )
-                    })}
-                  </tbody>
-                </table>
-              </div>
-            </Card>
+          {/* Equity curve mini chart */}
+          <Card>
+            <CardHeader title="Equity Curve" subtitle="Start vs End" />
+            <CardBody className="h-64 !p-2">
+              <ResponsiveContainer width="100%" height="100%">
+                <AreaChart data={equityCurveData} margin={{ top: 4, right: 8, bottom: 0, left: 0 }}>
+                  <defs>
+                    <linearGradient id="btGrad" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="5%"  stopColor={m.total_pnl >= 0 ? '#3fb950' : '#f85149'} stopOpacity={0.3} />
+                      <stop offset="95%" stopColor={m.total_pnl >= 0 ? '#3fb950' : '#f85149'} stopOpacity={0} />
+                    </linearGradient>
+                  </defs>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#30363d" vertical={false} />
+                  <XAxis dataKey="day" tick={{ fill: '#6e7681', fontSize: 10 }} axisLine={false} tickLine={false} />
+                  <YAxis
+                    tickFormatter={(v: number) => `₹${(v / 100000).toFixed(0)}L`}
+                    tick={{ fill: '#6e7681', fontSize: 10 }}
+                    axisLine={false}
+                    tickLine={false}
+                    width={52}
+                  />
+                  <Tooltip contentStyle={TOOLTIP_STYLE} formatter={(v: number) => [inr(v), 'Equity']} />
+                  <Area
+                    type="monotone"
+                    dataKey="equity"
+                    stroke={m.total_pnl >= 0 ? '#3fb950' : '#f85149'}
+                    strokeWidth={2}
+                    fill="url(#btGrad)"
+                    dot
+                  />
+                </AreaChart>
+              </ResponsiveContainer>
+            </CardBody>
+          </Card>
+
+          {/* Trade log */}
+          {backtestResult.reports && backtestResult.reports.length > 0 && (
+            <div className="lg:col-span-2">
+              <Card>
+                <button
+                  className="w-full flex items-center justify-between px-4 py-3 hover:bg-surface-elevated/30 transition-colors"
+                  onClick={() => setTradeLogExpanded(v => !v)}
+                >
+                  <span className="text-sm font-semibold text-gray-200">Trade Log ({backtestResult.reports.length} records)</span>
+                  <span className="text-xs text-gray-500">{tradeLogExpanded ? 'Collapse' : 'Expand'}</span>
+                </button>
+                {tradeLogExpanded && (
+                  <Table
+                    columns={[
+                      { key: 'symbol', label: 'Symbol' },
+                      { key: 'side', label: 'Side', render: (v) => <span className={String(v) === 'BUY' ? 'text-brand-green' : 'text-brand-red'}>{String(v)}</span> },
+                      { key: 'strategy_name', label: 'Strategy' },
+                      { key: 'pnl', label: 'P&L', align: 'right', render: (v) => (
+                        <span className={Number(v) >= 0 ? 'text-brand-green' : 'text-brand-red'}>{inr(Number(v), 2)}</span>
+                      )},
+                    ]}
+                    rows={backtestResult.reports as Record<string, unknown>[]}
+                    keyFn={(r, i) => String(i)}
+                    emptyMessage="No trade records"
+                    compact
+                  />
+                )}
+              </Card>
+            </div>
           )}
-        </>
-      )}
-
-      {!backtestResult && !loading && (
-        <div className="flex flex-col items-center justify-center py-20 text-gray-600">
-          <BookOpen size={36} className="mb-3 opacity-40" />
-          <p className="text-sm">Configure parameters and run a backtest</p>
         </div>
       )}
+
     </div>
   )
 }

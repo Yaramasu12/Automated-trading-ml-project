@@ -3,10 +3,12 @@ import react from '@vitejs/plugin-react'
 import { VitePWA } from 'vite-plugin-pwa'
 import path from 'path'
 
+const enablePwa = process.env.VITE_ENABLE_PWA === 'true'
+
 export default defineConfig({
   plugins: [
     react(),
-    VitePWA({
+    enablePwa && VitePWA({
       registerType: 'autoUpdate',
       includeAssets: ['favicon.ico', 'icons/*.png'],
       manifest: {
@@ -35,7 +37,7 @@ export default defineConfig({
         enabled: true,   // service worker active in dev so you can test
       },
     }),
-  ],
+  ].filter(Boolean),
   resolve: {
     alias: {
       '@': path.resolve(__dirname, './src'),
@@ -55,6 +57,17 @@ export default defineConfig({
         target: 'ws://localhost:8000',
         ws: true,
         changeOrigin: true,
+      },
+    },
+  },
+  build: {
+    chunkSizeWarningLimit: 700,
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          charts: ['recharts'],
+          icons: ['lucide-react'],
+        },
       },
     },
   },

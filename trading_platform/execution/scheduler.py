@@ -12,6 +12,7 @@ from trading_platform.domain.enums import OrderPriority, OrderStatus
 from trading_platform.domain.models import Order, OrderIntent, PrioritizedOrderIntent, Trade
 from trading_platform.event_bus import InMemoryEventBus
 from trading_platform.execution.fill_processor import FillProcessor
+from trading_platform.execution.final_gate import FinalGateDecision, FinalGateFn
 from trading_platform.execution.lock_manager import InstrumentLockManager
 from trading_platform.execution.oms_store import OMSEventStore
 from trading_platform.execution.rate_limiter import TokenBucketRateLimiter
@@ -63,6 +64,7 @@ class ExecutionScheduler:
         portfolio: PortfolioLedger | None = None,
         event_bus: InMemoryEventBus | None = None,
         charges_model: ChargesModel | None = None,
+        final_gate: FinalGateFn | None = None,
         max_queue_size: int = 500,
     ) -> None:
         self.broker = broker
@@ -76,6 +78,7 @@ class ExecutionScheduler:
         self.portfolio = portfolio
         self.event_bus = event_bus
         self.charges_model = charges_model
+        self.final_gate = final_gate
         self._queue: asyncio.PriorityQueue[PrioritizedOrderIntent] = asyncio.PriorityQueue(
             maxsize=max_queue_size
         )
@@ -91,7 +94,7 @@ class ExecutionScheduler:
 
     async def enqueue(self, intent: OrderIntent) -> str:
         """Place an intent on the priority queue. Returns event_id."""
-        if self.kill_switch_active and intent.priority != OrderPriority.KILL_SWITCH:
+        if self.kill_switch_active and not self._allowed_during_kill_switch(intent):
             self.oms.append(
                 event_type="kill_switch_cancelled",
                 order_id=intent.idempotency_key,
@@ -99,6 +102,7 @@ class ExecutionScheduler:
                 symbol=intent.instrument.symbol,
                 strategy_name=intent.signal.strategy_name,
                 rejection_reason="kill_switch_active",
+                metadata={"trace_id": intent.signal.metadata.get("trace_id", "")},
             )
             self._publish(
                 "kill_switch.triggered.v1",
@@ -126,6 +130,7 @@ class ExecutionScheduler:
                     symbol=intent.instrument.symbol,
                     strategy_name=intent.signal.strategy_name,
                     rejection_reason=result.reason,
+                    metadata={"trace_id": intent.signal.metadata.get("trace_id", "")},
                 )
                 self._rejected += 1
                 return intent.idempotency_key
@@ -133,6 +138,7 @@ class ExecutionScheduler:
                 event_type="compliance_approved",
                 order_id=intent.idempotency_key,
                 symbol=intent.instrument.symbol,
+                metadata={"trace_id": intent.signal.metadata.get("trace_id", "")},
             )
             self._publish(
                 "order.risk_approved.v1",
@@ -154,6 +160,7 @@ class ExecutionScheduler:
                     idempotency_key=intent.idempotency_key,
                     symbol=intent.instrument.symbol,
                     rejection_reason=er.reason,
+                    metadata={"trace_id": intent.signal.metadata.get("trace_id", "")},
                 )
                 self._rejected += 1
                 return intent.idempotency_key
@@ -172,6 +179,7 @@ class ExecutionScheduler:
             quantity=intent.quantity,
             price=intent.limit_price or intent.signal.price,
             priority=int(intent.priority),
+            metadata={"trace_id": intent.signal.metadata.get("trace_id", "")},
         )
         self._publish(
             "order.intent_created.v1",
@@ -255,6 +263,43 @@ class ExecutionScheduler:
                 "approved_orders",
             )
 
+        final_decision = self._run_final_gate(intent)
+        if not final_decision.approved:
+            self.oms.append(
+                event_type="risk_rejected",
+                order_id=intent.idempotency_key,
+                idempotency_key=intent.idempotency_key,
+                symbol=symbol,
+                strategy_name=intent.signal.strategy_name,
+                side=intent.signal.side.value,
+                quantity=intent.quantity,
+                price=intent.limit_price or intent.signal.price,
+                priority=int(intent.priority),
+                rejection_reason=final_decision.reason,
+                metadata=final_decision.to_dict(),
+            )
+            self._publish(
+                "order.risk_rejected.v1",
+                {
+                    "idempotency_key": intent.idempotency_key,
+                    "symbol": symbol,
+                    "reason": final_decision.reason,
+                    "stage": final_decision.stage,
+                },
+                "risk",
+            )
+            self._rejected += 1
+            return
+        if self.final_gate:
+            self.oms.append(
+                event_type="risk_approved",
+                order_id=intent.idempotency_key,
+                idempotency_key=intent.idempotency_key,
+                symbol=symbol,
+                strategy_name=intent.signal.strategy_name,
+                metadata=final_decision.to_dict(),
+            )
+
         await self.lock_manager.acquire(symbol)
         self.oms.append(
             event_type="lock_acquired",
@@ -292,6 +337,12 @@ class ExecutionScheduler:
             symbol=intent.instrument.symbol,
             strategy_name=intent.signal.strategy_name,
             broker_order_id=result.broker_order_id,
+            metadata={
+                "trace_id": intent.signal.metadata.get("trace_id", ""),
+                "status": result.status.value,
+                "message": getattr(result, "message", ""),
+                "raw": getattr(result, "raw", None),
+            },
         )
         self._publish(
             "order.submitted.v1",
@@ -315,6 +366,10 @@ class ExecutionScheduler:
                 fill_price=result.average_price,
                 fill_qty=intent.quantity,
                 broker_order_id=result.broker_order_id,
+                metadata={
+                    "trace_id": intent.signal.metadata.get("trace_id", ""),
+                    "raw": getattr(result, "raw", None),
+                },
             )
             self._publish(
                 "order.filled.v1",
@@ -341,6 +396,10 @@ class ExecutionScheduler:
                 order_id=intent.idempotency_key,
                 symbol=intent.instrument.symbol,
                 rejection_reason=msg,
+                metadata={
+                    "trace_id": intent.signal.metadata.get("trace_id", ""),
+                    "raw": getattr(result, "raw", None),
+                },
             )
             self._publish(
                 "order.rejected.v1",
@@ -356,6 +415,19 @@ class ExecutionScheduler:
     def update_broker(self, broker: BrokerClient) -> None:
         """Hot-swap broker when execution mode changes PAPER ↔ LIVE."""
         self.broker = broker
+
+    def _run_final_gate(self, intent: OrderIntent) -> FinalGateDecision:
+        if self.final_gate is None:
+            return FinalGateDecision.approve(details={"configured": False})
+        now = datetime.now(timezone.utc)
+        return self.final_gate(intent, now, None)
+
+    @staticmethod
+    def _allowed_during_kill_switch(intent: OrderIntent) -> bool:
+        if intent.priority == OrderPriority.KILL_SWITCH:
+            return True
+        opens_position = bool(intent.signal.metadata.get("opens_position", True))
+        return not opens_position
 
     @property
     def queue_depth(self) -> int:

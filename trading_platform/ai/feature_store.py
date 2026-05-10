@@ -7,6 +7,7 @@ import math
 from dataclasses import asdict
 from datetime import date
 from pathlib import Path
+from typing import Callable
 
 from trading_platform.ai.features import FeatureSnapshot
 
@@ -18,11 +19,24 @@ _DRIFT_KEYS = ["momentum_5", "momentum_20", "realized_volatility", "volume_ratio
 
 
 class FeatureStore:
-    """Persistent JSONL-based store for feature snapshots used in ML training and drift detection."""
+    """Persistent JSONL-based store for feature snapshots used in ML training and drift detection.
+
+    Optional publish hook
+    ---------------------
+    Call set_publish_hook(fn) once after construction to receive a callback
+    (symbol: str, record: dict) every time a feature row is appended.
+    The runtime uses this to publish BusTopic.FEATURES to the TypedTopicBus
+    without coupling FeatureStore to the streaming layer.
+    """
 
     def __init__(self, store_dir: Path | None = None):
         self.store_dir = store_dir or _DEFAULT_STORE_DIR
         self.store_dir.mkdir(parents=True, exist_ok=True)
+        self._publish_hook: "Callable[[str, dict], None] | None" = None
+
+    def set_publish_hook(self, fn: "Callable[[str, dict], None]") -> None:
+        """Register a callback invoked on every append(). Thread-safe (write-once)."""
+        self._publish_hook = fn
 
     def _path(self, symbol: str) -> Path:
         safe = symbol.replace("/", "_").replace(":", "_").replace(" ", "_")
@@ -46,6 +60,13 @@ class FeatureStore:
                 fp.flush()
             finally:
                 fcntl.flock(fp.fileno(), fcntl.LOCK_UN)
+
+        # Notify streaming bus if a publish hook is registered
+        if self._publish_hook is not None:
+            try:
+                self._publish_hook(symbol, record)
+            except Exception as _hook_exc:
+                logger.debug("FeatureStore publish hook error: %s", _hook_exc)
 
     def load(self, symbol: str, limit: int | None = None) -> list[dict]:
         """Return records for symbol, newest last. Optionally cap to `limit` most recent."""

@@ -227,6 +227,26 @@ export interface AccountStatus {
   kill_switch_active: boolean
 }
 
+export interface LiveCanaryReadiness {
+  can_consider_live_canary: boolean
+  status: 'READY' | 'NOT_READY'
+  blocking_reasons: string[]
+  evaluated_at: string
+  paper_window: {
+    min_days: number
+    target_max_days: number
+    actual_days: number
+    minimum_met: boolean
+    within_target_review_window: boolean
+    review_overdue: boolean
+  }
+  metrics: Record<string, unknown>
+  checks: Array<{ name: string; passed: boolean; required?: unknown; actual?: unknown; reason?: string }>
+  policy_candidates: Array<Record<string, unknown>>
+  requirements: Record<string, unknown>
+  evidence: { trace_count: number; trace_ids: string[]; paper_days: string[] }
+}
+
 // ─── Database ─────────────────────────────────────────────────────────────────
 
 export interface DBSummary {
@@ -300,6 +320,368 @@ export interface LivePortfolioSnapshot {
   count: number
   positions: LivePosition[]
   portfolio: LivePortfolioMetrics
+}
+
+// ─── AI Council (Phase 2) ─────────────────────────────────────────────────────
+
+export interface GatewayModels {
+  primary: string
+  coordinator: string
+  fast: string
+}
+
+export interface AICouncilStatus {
+  enabled: boolean
+  gateway_runtime: string
+  primary_model: string
+  gateway_available: boolean
+  fallback_active: boolean
+  gateway_note: string
+  models: GatewayModels
+}
+
+export interface AgentVote {
+  agent?: string
+  agent_name?: string
+  action: string
+  confidence: number
+  reasoning: string
+  evidence_ids?: string[]
+  model_id?: string
+  schema_version?: string
+  failure_mode?: string | null
+  ts?: string
+}
+
+export interface StrategyProposal {
+  agent_name: string
+  symbol: string
+  side: string
+  edge_estimate: number
+  risk_estimate: number
+  confidence: number
+  evidence_ids?: string[]
+  invalidation_rule?: string
+  reasoning?: string
+  model_id?: string
+}
+
+export interface RiskCritique {
+  veto: boolean
+  risk_score: number
+  concerns: string[]
+  recommended_action: string
+}
+
+export interface PortfolioProposal {
+  preferred_basket: string[]
+  expected_return_estimate: number
+  max_heat: number
+  hedge_request?: string | null
+  target_run_rate_ok: boolean
+}
+
+export interface ExecutionAdvice {
+  avoid_windows: string[]
+  preferred_order_type: string
+  max_slice_size_pct: number
+}
+
+export interface AICouncilDecision {
+  trace_id: string
+  action: string
+  confidence: number
+  consensus_score: number
+  votes: AgentVote[]
+  strategy_proposals?: StrategyProposal[]
+  risk_critique?: RiskCritique | null
+  portfolio_proposal?: PortfolioProposal | null
+  execution_advice?: ExecutionAdvice | null
+  debate_summary?: string
+  model_ids_used?: string[]
+  evidence_ids?: string[]
+  debate_triggered?: boolean
+  risk_vetoed?: boolean
+  ts?: string
+  timestamp?: string
+}
+
+// ─── Neural Lab (Phase 3) ─────────────────────────────────────────────────────
+
+export interface NeuralStatus {
+  enabled: boolean
+  models: {
+    forecaster: string
+    volatility: string
+    tail_risk: string
+    correlation: string
+  }
+}
+
+export interface ForecastPrediction {
+  symbol: string
+  direction_probability: number
+  expected_return: number
+  model_uncertainty: number
+}
+
+export interface NeuralPredictionBundle {
+  trace_id: string
+  overall_uncertainty: number
+  forecasts: ForecastPrediction[]
+  volatility?: Array<{
+    symbol: string
+    predicted_volatility: number
+    garch_volatility: number
+    tail_risk_score: number
+    model_id: string
+    confidence: number
+  }>
+  correlation_risk?: {
+    symbols: string[]
+    max_pairwise_correlation: number
+    contagion_risk_score: number
+    model_id: string
+  } | null
+  tail_risks?: Array<{
+    symbol: string
+    extreme_move_probability: number
+    expected_max_drawdown: number
+    model_id: string
+    confidence: number
+  }>
+  model_versions?: Record<string, string>
+  should_trade?: boolean
+  ts?: string
+  timestamp?: string
+}
+
+// ─── Quantum Lab (Phase 4) ────────────────────────────────────────────────────
+
+export interface QuantumBackendStatus {
+  name: string
+  available: boolean
+  reason?: string
+  error?: string | null
+  latency_ms?: number | null
+}
+
+export interface QuantumStatus {
+  enabled: boolean
+  backend: string
+  timeout_seconds: number
+  backends: QuantumBackendStatus[]
+}
+
+export interface QuantumOptimizationResult {
+  trace_id: string
+  selected_symbols: string[]
+  backend_used: string
+  expected_edge_sum?: number
+  risk_score?: number
+  objective_value: number
+  classical_baseline_objective?: number
+  improvement_over_classical?: number
+  beats_baseline?: boolean
+  constraints_satisfied?: boolean
+  stable?: boolean
+  advisory_only?: boolean
+  ts?: string
+  timestamp?: string
+}
+
+// ─── Goal Governor (Phase 6) ──────────────────────────────────────────────────
+
+export interface GoalGovernorStatus {
+  enabled: boolean
+  yearly_target: number
+  initial_capital?: number
+  current_equity?: number
+  realized_pnl?: number
+  drawdown_budget_remaining?: number
+  days_elapsed: number
+  target_probability: number
+  required_daily_run_rate?: number
+  actual_daily_run_rate?: number
+  on_track?: boolean
+  recommendation: string
+  can_raise_risk_limits?: false
+  message?: string
+  ts?: string
+}
+
+// ─── Decision Trace (Phase 1) ─────────────────────────────────────────────────
+
+export interface DecisionTrace {
+  trace_id: string
+  created_at: string
+  execution_mode: string
+  symbol_universe: string[]
+  feature_snapshot_ids?: Record<string, string>
+  agent_outputs?: Record<string, unknown>[]
+  neural_model_versions?: Record<string, string>
+  quantum_result_id?: string
+  risk_decisions?: Record<string, unknown>[]
+  order_intent_ids?: string[]
+  broker_result_id?: string | null
+  events?: { event_type: string; component: string; data?: Record<string, unknown>; ts: string }[]
+  metadata?: Record<string, unknown>
+}
+
+export interface TraceReplayEvent {
+  ts?: string
+  source: 'trace' | 'oms' | 'label' | 'paper_journal'
+  event_type: string
+  component?: string
+  order_id?: string | null
+  symbol?: string | null
+  reason?: string | null
+  data?: Record<string, unknown>
+}
+
+export interface TraceReplayResponse {
+  trace_id: string
+  summary: {
+    status: string
+    execution_mode?: string
+    symbols?: string[]
+    order_count: number
+    timeline_event_count: number
+    trace_event_count: number
+    oms_event_count: number
+    journal_event_count?: number
+    journal_event_counts?: Record<string, number>
+    trade_count: number
+    fill_count?: number
+    slippage_count?: number
+    label_count: number
+    learning_update_count?: number
+    rejection_count: number
+    broker_submitted: boolean
+    broker_filled: boolean
+    lifecycle_complete: boolean
+    missing_stages: string[]
+  }
+  trace: DecisionTrace
+  timeline: TraceReplayEvent[]
+  orders: Array<Record<string, unknown>>
+  labels: Array<Record<string, unknown>>
+  fills?: Array<Record<string, unknown>>
+  slippage?: Array<Record<string, unknown>>
+  trades: Array<Record<string, unknown>>
+  risk_decisions: Array<Record<string, unknown>>
+  paper_journal?: { event_count: number; events: Array<Record<string, unknown>> }
+  raw?: Record<string, unknown>
+}
+
+// ─── RL Policies (Phase 5) ────────────────────────────────────────────────────
+
+export type PolicyStatus =
+  | 'research'
+  | 'shadow'
+  | 'paper'
+  | 'live_canary'
+  | 'live_approved'
+  | 'disabled'
+
+export interface PolicyPromotionCheck {
+  name: string
+  passed: boolean
+  required?: unknown
+  actual?: unknown
+  reason?: string
+}
+
+export interface PolicyPromotionGate {
+  approved: boolean
+  reason: string
+  current_status?: PolicyStatus | null
+  target_status?: PolicyStatus | null
+  checks: PolicyPromotionCheck[]
+  metrics?: Record<string, unknown>
+  requirements?: Record<string, unknown>
+}
+
+export interface PolicyInfo {
+  policy_id: string
+  name?: string
+  role?: string
+  status: PolicyStatus
+  version?: number
+  can_submit_live_orders?: boolean
+  promoted_at?: string
+  rollback_pointer?: string
+  metadata?: Record<string, unknown>
+  promotion_gate?: PolicyPromotionGate
+}
+
+export interface MarlStatus {
+  enabled: boolean
+  policy_count: number
+  active_policy_count: number
+  policies: PolicyInfo[]
+  note: string
+}
+
+export interface MarlPolicyVote {
+  policy_id: string
+  role?: string
+  status: PolicyStatus
+  action: number
+  action_label: string
+  can_submit_live_orders?: boolean
+}
+
+export interface MarlAdvisoryResult {
+  advisory_only: boolean
+  majority?: {
+    action: number
+    action_label: string
+    confidence: number
+  }
+  enabled?: boolean
+  policy_count?: number
+  majority_action?: number
+  majority_action_label?: string
+  majority_confidence?: number
+  policy_votes?: MarlPolicyVote[]
+  votes?: MarlPolicyVote[]
+  note?: string
+}
+
+export interface EnsembleOutput {
+  trace_id: string
+  proceed: boolean
+  action: string
+  confidence: number
+  weighted_score: number
+  regime: string
+  uncertainty_penalty: number
+  champion_policy_id?: string | null
+  reasoning?: string[]
+  ts?: string
+}
+
+// ─── High-End Scan (Phase 7) ──────────────────────────────────────────────────
+
+export interface HighEndScanResult {
+  trace_id: string
+  execution_mode: string
+  symbols: string[]
+  ai_council?: AICouncilDecision | null
+  neural?: NeuralPredictionBundle | { overall_uncertainty: number; should_trade?: boolean } | null
+  quantum?: QuantumOptimizationResult | { selected_symbols: string[]; backend_used: string } | null
+  marl?: MarlAdvisoryResult | null
+  ensemble?: EnsembleOutput | null
+  goal_governor?: GoalGovernorStatus | Record<string, unknown> | null
+  trace_metadata?: {
+    trace_id: string
+    components_active: Record<string, boolean>
+  }
+  ensemble_action?: string
+  ensemble_confidence?: number
+  risk_vetoed?: boolean
+  elapsed_ms?: number
 }
 
 // ─── WebSocket message ────────────────────────────────────────────────────────

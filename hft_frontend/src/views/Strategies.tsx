@@ -1,251 +1,316 @@
-import { useState } from 'react'
-import {
-  Bar,
-  BarChart,
-  CartesianGrid,
-  Cell,
-  ResponsiveContainer,
-  Tooltip,
-  XAxis,
-  YAxis,
-} from 'recharts'
-import { BarChart2, Loader2, Play, Trophy } from 'lucide-react'
+import { useState, useCallback } from 'react'
+import { BarChart2, Loader2, TrendingUp, Award } from 'lucide-react'
+import { clsx } from 'clsx'
 import { Card, CardBody, CardHeader } from '../components/shared/Card'
-import { Badge } from '../components/shared/Badge'
 import { Table } from '../components/shared/Table'
+import { Tag } from '../components/shared/Badge'
 import { useStore } from '../store'
-import { evaluateStrategies, getStrategyCatalog } from '../api'
-import { inr, pct, num } from '../utils'
+import { evaluateStrategies, runWalkForward } from '../api'
+import { pct, num } from '../utils'
 import type { StrategyScore } from '../types'
-import { useEffect } from 'react'
 
-const TOOLTIP_STYLE = {
-  backgroundColor: '#161b22',
-  border: '1px solid #30363d',
-  borderRadius: 6,
-  fontSize: 12,
-  color: '#e6edf3',
-}
-
-const DEFAULT_UNDERLYINGS = 'NIFTY, BANKNIFTY'
+const UNDERLYINGS = ['NIFTY', 'BANKNIFTY', 'FINNIFTY', 'MIDCPNIFTY', 'RELIANCE', 'TCS', 'INFY', 'HDFCBANK']
+const DAY_OPTIONS = [7, 14, 30, 60]
+const STRATEGY_FAMILIES = ['All', 'Options', 'Momentum', 'Arbitrage']
 
 export function Strategies() {
-  const strategyResult = useStore((s) => s.strategyResult)
+  const strategyResult    = useStore((s) => s.strategyResult)
   const setStrategyResult = useStore((s) => s.setStrategyResult)
-  const loadingEval = useStore((s) => s.loading.strategies)
-  const setLoading = useStore((s) => s.setLoading)
-  const setError = useStore((s) => s.setError)
+  const walkForwardResult = useStore((s) => s.walkForwardResult)
+  const setWalkForwardResult = useStore((s) => s.setWalkForwardResult)
+  const loading           = useStore((s) => s.loading.strategies)
+  const setLoading        = useStore((s) => s.setLoading)
+  const setError          = useStore((s) => s.setError)
 
-  const [underlyings, setUnderlyings] = useState(DEFAULT_UNDERLYINGS)
-  const [days, setDays] = useState('30')
-  const [capital, setCapital] = useState('2000000')
-  const [catalogCount, setCatalogCount] = useState<number | null>(null)
+  const [selectedUnderlyings, setSelectedUnderlyings] = useState<string[]>(['NIFTY', 'BANKNIFTY'])
+  const [days, setDays]                 = useState(14)
+  const [familyFilter, setFamilyFilter] = useState('All')
+  const [walkForward, setWalkForward]   = useState(false)
 
-  useEffect(() => {
-    getStrategyCatalog()
-      .then((r) => setCatalogCount(r.count))
-      .catch(() => {})
-  }, [])
+  function toggleUnderlying(u: string) {
+    setSelectedUnderlyings(prev =>
+      prev.includes(u) ? prev.filter(x => x !== u) : [...prev, u]
+    )
+  }
 
-  async function evaluate() {
+  const runEval = useCallback(async () => {
+    if (selectedUnderlyings.length === 0) return
     setLoading('strategies', true)
     setError(null)
     try {
-      const result = await evaluateStrategies({
-        underlyings: underlyings.split(',').map((s) => s.trim()).filter(Boolean),
-        days: parseInt(days, 10),
-        starting_capital: parseFloat(capital),
-      })
-      setStrategyResult(result)
+      const payload = {
+        days,
+        underlyings: selectedUnderlyings,
+        family: familyFilter !== 'All' ? familyFilter : undefined,
+      }
+      const res = await evaluateStrategies(payload)
+      setStrategyResult(res)
+      if (walkForward && res.best_strategy) {
+        setLoading('walkForward', true)
+        try {
+          const wfRes = await runWalkForward({ strategy_name: res.best_strategy, days, underlyings: selectedUnderlyings })
+          setWalkForwardResult(wfRes)
+        } catch { /* ignore */ }
+        finally { setLoading('walkForward', false) }
+      }
     } catch (e) {
-      setError(String(e))
+      setError(e instanceof Error ? e.message : 'Evaluation failed')
     } finally {
       setLoading('strategies', false)
     }
-  }
+  }, [selectedUnderlyings, days, familyFilter, walkForward, setLoading, setError, setStrategyResult, setWalkForwardResult])
 
-  const leaderboard = strategyResult?.leaderboard ?? []
-  const chartData = leaderboard
-    .slice(0, 12)
-    .map((s) => ({ name: s.strategy_name.replace(/_/g, ' '), score: parseFloat(s.score.toFixed(2)), pnl: s.metrics.total_pnl }))
+  const filtered = strategyResult?.leaderboard.filter(
+    s => familyFilter === 'All' || s.family.toLowerCase().includes(familyFilter.toLowerCase())
+  ) ?? []
 
-  const columns = [
-    {
-      key: 'rank', header: '#', align: 'center' as const,
-      render: (r: StrategyScore) => (
-        <span className={r.rank === 1 ? 'text-brand-yellow font-bold' : 'text-gray-500'}>{r.rank}</span>
-      ),
-    },
-    {
-      key: 'name', header: 'Strategy',
-      render: (r: StrategyScore) => (
-        <div>
-          <div className="text-gray-200 font-medium">{r.strategy_name.replace(/_/g, ' ')}</div>
-          <div className="text-[10px] text-gray-500">{r.family}</div>
-        </div>
-      ),
-    },
-    {
-      key: 'score', header: 'Score', align: 'right' as const,
-      render: (r: StrategyScore) => (
-        <span className="font-mono font-bold text-brand-cyan">{r.score.toFixed(2)}</span>
-      ),
-    },
-    {
-      key: 'return', header: 'Return', align: 'right' as const,
-      render: (r: StrategyScore) => (
-        <span className={r.metrics.return_pct >= 0 ? 'text-brand-green font-mono' : 'text-brand-red font-mono'}>
-          {pct(r.metrics.return_pct)}
-        </span>
-      ),
-    },
-    {
-      key: 'pnl', header: 'P&L', align: 'right' as const,
-      render: (r: StrategyScore) => (
-        <span className={r.metrics.total_pnl >= 0 ? 'text-brand-green font-mono' : 'text-brand-red font-mono'}>
-          {inr(r.metrics.total_pnl)}
-        </span>
-      ),
-    },
-    {
-      key: 'dd', header: 'Max DD', align: 'right' as const,
-      render: (r: StrategyScore) => (
-        <span className="font-mono text-brand-red">{pct(r.metrics.max_drawdown * 100)}</span>
-      ),
-    },
-    {
-      key: 'wr', header: 'Win %', align: 'right' as const,
-      render: (r: StrategyScore) => (
-        <span className="font-mono text-gray-300">{pct(r.metrics.win_rate * 100)}</span>
-      ),
-    },
-    {
-      key: 'sharpe', header: 'Sharpe', align: 'right' as const,
-      render: (r: StrategyScore) => (
-        <span className="font-mono text-gray-300">{r.metrics.sharpe_like.toFixed(2)}</span>
-      ),
-    },
-    {
-      key: 'trades', header: 'Trades', align: 'right' as const,
-      render: (r: StrategyScore) => <span className="font-mono">{r.trade_count}</span>,
-    },
+  const leaderboardColumns = [
+    { key: 'rank', label: '#', align: 'center' as const, render: (v: unknown, r: StrategyScore) => (
+      <span className={clsx('font-bold font-mono', r.rank === 1 ? 'text-brand-yellow' : 'text-gray-400')}>
+        {String(v)}
+      </span>
+    )},
+    { key: 'strategy_name', label: 'Strategy', render: (v: unknown, r: StrategyScore) => (
+      <span className={r.rank === 1 ? 'text-brand-yellow font-semibold' : 'text-gray-200'}>{String(v)}</span>
+    )},
+    { key: 'family', label: 'Family', render: (v: unknown) => (
+      <Tag label={String(v)} color="purple" />
+    )},
+    { key: 'sharpe', label: 'Sharpe', align: 'right' as const, render: (_: unknown, r: StrategyScore) => (
+      <span className={clsx('font-mono', r.metrics.sharpe_like > 1 ? 'text-brand-green' : 'text-gray-300')}>
+        {r.metrics.sharpe_like.toFixed(2)}
+      </span>
+    )},
+    { key: 'win_rate', label: 'Win Rate', align: 'right' as const, render: (_: unknown, r: StrategyScore) => (
+      <span className={clsx('font-mono', r.metrics.win_rate > 0.6 ? 'text-brand-green' : 'text-gray-300')}>
+        {pct(r.metrics.win_rate * 100)}
+      </span>
+    )},
+    { key: 'return', label: 'Return%', align: 'right' as const, render: (_: unknown, r: StrategyScore) => (
+      <span className={clsx('font-mono', r.metrics.return_pct > 0 ? 'text-brand-green' : 'text-brand-red')}>
+        {pct(r.metrics.return_pct)}
+      </span>
+    )},
+    { key: 'profit_factor', label: 'Profit Factor', align: 'right' as const, render: (_: unknown, r: StrategyScore) => (
+      <span className={clsx('font-mono', r.metrics.profit_factor > 1.5 ? 'text-brand-green' : 'text-gray-300')}>
+        {r.metrics.profit_factor.toFixed(2)}
+      </span>
+    )},
+    { key: 'drawdown', label: 'Max DD', align: 'right' as const, render: (_: unknown, r: StrategyScore) => (
+      <span className={clsx('font-mono', r.metrics.max_drawdown > 0.1 ? 'text-brand-red' : 'text-gray-300')}>
+        {pct(r.metrics.max_drawdown * 100)}
+      </span>
+    )},
+    { key: 'trade_count', label: 'Trades', align: 'right' as const, render: (_: unknown, r: StrategyScore) => (
+      <span className="font-mono text-gray-400">{r.metrics.trade_count}</span>
+    )},
   ]
 
   return (
     <div className="space-y-5">
-      <div className="flex items-center justify-between">
+
+      {/* Header */}
+      <div className="flex items-center gap-2">
+        <BarChart2 size={16} className="text-brand-blue" />
         <div>
           <h1 className="text-lg font-bold text-gray-100">Strategy Evaluation</h1>
-          <p className="text-xs text-gray-500 mt-0.5">
-            {catalogCount !== null ? `${catalogCount} strategies in catalog` : 'Loading catalog…'}
-          </p>
+          <p className="text-xs text-gray-500 mt-0.5">Leaderboard across instruments and lookback periods</p>
         </div>
-        {strategyResult?.best_strategy && (
-          <div className="flex items-center gap-2 px-3 py-1.5 bg-brand-yellow/10 border border-brand-yellow/30 rounded-lg">
-            <Trophy size={14} className="text-brand-yellow" />
-            <span className="text-xs text-brand-yellow font-medium">{strategyResult.best_strategy}</span>
-          </div>
-        )}
       </div>
 
-      {/* Controls */}
+      {/* Form */}
       <Card>
-        <CardBody className="flex flex-wrap items-end gap-4">
-          <div className="flex-1 min-w-48">
-            <label className="block text-xs text-gray-500 mb-1">Underlyings</label>
-            <input
-              value={underlyings}
-              onChange={(e) => setUnderlyings(e.target.value)}
-              className="w-full bg-surface-elevated border border-surface-border rounded-md px-3 py-1.5 text-sm text-gray-200 font-mono focus:outline-none focus:border-brand-blue"
-            />
-          </div>
+        <CardHeader title="Evaluation Parameters" icon={<BarChart2 size={14} />} />
+        <CardBody className="space-y-4">
+          {/* Underlyings */}
           <div>
-            <label className="block text-xs text-gray-500 mb-1">Days</label>
-            <input
-              type="number"
-              value={days}
-              onChange={(e) => setDays(e.target.value)}
-              className="w-20 bg-surface-elevated border border-surface-border rounded-md px-3 py-1.5 text-sm text-gray-200 font-mono focus:outline-none focus:border-brand-blue"
-            />
+            <label className="block text-xs text-gray-400 mb-2 font-semibold uppercase tracking-wider">Underlyings</label>
+            <div className="flex flex-wrap gap-1.5">
+              {UNDERLYINGS.map((u) => (
+                <button
+                  key={u}
+                  onClick={() => toggleUnderlying(u)}
+                  className={clsx(
+                    'px-2.5 py-1 rounded text-xs font-mono border transition-colors',
+                    selectedUnderlyings.includes(u)
+                      ? 'bg-brand-blue/15 border-brand-blue/30 text-brand-blue'
+                      : 'bg-surface-elevated border-surface-border text-gray-400 hover:text-gray-200',
+                  )}
+                >
+                  {u}
+                </button>
+              ))}
+            </div>
           </div>
+
+          {/* Days */}
           <div>
-            <label className="block text-xs text-gray-500 mb-1">Capital (₹)</label>
-            <input
-              type="number"
-              value={capital}
-              onChange={(e) => setCapital(e.target.value)}
-              className="w-36 bg-surface-elevated border border-surface-border rounded-md px-3 py-1.5 text-sm text-gray-200 font-mono focus:outline-none focus:border-brand-blue"
-            />
+            <label className="block text-xs text-gray-400 mb-2 font-semibold uppercase tracking-wider">Lookback</label>
+            <div className="flex gap-1.5">
+              {DAY_OPTIONS.map((d) => (
+                <button
+                  key={d}
+                  onClick={() => setDays(d)}
+                  className={clsx(
+                    'px-3 py-1 rounded text-xs font-mono border transition-colors',
+                    days === d
+                      ? 'bg-brand-cyan/15 border-brand-cyan/30 text-brand-cyan'
+                      : 'bg-surface-elevated border-surface-border text-gray-400 hover:text-gray-200',
+                  )}
+                >
+                  {d}d
+                </button>
+              ))}
+            </div>
           </div>
+
+          {/* Strategy family filter */}
+          <div>
+            <label className="block text-xs text-gray-400 mb-2 font-semibold uppercase tracking-wider">Family Filter</label>
+            <div className="flex gap-1.5">
+              {STRATEGY_FAMILIES.map((f) => (
+                <button
+                  key={f}
+                  onClick={() => setFamilyFilter(f)}
+                  className={clsx(
+                    'px-3 py-1 rounded text-xs font-mono border transition-colors',
+                    familyFilter === f
+                      ? 'bg-brand-purple/15 border-brand-purple/30 text-brand-purple'
+                      : 'bg-surface-elevated border-surface-border text-gray-400 hover:text-gray-200',
+                  )}
+                >
+                  {f}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Walk-Forward toggle */}
+          <div className="flex items-center gap-3">
+            <button
+              onClick={() => setWalkForward(v => !v)}
+              className={clsx(
+                'w-10 h-5 rounded-full border transition-all relative',
+                walkForward ? 'bg-brand-blue border-brand-blue' : 'bg-surface-elevated border-surface-border',
+              )}
+            >
+              <span className={clsx(
+                'absolute top-0.5 w-4 h-4 rounded-full bg-white transition-all',
+                walkForward ? 'left-[22px]' : 'left-0.5',
+              )} />
+            </button>
+            <span className="text-xs text-gray-400">Walk-Forward Analysis</span>
+          </div>
+
           <button
-            onClick={evaluate}
-            disabled={loadingEval}
-            className="flex items-center gap-2 px-4 py-1.5 rounded-md bg-brand-blue text-surface text-sm font-medium hover:bg-brand-blue/80 disabled:opacity-50 transition-colors"
+            onClick={runEval}
+            disabled={loading || selectedUnderlyings.length === 0}
+            className="flex items-center gap-2 px-4 py-2 rounded-md bg-brand-blue/15 border border-brand-blue/30 text-brand-blue text-sm font-medium hover:bg-brand-blue/25 disabled:opacity-50 transition-colors"
           >
-            {loadingEval ? <Loader2 size={14} className="animate-spin" /> : <Play size={14} />}
-            Evaluate
+            {loading ? <Loader2 size={14} className="animate-spin" /> : <TrendingUp size={14} />}
+            Evaluate Strategies
           </button>
         </CardBody>
       </Card>
 
-      {leaderboard.length > 0 && (
-        <>
-          {/* Score chart */}
-          <Card>
-            <CardHeader title="Strategy Score Comparison" subtitle="Higher is better" />
-            <CardBody className="h-56 !p-2">
-              <ResponsiveContainer width="100%" height="100%">
-                <BarChart data={chartData} margin={{ top: 4, right: 8, bottom: 24, left: 0 }} layout="vertical">
-                  <CartesianGrid strokeDasharray="3 3" stroke="#30363d" horizontal={false} />
-                  <XAxis type="number" tick={{ fill: '#6e7681', fontSize: 10 }} axisLine={false} tickLine={false} />
-                  <YAxis
-                    type="category"
-                    dataKey="name"
-                    tick={{ fill: '#6e7681', fontSize: 9 }}
-                    axisLine={false}
-                    tickLine={false}
-                    width={100}
-                  />
-                  <Tooltip contentStyle={TOOLTIP_STYLE} formatter={(v: number) => [v.toFixed(2), 'Score']} />
-                  <Bar dataKey="score" radius={[0, 4, 4, 0]}>
-                    {chartData.map((entry, index) => (
-                      <Cell key={index} fill={index === 0 ? '#d29922' : '#58a6ff'} />
-                    ))}
-                  </Bar>
-                </BarChart>
-              </ResponsiveContainer>
-            </CardBody>
-          </Card>
+      {/* Results */}
+      {strategyResult && (
+        <div className="space-y-4">
+          {/* Best strategy badge */}
+          {strategyResult.best_strategy && (
+            <div className="flex items-center gap-3 p-3 rounded-lg bg-brand-yellow/5 border border-brand-yellow/20">
+              <Award size={16} className="text-brand-yellow" />
+              <span className="text-sm text-gray-300">Best Strategy:</span>
+              <span className="text-sm font-bold text-brand-yellow">{strategyResult.best_strategy}</span>
+            </div>
+          )}
 
-          {/* Leaderboard table */}
           <Card>
             <CardHeader
-              title="Leaderboard"
-              subtitle={`${leaderboard.length} strategies evaluated · ${strategyResult?.days}d window`}
+              title="Strategy Leaderboard"
+              subtitle={`${filtered.length} strategies · ${days}d lookback`}
+              icon={<BarChart2 size={14} />}
             />
             <Table
-              columns={columns}
-              data={leaderboard}
-              keyFn={(r) => r.strategy_name}
+              columns={leaderboardColumns as Parameters<typeof Table>[0]['columns']}
+              rows={filtered as unknown as Record<string, unknown>[]}
+              keyFn={(r) => String((r as unknown as StrategyScore).strategy_name)}
+              emptyMessage="No strategies evaluated yet"
               compact
             />
           </Card>
-        </>
-      )}
 
-      {!strategyResult && !loadingEval && (
-        <div className="flex flex-col items-center justify-center py-20 text-gray-600">
-          <BarChart2 size={36} className="mb-3 opacity-40" />
-          <p className="text-sm">Run evaluation to rank strategies</p>
+          {/* Walk-Forward results */}
+          {walkForwardResult && (
+            <Card>
+              <CardHeader
+                title={`Walk-Forward: ${walkForwardResult.strategy_name}`}
+                subtitle={`${walkForwardResult.window_count} windows`}
+                icon={<TrendingUp size={14} />}
+                action={
+                  walkForwardResult.degradation_detected ? (
+                    <Tag label="Degradation Detected" color="red" />
+                  ) : (
+                    <Tag label="Stable" color="green" />
+                  )
+                }
+              />
+              <CardBody>
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
+                  <div className="bg-surface-elevated rounded p-2">
+                    <div className="text-[10px] text-gray-500 uppercase">Mean Sharpe</div>
+                    <div className="text-sm font-bold font-mono text-gray-100 mt-1">
+                      {walkForwardResult.mean_test_sharpe.toFixed(2)}
+                    </div>
+                  </div>
+                  <div className="bg-surface-elevated rounded p-2">
+                    <div className="text-[10px] text-gray-500 uppercase">Mean Return</div>
+                    <div className="text-sm font-bold font-mono text-gray-100 mt-1">
+                      {pct(walkForwardResult.mean_test_return)}
+                    </div>
+                  </div>
+                  <div className="bg-surface-elevated rounded p-2">
+                    <div className="text-[10px] text-gray-500 uppercase">Windows</div>
+                    <div className="text-sm font-bold font-mono text-gray-100 mt-1">{walkForwardResult.window_count}</div>
+                  </div>
+                  <div className="bg-surface-elevated rounded p-2">
+                    <div className="text-[10px] text-gray-500 uppercase">Total Days</div>
+                    <div className="text-sm font-bold font-mono text-gray-100 mt-1">{walkForwardResult.total_days}</div>
+                  </div>
+                </div>
+                <Table
+                  columns={[
+                    { key: 'window_index', label: 'Window', align: 'center' },
+                    { key: 'train_start', label: 'Train Start' },
+                    { key: 'test_start', label: 'Test Start' },
+                    {
+                      key: 'train_return', label: 'Train Return', align: 'right',
+                      render: (_: unknown, r: Record<string, unknown>) => {
+                        const wf = r as { train_metrics: { return_pct: number } }
+                        return <span className="font-mono">{pct(wf.train_metrics.return_pct)}</span>
+                      },
+                    },
+                    {
+                      key: 'test_return', label: 'Test Return', align: 'right',
+                      render: (_: unknown, r: Record<string, unknown>) => {
+                        const wf = r as { test_metrics: { return_pct: number } }
+                        return <span className={clsx('font-mono', wf.test_metrics.return_pct > 0 ? 'text-brand-green' : 'text-brand-red')}>
+                          {pct(wf.test_metrics.return_pct)}
+                        </span>
+                      },
+                    },
+                  ]}
+                  rows={walkForwardResult.windows as unknown as Record<string, unknown>[]}
+                  keyFn={(r) => String((r as { window_index: number }).window_index)}
+                  emptyMessage="No window data"
+                  compact
+                />
+              </CardBody>
+            </Card>
+          )}
         </div>
       )}
 
-      {loadingEval && (
-        <div className="flex flex-col items-center justify-center py-20 text-gray-500">
-          <Loader2 size={32} className="animate-spin mb-3" />
-          <p className="text-sm">Evaluating strategies…</p>
-        </div>
-      )}
     </div>
   )
 }

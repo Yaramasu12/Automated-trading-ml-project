@@ -3,9 +3,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 
-from trading_platform.broker.base import BrokerClient
+from trading_platform.broker.base import BrokerClient, BrokerResult
 from trading_platform.domain.enums import ExecutionMode, OrderStatus
 from trading_platform.domain.models import Order, OrderIntent, Trade
+from trading_platform.execution.final_gate import FinalGateFn
 from trading_platform.portfolio.ledger import PortfolioLedger
 from trading_platform.risk.engine import RiskDecision, RiskEngine
 
@@ -15,6 +16,7 @@ class ExecutionReport:
     order: Order
     risk_decision: RiskDecision
     trade: Trade | None
+    broker_result: BrokerResult | None = None
 
 
 class ExecutionRouter:
@@ -26,6 +28,7 @@ class ExecutionRouter:
         execution_mode: ExecutionMode,
         live_armed: bool = False,
         kill_switch_active: bool = False,
+        final_gate: FinalGateFn | None = None,
     ):
         self.broker = broker
         self.risk_engine = risk_engine
@@ -33,10 +36,24 @@ class ExecutionRouter:
         self.execution_mode = execution_mode
         self.live_armed = live_armed
         self.kill_switch_active = kill_switch_active
+        self.final_gate = final_gate
         self.orders_sent_today = 0
         self.trades_today = 0
 
     def submit(self, intent: OrderIntent, now: datetime, mark_prices: dict[str, float], charges: float = 0.0) -> ExecutionReport:
+        if self.final_gate is not None:
+            final_decision = self.final_gate(intent, now, mark_prices)
+            if not final_decision.approved:
+                order = Order(intent=intent)
+                order.status = OrderStatus.RISK_REJECTED
+                order.rejection_reason = final_decision.reason
+                risk_decision = RiskDecision(
+                    False,
+                    final_decision.reason,
+                    final_decision.risk_score,
+                )
+                return ExecutionReport(order, risk_decision, None)
+
         snapshot = self.portfolio.mark_to_market(now, mark_prices)
         risk_decision = self.risk_engine.evaluate(
             intent=intent,
@@ -67,5 +84,4 @@ class ExecutionRouter:
         if result.status == OrderStatus.FILLED and result.average_price is not None:
             trade = self.portfolio.apply_fill(order, result.average_price, now, charges)
             self.trades_today += 1
-        return ExecutionReport(order, risk_decision, trade)
-
+        return ExecutionReport(order, risk_decision, trade, result)

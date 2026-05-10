@@ -241,43 +241,33 @@ class TradingAgent:
     # ──────────────────────────────────────────────────────────────── routines
 
     async def _premarket_routine(self) -> None:
-        self._log_activity("PRE-MARKET: refreshing instruments + starting live feed")
+        self._log_activity("PRE-MARKET: preparing instruments + starting live feed")
         try:
             if self._runtime.settings.angel_one_configured:
-                await asyncio.to_thread(self._runtime.refresh_angel_one_instruments)
+                if self._runtime.settings.premarket_refresh_instruments:
+                    await asyncio.to_thread(self._runtime.refresh_angel_one_instruments)
+                else:
+                    try:
+                        await asyncio.to_thread(self._runtime.load_cached_angel_one_instruments)
+                    except FileNotFoundError:
+                        await asyncio.to_thread(self._runtime.refresh_angel_one_instruments)
                 count = len(self._runtime.instrument_master.instruments)
-                self._log_activity(f"Instruments refreshed from Angel One ({count} instruments loaded)")
+                source = "Angel One refresh" if self._runtime.settings.premarket_refresh_instruments else "cached Angel One master"
+                self._log_activity(f"Instruments loaded from {source} ({count} instruments loaded)")
 
             # Stop existing feed so we can resubscribe with fresh tokens
             self._runtime.live_feed.stop()
             await asyncio.sleep(1)
 
-            # Subscribe the full cash/index universe plus near-expiry futures for scan underlyings.
-            cash_symbols = [
-                instrument.symbol
-                for instrument in self._runtime.instrument_master.all()
-                if not instrument.is_derivative
-            ]
-            futures_symbols: list[str] = []
-            today = date.today() if True else None  # avoid conditional import
-            from datetime import date as _date
-            today = _date.today()
-            for underlying in SCAN_UNDERLYINGS:
-                try:
-                    fut = self._runtime.instrument_master.select_future(underlying, today)
-                    futures_symbols.append(fut.symbol)
-                except Exception:
-                    pass
-
-            all_feed_symbols = cash_symbols + futures_symbols
-            self._runtime.start_live_feed(symbols=all_feed_symbols)
+            requested_symbols = list(self._runtime.settings.live_feed_default_symbols) or SCAN_UNDERLYINGS[:10]
+            result = self._runtime.start_live_feed(symbols=requested_symbols)
             self._log_activity(
-                f"Live feed started: {len(cash_symbols)} cash + {len(futures_symbols)} futures symbols"
+                f"Live feed started: {result.get('symbol_count', 0)} paper-market symbols"
             )
             self._publish("agent.premarket_done", {
                 "ts": now_ist().isoformat(),
-                "cash_symbols": len(cash_symbols),
-                "futures_symbols": len(futures_symbols),
+                "symbols": result.get("symbols", []),
+                "symbol_count": result.get("symbol_count", 0),
             })
         except Exception as exc:
             logger.error("Pre-market routine error: %s", exc)
@@ -436,6 +426,12 @@ class TradingAgent:
         from trading_platform.domain.enums import Side
         from trading_platform.domain.models import Signal
 
+        metadata = dict(sig_d.get("metadata") or {})
+        metadata.update({
+            "regime": regime,
+            "agent_auto": True,
+            "neural_direction_probability": getattr(self._runtime, "_latest_neural_probs", {}).get(symbol, 0.5),
+        })
         signal = Signal(
             strategy_name=sig_d.get("strategy_name", "agent"),
             symbol=symbol,
@@ -444,7 +440,7 @@ class TradingAgent:
             price=float(sig_d.get("price", 0)),
             reason=sig_d.get("reason", "agent_auto"),
             created_at=datetime.now(timezone.utc),
-            metadata={"regime": regime, "agent_auto": True},
+            metadata=metadata,
         )
         intent = OrderIntent(
             signal=signal,

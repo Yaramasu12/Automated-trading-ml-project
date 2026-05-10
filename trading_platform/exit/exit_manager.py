@@ -133,6 +133,12 @@ class ExitManager:
             price=price,
             reason=f"ExitPlan triggered: {trigger.value}",
             created_at=now,
+            metadata={
+                "opens_position": False,
+                "trace_id": plan.trace_id,
+                "exit_trigger": trigger.value,
+                "exit_plan_id": plan.plan_id,
+            },
         )
         intent = OrderIntent(
             signal=signal,
