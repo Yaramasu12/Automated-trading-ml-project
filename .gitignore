@@ -26,6 +26,12 @@ data/*.db-wal
 # Feature store — machine-generated, never commit
 data/feature_store/
 
+# Decision traces / paper-learning artifacts — runtime generated
+data/decision_traces/
+
+# Local assistant planning prompts, not deployable source
+CLAUDE_*_PROMPT.md
+
 # Raw / processed data
 data/raw/*
 !data/raw/.gitkeep
