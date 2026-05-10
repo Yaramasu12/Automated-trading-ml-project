@@ -37,7 +37,11 @@ class FillProcessor:
             price=fill_price,
             fill_price=fill_price,
             fill_qty=fill_qty,
-            metadata={"charges": charges, "trade_id": trade.trade_id},
+            metadata={
+                "trace_id": order.intent.signal.metadata.get("trace_id", ""),
+                "charges": charges,
+                "trade_id": trade.trade_id,
+            },
         )
         return trade
 

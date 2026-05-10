@@ -5,11 +5,18 @@ from datetime import date, datetime, time, timedelta
 
 IST = zoneinfo.ZoneInfo("Asia/Kolkata")
 
+# ── Equity (NSE/BSE) session ──────────────────────────────────────────────────
 _MARKET_OPEN = time(9, 15)
 _MARKET_CLOSE = time(15, 30)
 _ENTRY_CUTOFF = time(15, 20)   # no new entries after this
 _EOD_SQUAREOFF = time(15, 25)  # force-close all positions
 _PREMARKET = time(9, 0)
+
+# ── MCX (commodity) session — non-agri: 09:00–23:30 IST ──────────────────────
+_MCX_OPEN = time(9, 0)
+_MCX_CLOSE = time(23, 30)
+_MCX_ENTRY_CUTOFF = time(23, 25)   # no new commodity entries after this
+_MCX_EOD_SQUAREOFF = time(23, 25)  # force-close all commodity positions
 
 # NSE holidays 2026
 _HOLIDAYS: set[date] = {
@@ -71,6 +78,36 @@ def is_premarket(dt: datetime | None = None) -> bool:
 def seconds_to_next_open(dt: datetime | None = None) -> float:
     now = dt or now_ist()
     nxt = now.replace(hour=_MARKET_OPEN.hour, minute=_MARKET_OPEN.minute, second=0, microsecond=0)
+    if nxt <= now:
+        nxt += timedelta(days=1)
+    while not is_trading_day(nxt.date()):
+        nxt += timedelta(days=1)
+    return (nxt - now).total_seconds()
+
+
+# ── MCX helpers ───────────────────────────────────────────────────────────────
+
+def is_mcx_entry_allowed(dt: datetime | None = None) -> bool:
+    """MCX non-agri commodities: entry allowed 09:00–23:25 IST on trading days."""
+    now = dt or now_ist()
+    if not is_trading_day(now.date()):
+        return False
+    t = now.time()
+    return _MCX_OPEN <= t < _MCX_ENTRY_CUTOFF
+
+
+def is_mcx_eod_squareoff(dt: datetime | None = None) -> bool:
+    """True during the 23:25–23:30 IST window — force-close all commodity positions."""
+    now = dt or now_ist()
+    if not is_trading_day(now.date()):
+        return False
+    t = now.time()
+    return _MCX_EOD_SQUAREOFF <= t <= _MCX_CLOSE
+
+
+def seconds_to_mcx_open(dt: datetime | None = None) -> float:
+    now = dt or now_ist()
+    nxt = now.replace(hour=_MCX_OPEN.hour, minute=_MCX_OPEN.minute, second=0, microsecond=0)
     if nxt <= now:
         nxt += timedelta(days=1)
     while not is_trading_day(nxt.date()):

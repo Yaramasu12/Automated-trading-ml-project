@@ -1,24 +1,45 @@
 import { clsx } from 'clsx'
 import type { ReactNode } from 'react'
 
-interface Column<T> {
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export interface Column<T = any> {
   key: string
-  header: string
-  render: (row: T) => ReactNode
+  label?: string
+  /** Legacy alias for label */
+  header?: string
+  render?: (val: unknown, row: T) => ReactNode
   align?: 'left' | 'right' | 'center'
   className?: string
 }
 
-interface TableProps<T> {
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export interface TableProps<T = any> {
   columns: Column<T>[]
-  data: T[]
-  keyFn: (row: T) => string
+  rows?: T[]
+  /** Legacy alias for rows */
+  data?: T[]
+  keyFn?: (row: T, index?: number) => string
+  emptyMessage?: string
+  /** Legacy alias for emptyMessage */
   emptyText?: string
   className?: string
   compact?: boolean
 }
 
-export function Table<T>({ columns, data, keyFn, emptyText = 'No data', className, compact }: TableProps<T>) {
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function Table<T = any>({
+  columns,
+  rows,
+  data,
+  keyFn,
+  emptyMessage,
+  emptyText,
+  className,
+  compact,
+}: TableProps<T>) {
+  const items = rows ?? data ?? []
+  const empty = emptyMessage ?? emptyText ?? 'No data'
+
   return (
     <div className={clsx('overflow-x-auto', className)}>
       <table className="w-full text-sm">
@@ -30,28 +51,28 @@ export function Table<T>({ columns, data, keyFn, emptyText = 'No data', classNam
                 className={clsx(
                   'font-medium text-gray-500 uppercase tracking-wider text-xs',
                   compact ? 'px-3 py-2' : 'px-4 py-3',
-                  col.align === 'right' && 'text-right',
+                  col.align === 'right'  && 'text-right',
                   col.align === 'center' && 'text-center',
-                  !col.align && 'text-left',
+                  !col.align             && 'text-left',
                   col.className,
                 )}
               >
-                {col.header}
+                {col.label ?? col.header ?? col.key}
               </th>
             ))}
           </tr>
         </thead>
         <tbody>
-          {data.length === 0 ? (
+          {items.length === 0 ? (
             <tr>
               <td colSpan={columns.length} className="text-center text-gray-500 py-8 text-xs">
-                {emptyText}
+                {empty}
               </td>
             </tr>
           ) : (
-            data.map((row) => (
+            items.map((row, idx) => (
               <tr
-                key={keyFn(row)}
+                key={keyFn ? keyFn(row, idx) : String(idx)}
                 className="border-b border-surface-border/50 hover:bg-surface-elevated/50 transition-colors"
               >
                 {columns.map((col) => (
@@ -60,12 +81,14 @@ export function Table<T>({ columns, data, keyFn, emptyText = 'No data', classNam
                     className={clsx(
                       'text-gray-300 font-mono',
                       compact ? 'px-3 py-2' : 'px-4 py-3',
-                      col.align === 'right' && 'text-right',
+                      col.align === 'right'  && 'text-right',
                       col.align === 'center' && 'text-center',
                       col.className,
                     )}
                   >
-                    {col.render(row)}
+                    {col.render
+                      ? col.render((row as Record<string, unknown>)[col.key], row)
+                      : ((row as Record<string, unknown>)[col.key] as ReactNode)}
                   </td>
                 ))}
               </tr>

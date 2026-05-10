@@ -1,227 +1,274 @@
-import { useEffect, useRef, useState } from 'react'
-import { AlertTriangle, CheckCircle, Loader2, RefreshCw, Shield, XCircle } from 'lucide-react'
-import { Card, CardBody, CardHeader } from '../components/shared/Card'
-import { Badge } from '../components/shared/Badge'
-import { useStore } from '../store'
-import { getRiskEvents, getSupervisorDecision } from '../api'
-import { fmtDateTime, num } from '../utils'
+import { useEffect, useRef, useState, useCallback } from 'react'
+import { Shield, AlertTriangle, RefreshCw, Loader2, CheckCircle, XCircle } from 'lucide-react'
 import { clsx } from 'clsx'
-
-interface RiskEvent {
-  id: number
-  event_type: string
-  reason: string
-  symbol: string | null
-  risk_score: number
-  approved: boolean
-  timestamp: string
-}
+import { Card, CardBody, CardHeader } from '../components/shared/Card'
+import { Table } from '../components/shared/Table'
+import { Tag } from '../components/shared/Badge'
+import { useStore } from '../store'
+import { getHealth, getCompliance, getEventRisk, getRiskEvents } from '../api'
+import { fmtDateTime, pct } from '../utils'
 
 export function Risk() {
   const runtimeState = useStore((s) => s.runtimeState)
-  const monitoring = useStore((s) => s.monitoring)
+  const monitoring   = useStore((s) => s.monitoring)
 
-  const [riskEvents, setRiskEvents] = useState<RiskEvent[]>([])
-  const [supervisor, setSupervisor] = useState<{ action: string; reason: string; max_allocation_multiplier: number } | null>(null)
-  const [loadingEvents, setLoadingEvents] = useState(false)
-  const [loadingSupervisor, setLoadingSupervisor] = useState(false)
-
-  async function loadEvents() {
-    setLoadingEvents(true)
-    try {
-      const r = await getRiskEvents(50)
-      setRiskEvents(r.events as RiskEvent[])
-    } finally {
-      setLoadingEvents(false)
-    }
-  }
-
-  async function loadSupervisor() {
-    setLoadingSupervisor(true)
-    try {
-      // Read fresh store state at call time to avoid stale closure from setInterval
-      const { monitoring: mon, livePortfolio: lp } = useStore.getState()
-      const r = await getSupervisorDecision({
-        drawdown: (lp?.portfolio.drawdown ?? 0) / 100,
-        daily_loss_pct: 0,
-        rejection_rate: mon?.rejection_rate ?? 0,
-        stale_market_data: mon?.stale_market_data ?? false,
-      })
-      setSupervisor(r)
-    } finally {
-      setLoadingSupervisor(false)
-    }
-  }
+  const [health, setHealth]       = useState<Record<string, unknown> | null>(null)
+  const [compliance, setCompliance] = useState<Record<string, unknown> | null>(null)
+  const [eventRisk, setEventRisk]   = useState<Record<string, unknown> | null>(null)
+  const [riskEvents, setRiskEvents] = useState<Record<string, unknown>[]>([])
+  const [loading, setLoading]       = useState(false)
 
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
-  useEffect(() => {
-    loadEvents()
-    loadSupervisor()
-    pollRef.current = setInterval(() => { loadEvents(); loadSupervisor() }, 8_000)
-    return () => { if (pollRef.current) clearInterval(pollRef.current) }
+  const load = useCallback(async () => {
+    setLoading(true)
+    try {
+      const [h, c, e, re] = await Promise.allSettled([
+        getHealth(),
+        getCompliance(),
+        getEventRisk(),
+        getRiskEvents(50),
+      ])
+      if (h.status === 'fulfilled')  setHealth(h.value as unknown as Record<string, unknown>)
+      if (c.status === 'fulfilled')  setCompliance(c.value)
+      if (e.status === 'fulfilled')  setEventRisk(e.value)
+      if (re.status === 'fulfilled') {
+        const v = re.value as { events?: Record<string, unknown>[] }
+        setRiskEvents(v.events ?? [])
+      }
+    } catch { /* ignore */ }
+    finally { setLoading(false) }
   }, [])
 
-  const rejectRate = monitoring?.rejection_rate ?? 0
-  const totalOrders = monitoring?.total_orders ?? 0
-  const rejectedOrders = Math.round(totalOrders * rejectRate)
+  useEffect(() => {
+    load()
+    pollRef.current = setInterval(load, 30_000)
+    return () => { if (pollRef.current) clearInterval(pollRef.current) }
+  }, [load])
+
+  const riskLimits = (health as { risk_limits?: Record<string, number> } | null)?.risk_limits
+
+  const limitBars = riskLimits ? [
+    { label: 'Drawdown Limit', value: (monitoring?.rejection_rate ?? 0) * 100, max: riskLimits.max_drawdown * 100, unit: '%' },
+    { label: 'Daily Loss Limit', value: 0, max: riskLimits.max_daily_loss * 100, unit: '%' },
+    { label: 'Position Limit', value: 0, max: riskLimits.max_position_pct * 100, unit: '%' },
+    { label: 'Margin Utilization', value: 0, max: riskLimits.max_margin_utilization * 100, unit: '%' },
+  ] : []
 
   return (
     <div className="space-y-5">
+
+      {/* Header */}
       <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-lg font-bold text-gray-100">Risk Management</h1>
-          <p className="text-xs text-gray-500 mt-0.5">Supervisor decisions, limits, and event log</p>
+        <div className="flex items-center gap-2">
+          <Shield size={16} className="text-brand-red" />
+          <div>
+            <h1 className="text-lg font-bold text-gray-100">Risk Management</h1>
+            <p className="text-xs text-gray-500 mt-0.5">Active risk limits, compliance, event guards</p>
+          </div>
         </div>
         <button
-          onClick={() => { loadEvents(); loadSupervisor() }}
-          className="flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-surface-elevated border border-surface-border text-xs text-gray-400 hover:text-gray-200"
+          onClick={load}
+          disabled={loading}
+          className="flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-surface-elevated border border-surface-border text-xs text-gray-400 hover:text-gray-200 transition-colors"
         >
-          <RefreshCw size={12} />
+          {loading ? <Loader2 size={12} className="animate-spin" /> : <RefreshCw size={12} />}
           Refresh
         </button>
       </div>
 
-      {/* Monitoring stats */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-        <div className="bg-surface-card border border-surface-border rounded-lg p-4">
-          <div className="text-xs text-gray-500 mb-1">System Status</div>
-          <div className={clsx('text-lg font-bold font-mono', monitoring?.status === 'HEALTHY' ? 'text-brand-green' : 'text-brand-red')}>
-            {monitoring?.status ?? '—'}
-          </div>
+      {/* System status */}
+      {monitoring && (
+        <div className={clsx(
+          'flex items-center gap-3 px-4 py-3 rounded-lg border',
+          monitoring.status === 'HEALTHY'  ? 'bg-brand-green/5 border-brand-green/20'
+          : monitoring.status === 'DEGRADED' ? 'bg-brand-yellow/5 border-brand-yellow/20'
+          : 'bg-brand-red/5 border-brand-red/20',
+        )}>
+          {monitoring.status === 'HEALTHY'
+            ? <CheckCircle size={16} className="text-brand-green" />
+            : monitoring.status === 'DEGRADED'
+              ? <AlertTriangle size={16} className="text-brand-yellow" />
+              : <XCircle size={16} className="text-brand-red" />}
+          <span className={clsx(
+            'text-sm font-semibold',
+            monitoring.status === 'HEALTHY' ? 'text-brand-green'
+            : monitoring.status === 'DEGRADED' ? 'text-brand-yellow' : 'text-brand-red',
+          )}>
+            System {monitoring.status}
+          </span>
+          {runtimeState?.kill_switch_active && (
+            <Tag label="KILL SWITCH ACTIVE" color="red" />
+          )}
         </div>
-        <div className="bg-surface-card border border-surface-border rounded-lg p-4">
-          <div className="text-xs text-gray-500 mb-1">Total Orders</div>
-          <div className="text-lg font-bold font-mono text-gray-100">{totalOrders}</div>
-        </div>
-        <div className="bg-surface-card border border-surface-border rounded-lg p-4">
-          <div className="text-xs text-gray-500 mb-1">Rejected Orders</div>
-          <div className="text-lg font-bold font-mono text-brand-red">{rejectedOrders}</div>
-        </div>
-        <div className="bg-surface-card border border-surface-border rounded-lg p-4">
-          <div className="text-xs text-gray-500 mb-1">Rejection Rate</div>
-          <div className={clsx('text-lg font-bold font-mono', rejectRate > 0.3 ? 'text-brand-red' : 'text-brand-green')}>
-            {(rejectRate * 100).toFixed(1)}%
-          </div>
-        </div>
-      </div>
+      )}
 
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
-        {/* Supervisor decision */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
+        {/* Risk Limits */}
         <Card>
-          <CardHeader title="Risk Supervisor" subtitle="Current allocation decision" icon={<Shield size={14} />} />
-          <CardBody>
-            {loadingSupervisor ? (
-              <div className="flex items-center gap-2 text-gray-500">
-                <Loader2 size={14} className="animate-spin" />
-                <span className="text-sm">Loading…</span>
-              </div>
-            ) : supervisor ? (
-              <div className="space-y-3">
-                <div className="flex items-center gap-3">
-                  {supervisor.action === 'ALLOW' ? (
-                    <CheckCircle size={24} className="text-brand-green flex-shrink-0" />
-                  ) : supervisor.action === 'REDUCE' ? (
-                    <AlertTriangle size={24} className="text-brand-yellow flex-shrink-0" />
-                  ) : (
-                    <XCircle size={24} className="text-brand-red flex-shrink-0" />
-                  )}
-                  <div>
-                    <div className="font-bold text-gray-100">{supervisor.action}</div>
-                    <div className="text-xs text-gray-400 mt-0.5">{supervisor.reason}</div>
+          <CardHeader title="Risk Limits" icon={<Shield size={14} />} />
+          <CardBody className="space-y-4">
+            {limitBars.length > 0 ? limitBars.map((bar) => {
+              const pctUsed = bar.max > 0 ? Math.min(100, (bar.value / bar.max) * 100) : 0
+              return (
+                <div key={bar.label} className="space-y-1.5">
+                  <div className="flex items-center justify-between text-xs">
+                    <span className="text-gray-400">{bar.label}</span>
+                    <span className="font-mono text-gray-300">
+                      {bar.value.toFixed(1)}{bar.unit} / {bar.max.toFixed(1)}{bar.unit}
+                    </span>
+                  </div>
+                  <div className="h-1.5 bg-surface-elevated rounded-full overflow-hidden">
+                    <div
+                      className={clsx(
+                        'h-full rounded-full transition-all',
+                        pctUsed > 80 ? 'bg-brand-red'
+                        : pctUsed > 50 ? 'bg-brand-yellow'
+                        : 'bg-brand-green',
+                      )}
+                      style={{ width: `${pctUsed}%` }}
+                    />
                   </div>
                 </div>
-                <div className="flex items-center justify-between bg-surface-elevated rounded-md px-3 py-2">
-                  <span className="text-xs text-gray-500">Max Allocation Multiplier</span>
-                  <span className="font-mono font-bold text-brand-cyan">{supervisor.max_allocation_multiplier.toFixed(2)}×</span>
+              )
+            }) : (
+              <div className="text-xs text-gray-500 text-center py-4">Loading risk limits...</div>
+            )}
+
+            {riskLimits && (
+              <div className="pt-2 border-t border-surface-border space-y-1.5">
+                <div className="flex items-center justify-between text-xs">
+                  <span className="text-gray-400">Max Orders/Day</span>
+                  <span className="font-mono text-gray-300">{riskLimits.max_orders_per_day}</span>
+                </div>
+                <div className="flex items-center justify-between text-xs">
+                  <span className="text-gray-400">Block Naked Options</span>
+                  <Tag label={riskLimits.block_naked_option_selling ? 'BLOCKED' : 'ALLOWED'} color={riskLimits.block_naked_option_selling ? 'red' : 'green'} />
                 </div>
               </div>
-            ) : (
-              <p className="text-sm text-gray-500">No supervisor data</p>
             )}
           </CardBody>
         </Card>
 
-        {/* Kill switch / mode status */}
+        {/* Compliance */}
         <Card>
-          <CardHeader title="System Controls" subtitle="Runtime state" icon={<Shield size={14} />} />
+          <CardHeader title="Compliance" icon={<CheckCircle size={14} />} />
           <CardBody className="space-y-3">
-            <div className="flex items-center justify-between py-2 border-b border-surface-border">
-              <span className="text-sm text-gray-400">Kill Switch</span>
-              <Badge variant={runtimeState?.kill_switch_active ? 'red' : 'green'} dot>
-                {runtimeState?.kill_switch_active ? 'ACTIVE' : 'INACTIVE'}
-              </Badge>
-            </div>
-            <div className="flex items-center justify-between py-2 border-b border-surface-border">
-              <span className="text-sm text-gray-400">Execution Mode</span>
-              <Badge variant={runtimeState?.execution_mode === 'LIVE' ? 'red' : runtimeState?.execution_mode === 'PAPER' ? 'yellow' : 'blue'}>
-                {runtimeState?.execution_mode ?? '—'}
-              </Badge>
-            </div>
-            <div className="flex items-center justify-between py-2 border-b border-surface-border">
-              <span className="text-sm text-gray-400">Live Armed</span>
-              <Badge variant={runtimeState?.live_armed ? 'orange' : 'gray'}>
-                {runtimeState?.live_armed ? 'ARMED' : 'DISARMED'}
-              </Badge>
-            </div>
-            <div className="flex items-center justify-between py-2">
-              <span className="text-sm text-gray-400">Broker</span>
-              <span className="text-sm font-mono text-gray-300">{runtimeState?.broker ?? '—'}</span>
-            </div>
+            {compliance ? (
+              <div className="space-y-2">
+                {Object.entries(compliance).slice(0, 8).map(([k, v]) => (
+                  <div key={k} className="flex items-center justify-between text-xs py-1.5 border-b border-surface-border/50">
+                    <span className="text-gray-400 capitalize">{k.replace(/_/g, ' ')}</span>
+                    <span className="font-mono text-gray-200">{String(v)}</span>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="text-xs text-gray-500 text-center py-4">Loading compliance data...</div>
+            )}
+          </CardBody>
+        </Card>
+
+        {/* Capital Protection */}
+        <Card>
+          <CardHeader title="Capital Protection" icon={<Shield size={14} />} />
+          <CardBody className="space-y-3">
+            {monitoring ? (
+              <div className="space-y-2">
+                <div className="flex items-center justify-between text-xs py-1.5 border-b border-surface-border/50">
+                  <span className="text-gray-400">Total Orders</span>
+                  <span className="font-mono text-gray-200">{monitoring.total_orders}</span>
+                </div>
+                <div className="flex items-center justify-between text-xs py-1.5 border-b border-surface-border/50">
+                  <span className="text-gray-400">Filled Orders</span>
+                  <span className="font-mono text-brand-green">{monitoring.filled_orders}</span>
+                </div>
+                <div className="flex items-center justify-between text-xs py-1.5 border-b border-surface-border/50">
+                  <span className="text-gray-400">Rejected Orders</span>
+                  <span className="font-mono text-brand-red">{monitoring.rejected_orders}</span>
+                </div>
+                <div className="flex items-center justify-between text-xs py-1.5 border-b border-surface-border/50">
+                  <span className="text-gray-400">Rejection Rate</span>
+                  <span className={clsx(
+                    'font-mono font-bold',
+                    monitoring.rejection_rate > 0.1 ? 'text-brand-red'
+                    : monitoring.rejection_rate > 0.05 ? 'text-brand-yellow'
+                    : 'text-brand-green',
+                  )}>
+                    {pct(monitoring.rejection_rate * 100)}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between text-xs py-1.5">
+                  <span className="text-gray-400">Kill Switch</span>
+                  <Tag
+                    label={runtimeState?.kill_switch_active ? 'ACTIVE' : 'OFF'}
+                    color={runtimeState?.kill_switch_active ? 'red' : 'gray'}
+                  />
+                </div>
+              </div>
+            ) : (
+              <div className="text-xs text-gray-500 text-center py-4">No monitoring data</div>
+            )}
+          </CardBody>
+        </Card>
+
+        {/* Event Risk */}
+        <Card>
+          <CardHeader title="Event Risk" icon={<AlertTriangle size={14} />} />
+          <CardBody className="space-y-3">
+            {eventRisk ? (
+              <div className="space-y-2">
+                {Object.entries(eventRisk).slice(0, 8).map(([k, v]) => (
+                  <div key={k} className="flex items-center justify-between text-xs py-1.5 border-b border-surface-border/50">
+                    <span className="text-gray-400 capitalize">{k.replace(/_/g, ' ')}</span>
+                    <span className="font-mono text-gray-200">{String(v)}</span>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="text-xs text-gray-500 text-center py-4">Loading event risk data...</div>
+            )}
           </CardBody>
         </Card>
       </div>
 
-      {/* Risk event log */}
+      {/* Risk Rejections Table */}
       <Card>
         <CardHeader
-          title="Risk Event Log"
-          subtitle={`${riskEvents.length} events`}
-          action={
-            <button onClick={loadEvents} className="text-xs text-gray-500 hover:text-gray-300">
-              <RefreshCw size={12} />
-            </button>
-          }
+          title="Risk Rejections"
+          subtitle={`Last ${riskEvents.length} events`}
+          icon={<XCircle size={14} />}
         />
-        {loadingEvents ? (
-          <div className="flex justify-center py-8">
-            <Loader2 size={20} className="animate-spin text-gray-500" />
-          </div>
-        ) : riskEvents.length === 0 ? (
-          <div className="text-center py-8 text-gray-600 text-sm">No risk events recorded</div>
-        ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full text-xs">
-              <thead>
-                <tr className="border-b border-surface-border text-gray-500 uppercase tracking-wider">
-                  <th className="px-4 py-2 text-left">Time</th>
-                  <th className="px-4 py-2 text-left">Type</th>
-                  <th className="px-4 py-2 text-left">Symbol</th>
-                  <th className="px-4 py-2 text-right">Risk Score</th>
-                  <th className="px-4 py-2 text-left">Decision</th>
-                  <th className="px-4 py-2 text-left">Reason</th>
-                </tr>
-              </thead>
-              <tbody>
-                {riskEvents.map((ev) => (
-                  <tr key={ev.id} className="border-b border-surface-border/40 hover:bg-surface-elevated/40">
-                    <td className="px-4 py-2 font-mono text-gray-500">{fmtDateTime(ev.timestamp)}</td>
-                    <td className="px-4 py-2 text-gray-300">{ev.event_type}</td>
-                    <td className="px-4 py-2 font-mono text-brand-blue">{ev.symbol ?? '—'}</td>
-                    <td className="px-4 py-2 text-right font-mono">{num(ev.risk_score, 3)}</td>
-                    <td className="px-4 py-2">
-                      <Badge variant={ev.approved ? 'green' : 'red'}>
-                        {ev.approved ? 'APPROVED' : 'BLOCKED'}
-                      </Badge>
-                    </td>
-                    <td className="px-4 py-2 text-gray-400 max-w-xs truncate">{ev.reason}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
+        <Table
+          columns={[
+            {
+              key: 'timestamp', label: 'Time',
+              render: (v) => <span className="text-xs text-gray-500">{fmtDateTime(String(v))}</span>,
+            },
+            {
+              key: 'symbol', label: 'Symbol',
+              render: (v) => <span className="text-brand-blue font-semibold">{String(v)}</span>,
+            },
+            { key: 'reason', label: 'Reason' },
+            {
+              key: 'risk_score', label: 'Risk Score', align: 'right' as const,
+              render: (v) => v != null ? (
+                <span className={clsx(
+                  'font-mono font-bold',
+                  Number(v) > 0.8 ? 'text-brand-red' : Number(v) > 0.5 ? 'text-brand-yellow' : 'text-gray-400',
+                )}>
+                  {Number(v).toFixed(2)}
+                </span>
+              ) : '—',
+            },
+          ]}
+          rows={riskEvents.slice(0, 50)}
+          keyFn={(r) => String(r.id ?? r.timestamp ?? Math.random())}
+          emptyMessage="No risk rejections"
+          compact
+        />
       </Card>
+
     </div>
   )
 }

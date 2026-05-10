@@ -56,6 +56,7 @@ class EmergencySquareOff:
                 price=mark_price,
                 reason=f"EmergencySquareOff scope={scope.value}",
                 created_at=now,
+                metadata={"opens_position": False, "square_off_scope": scope.value},
             )
             intent = OrderIntent(
                 signal=signal,

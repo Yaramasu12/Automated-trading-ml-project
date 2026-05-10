@@ -35,6 +35,7 @@ class ExitPlan:
     quantity: int = 0
     strategy_name: str = ""
     side: str = "BUY"
+    trace_id: str = ""
 
     stop_loss_price: float | None = None
     target_price: float | None = None
@@ -170,6 +171,7 @@ class ExitPlan:
             "quantity": self.quantity,
             "strategy_name": self.strategy_name,
             "side": self.side,
+            "trace_id": self.trace_id,
             "stop_loss_price": self.stop_loss_price,
             "target_price": self.target_price,
             "trailing_pct": self.trailing_pct,

@@ -11,6 +11,28 @@ from trading_platform.domain.enums import (
     OptionType,
     Segment,
 )
+
+# ── MCX commodity futures ─────────────────────────────────────────────────────
+# lot_size = units per contract (used for P&L: value = price × lot_size × qty)
+# base     = approximate price per unit in ₹ (for paper-trading only;
+#            Angel One instrument master refresh provides live contract tokens)
+MCX_COMMODITIES = {
+    # Precious metals
+    "GOLD":       {"token": "MCX-GOLD",       "lot_size": 100,  "base": 90000},  # ₹/10g, 1 kg contract
+    "GOLDM":      {"token": "MCX-GOLDM",      "lot_size": 10,   "base": 90000},  # ₹/10g, 100g mini
+    "SILVER":     {"token": "MCX-SILVER",     "lot_size": 30,   "base": 95000},  # ₹/kg,  30 kg contract
+    "SILVERMIC":  {"token": "MCX-SILVERMIC",  "lot_size": 1,    "base": 95000},  # ₹/kg,  1 kg micro
+    # Energy
+    "CRUDEOIL":   {"token": "MCX-CRUDEOIL",   "lot_size": 100,  "base": 6500},   # ₹/bbl, 100 bbl contract
+    "CRUDEOILM":  {"token": "MCX-CRUDEOILM",  "lot_size": 10,   "base": 6500},   # ₹/bbl, 10 bbl mini
+    "NATURALGAS": {"token": "MCX-NATURALGAS", "lot_size": 1250, "base": 250},    # ₹/mmBtu, 1250 mmBtu
+    # Base metals
+    "COPPER":     {"token": "MCX-COPPER",     "lot_size": 2500, "base": 800},    # ₹/kg,  2500 kg contract
+    "ZINC":       {"token": "MCX-ZINC",       "lot_size": 5000, "base": 265},    # ₹/kg,  5000 kg contract
+    "NICKEL":     {"token": "MCX-NICKEL",     "lot_size": 1500, "base": 1600},   # ₹/kg,  1500 kg contract
+    "LEAD":       {"token": "MCX-LEAD",       "lot_size": 5000, "base": 190},    # ₹/kg,  5000 kg contract
+    "ALUMINIUM":  {"token": "MCX-ALUMINIUM",  "lot_size": 5000, "base": 240},    # ₹/kg,  5000 kg contract
+}
 from trading_platform.domain.models import Instrument
 
 
@@ -247,6 +269,38 @@ class InstrumentMaster:
         return min(options, key=lambda instrument: abs((instrument.strike or 0) - strike))
 
 
+def _add_commodity_futures(universe: dict[str, Instrument], as_of: date) -> None:
+    """Add near-month MCX commodity futures (3 monthly expiries) to the universe."""
+    for symbol, meta in MCX_COMMODITIES.items():
+        for i in range(3):
+            expiry = _last_weekday_of_month(_add_months(as_of, i), 4)  # last Friday approximation
+            fut_symbol = f"{symbol}{expiry:%d%b%y}FUT".upper()
+            universe[fut_symbol] = Instrument(
+                symbol=fut_symbol,
+                name=f"{symbol} MCX Future {expiry.isoformat()}",
+                exchange=Exchange.MCX,
+                segment=Segment.FUTURES,
+                asset_class=AssetClass.COMMODITY,
+                instrument_type=InstrumentType.COMMODITY_FUTURE,
+                token=f"{meta['token']}-{expiry:%Y%m%d}",
+                lot_size=meta["lot_size"],
+                expiry=expiry,
+                underlying=symbol,
+            )
+        # Add a spot/cash instrument so the scanner can look up prices
+        universe[symbol] = Instrument(
+            symbol=symbol,
+            name=symbol,
+            exchange=Exchange.MCX,
+            segment=Segment.CASH,
+            asset_class=AssetClass.COMMODITY,
+            instrument_type=InstrumentType.COMMODITY_FUTURE,
+            token=meta["token"],
+            lot_size=meta["lot_size"],
+            underlying=symbol,
+        )
+
+
 def _add_equity(universe: dict[str, Instrument], symbol: str, token: str) -> None:
     universe[symbol] = Instrument(
         symbol=symbol,
@@ -347,4 +401,6 @@ def build_default_universe(as_of: date | None = None) -> InstrumentMaster:
         _add_equity(universe, symbol, token)
     # Build F&O derivatives for all indices (NSE → NFO, BSE → BFO) and equity F&O underlyings
     _add_derivatives(universe, anchor, [*INDEX_UNDERLYINGS.keys(), *EQUITY_FO_UNDERLYINGS.keys()])
+    # MCX commodity futures (non-agri, 09:00–23:30 IST)
+    _add_commodity_futures(universe, anchor)
     return InstrumentMaster(universe)

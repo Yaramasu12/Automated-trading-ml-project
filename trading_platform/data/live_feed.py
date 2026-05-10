@@ -17,12 +17,14 @@ NSE_CM = 1    # NSE Cash Market
 NSE_FO = 2    # NSE Futures & Options
 BSE_CM = 3    # BSE Cash Market
 BSE_FO = 4    # BSE Futures & Options
+MCX_FO = 5    # MCX Futures & Options
 
 _EXCHANGE_MODE_MAP = {
     "NSE": NSE_CM,
     "BSE": BSE_CM,
     "NFO": NSE_FO,
     "BFO": BSE_FO,   # BSE Futures & Options — used for SENSEX/BANKEX derivatives
+    "MCX": MCX_FO,
 }
 
 
@@ -240,6 +242,9 @@ class LiveTickFeed:
                 # If connect() returns and _running is still True, reconnect
                 retries += 1
             except Exception as exc:
+                if _is_rate_limit_error(exc):
+                    logger.warning("LiveTickFeed rate-limited by Angel One; feed stopped until manually restarted")
+                    break
                 logger.error("LiveTickFeed connection error: %s", exc)
                 retries += 1
 
@@ -333,3 +338,8 @@ class LiveTickFeed:
             close=close,
             volume=volume,
         )
+
+
+def _is_rate_limit_error(exc: Exception) -> bool:
+    text = str(exc).lower()
+    return "exceeding access rate" in text or "rate limit" in text or "too many requests" in text

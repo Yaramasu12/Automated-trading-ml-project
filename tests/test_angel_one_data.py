@@ -7,6 +7,7 @@ from trading_platform.config import Settings
 from trading_platform.data.angel_one_history import AngelOneHistoricalDataProvider
 from trading_platform.data.angel_one_instruments import AngelOneInstrumentMasterProvider
 from trading_platform.domain.enums import AssetClass, Exchange, ExecutionMode, InstrumentType, OptionType, Segment
+from trading_platform.domain.models import Instrument
 
 
 class FakeSmartApi:
@@ -109,6 +110,29 @@ class AngelOneDataTests(unittest.TestCase):
         self.assertEqual(bars[1].close, 108)
         self.assertEqual(fake_api.last_params["symboltoken"], "3045")
         self.assertEqual(fake_api.last_params["exchange"], "NSE")
+
+    def test_historical_provider_skips_synthetic_tokens(self):
+        fake_api = FakeSmartApi()
+        history = AngelOneHistoricalDataProvider(_settings(), smart_api=fake_api)
+        instrument = Instrument(
+            symbol="GOLD",
+            name="GOLD MCX Synthetic",
+            exchange=Exchange.MCX,
+            segment=Segment.FUTURES,
+            asset_class=AssetClass.COMMODITY,
+            instrument_type=InstrumentType.FUTURE,
+            token="MCX-GOLD",
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "synthetic/non-numeric token"):
+            history.get_candles(
+                instrument,
+                datetime(2026, 1, 1, 9, 15),
+                datetime(2026, 1, 2, 15, 30),
+                "ONE_DAY",
+            )
+
+        self.assertIsNone(fake_api.last_params)
 
 
 def _settings() -> Settings:

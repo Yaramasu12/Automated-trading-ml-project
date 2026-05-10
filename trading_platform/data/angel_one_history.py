@@ -21,6 +21,10 @@ class AngelOneHistoricalDataProvider:
         to_dt: datetime,
         interval: str = "ONE_DAY",
     ) -> list[MarketBar]:
+        if not _is_angel_one_token(instrument.token):
+            raise RuntimeError(
+                f"Angel One candle request skipped for {instrument.symbol}: synthetic/non-numeric token"
+            )
         params = {
             "exchange": instrument.exchange.value,
             "symboltoken": instrument.token,
@@ -61,6 +65,10 @@ class AngelOneHistoricalDataProvider:
             raise RuntimeError(f"Angel One login failed: {session}")
         self._smart_api = smart_api
         return smart_api
+
+
+def _is_angel_one_token(token: str) -> bool:
+    return bool(str(token).strip().isdigit())
 
 
 def _parse_candle(symbol: str, candle: list[Any]) -> MarketBar:

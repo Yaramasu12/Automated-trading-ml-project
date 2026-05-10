@@ -1,263 +1,260 @@
-import { useEffect, useState } from 'react'
-import { Zap, Play, Loader2, ChevronDown, ChevronRight } from 'lucide-react'
-import { Card, CardBody, CardHeader } from '../components/shared/Card'
-import { Badge, regimeBadge } from '../components/shared/Badge'
-import { useStore } from '../store'
-import { getUniverse, scanSignals, runShadow } from '../api'
-import { inr, pct, num } from '../utils'
-import type { Candidate, SignalScanResult } from '../types'
+import { useState, useCallback } from 'react'
+import { Zap, Loader2, ChevronDown, ChevronRight, Eye } from 'lucide-react'
 import { clsx } from 'clsx'
+import { Card, CardBody, CardHeader } from '../components/shared/Card'
+import { Table } from '../components/shared/Table'
+import { Tag, regimeBadge } from '../components/shared/Badge'
+import { useStore } from '../store'
+import { scanSignals, runShadow } from '../api'
+import { pct } from '../utils'
+import type { Candidate } from '../types'
 
-const FALLBACK_UNDERLYINGS = [
-  'NIFTY', 'BANKNIFTY', 'FINNIFTY', 'MIDCPNIFTY', 'SENSEX', 'BANKEX',
-  'RELIANCE', 'TCS', 'INFY', 'HDFCBANK', 'ICICIBANK', 'SBIN',
-  'WIPRO', 'KOTAKBANK', 'AXISBANK', 'MARUTI', 'SUNPHARMA', 'TATAMOTORS',
-  'BAJFINANCE', 'HINDUNILVR', 'BHARTIARTL', 'NTPC',
+const UNDERLYINGS = ['NIFTY', 'BANKNIFTY', 'FINNIFTY', 'MIDCPNIFTY', 'RELIANCE', 'TCS', 'INFY', 'HDFCBANK', 'ICICIBANK', 'SBIN']
+const DAY_OPTIONS = [7, 14, 30, 60]
+const STRATEGIES = [
+  'ShortStraddleStrategy', 'IronCondorStrategy', 'CoveredCallStrategy',
+  'BullCallSpreadStrategy', 'ProtectivePutStrategy', 'MomentumBreakoutStrategy',
 ]
 
-function unique(values: string[]) {
-  return [...new Set(values.map((value) => value.trim().toUpperCase()).filter(Boolean))]
-}
-
 export function Signals() {
-  const signalResult = useStore((s) => s.signalResult)
+  const signalResult    = useStore((s) => s.signalResult)
   const setSignalResult = useStore((s) => s.setSignalResult)
-  const loading = useStore((s) => s.loading.signals)
-  const setLoading = useStore((s) => s.setLoading)
-  const setError = useStore((s) => s.setError)
+  const loading         = useStore((s) => s.loading.signals)
+  const setLoading      = useStore((s) => s.setLoading)
+  const setError        = useStore((s) => s.setError)
 
-  const [underlyings, setUnderlyings] = useState(FALLBACK_UNDERLYINGS.join(', '))
-  const [editedUnderlyings, setEditedUnderlyings] = useState(false)
-  const [mode, setMode] = useState<'scan' | 'shadow'>('scan')
-  const [expanded, setExpanded] = useState<Record<string, boolean>>({})
+  const [selectedUnderlyings, setSelectedUnderlyings] = useState<string[]>(['NIFTY', 'BANKNIFTY'])
+  const [days, setDays]                               = useState(14)
+  const [selectedStrategies, setSelectedStrategies]   = useState<string[]>([])
+  const [expandedIdx, setExpandedIdx]                 = useState<number | null>(null)
 
-  useEffect(() => {
-    if (editedUnderlyings) return
-    getUniverse()
-      .then((rows) => {
-        const derived = unique(
-          rows
-            .filter((row) => row.segment === 'FUTURES' || row.segment === 'OPTIONS')
-            .map((row) => String(row.underlying ?? '')),
-        )
-        if (derived.length) setUnderlyings(derived.join(', '))
-      })
-      .catch(() => {})
-  }, [editedUnderlyings])
+  function toggleUnderlying(u: string) {
+    setSelectedUnderlyings(prev =>
+      prev.includes(u) ? prev.filter(x => x !== u) : [...prev, u]
+    )
+  }
 
-  async function run() {
+  function toggleStrategy(s: string) {
+    setSelectedStrategies(prev =>
+      prev.includes(s) ? prev.filter(x => x !== s) : [...prev, s]
+    )
+  }
+
+  const runScan = useCallback(async (shadow = false) => {
+    if (selectedUnderlyings.length === 0) return
     setLoading('signals', true)
     setError(null)
     try {
-      const payload = { underlyings: underlyings.split(',').map((s) => s.trim()).filter(Boolean) }
-      const result: SignalScanResult = mode === 'scan'
-        ? await scanSignals(payload)
-        : await runShadow(payload)
-      setSignalResult(result)
+      const payload = {
+        underlyings: selectedUnderlyings,
+        days,
+        strategy_names: selectedStrategies.length > 0 ? selectedStrategies : undefined,
+      }
+      const res = shadow ? await runShadow(payload) : await scanSignals(payload)
+      setSignalResult(res)
     } catch (e) {
-      setError(String(e))
+      setError(e instanceof Error ? e.message : 'Scan failed')
     } finally {
       setLoading('signals', false)
     }
-  }
+  }, [selectedUnderlyings, days, selectedStrategies, setLoading, setError, setSignalResult])
 
-  function toggleExpanded(key: string) {
-    setExpanded((prev) => ({ ...prev, [key]: !prev[key] }))
-  }
+  const candidateColumns = [
+    {
+      key: 'instrument', label: 'Instrument',
+      render: (_: unknown, r: Candidate) => <span className="text-brand-blue font-mono">{r.instrument.symbol}</span>,
+    },
+    {
+      key: 'strategy_name', label: 'Strategy',
+      render: (_: unknown, r: Candidate) => <span className="text-xs text-gray-400">{r.strategy_name}</span>,
+    },
+    {
+      key: 'side', label: 'Side',
+      render: (_: unknown, r: Candidate) => r.signal ? (
+        <span className={r.signal.side === 'BUY' ? 'text-brand-green' : 'text-brand-red'}>{r.signal.side}</span>
+      ) : <span className="text-gray-600">—</span>,
+    },
+    {
+      key: 'confidence', label: 'Confidence', align: 'right' as const,
+      render: (_: unknown, r: Candidate) => r.signal ? (
+        <span className={clsx(
+          'font-mono font-semibold',
+          r.signal.confidence > 0.7 ? 'text-brand-green' : r.signal.confidence > 0.4 ? 'text-brand-yellow' : 'text-brand-red',
+        )}>
+          {pct(r.signal.confidence * 100)}
+        </span>
+      ) : <span className="text-gray-600">—</span>,
+    },
+    {
+      key: 'risk_decision', label: 'Risk Decision',
+      render: (_: unknown, r: Candidate) => r.risk_decision ? (
+        r.risk_decision.approved
+          ? <Tag label="Approved" color="green" />
+          : <Tag label="Rejected" color="red" />
+      ) : <Tag label="Pending" color="gray" />,
+    },
+    {
+      key: 'reason', label: 'Reason',
+      render: (_: unknown, r: Candidate) => (
+        <span className="text-xs text-gray-500 truncate">{r.risk_decision?.reason ?? r.reason}</span>
+      ),
+    },
+  ]
 
   return (
     <div className="space-y-5">
-      <div className="flex items-center justify-between">
+
+      {/* Header */}
+      <div className="flex items-center gap-2">
+        <Zap size={16} className="text-brand-yellow" />
         <div>
           <h1 className="text-lg font-bold text-gray-100">Signal Scanner</h1>
-          <p className="text-xs text-gray-500 mt-0.5">Scan market regimes and generate trade candidates</p>
+          <p className="text-xs text-gray-500 mt-0.5">Multi-strategy signal detection across the universe</p>
         </div>
       </div>
 
-      {/* How-to guide */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-        <div className="bg-surface-card border border-surface-border rounded-lg p-4 space-y-2">
-          <div className="text-xs font-semibold text-gray-300 mb-2">Scan vs Shadow mode</div>
-          <div className="flex items-start gap-2 text-xs">
-            <span className="px-2 py-0.5 rounded bg-brand-blue/20 text-brand-blue font-semibold shrink-0">SCAN</span>
-            <span className="text-gray-500">Analyzes regime + strategies for each underlying and generates candidates. Does <em>not</em> place any orders. Use this to preview signals before running the agent.</span>
-          </div>
-          <div className="flex items-start gap-2 text-xs">
-            <span className="px-2 py-0.5 rounded bg-indigo-900/60 text-indigo-300 font-semibold shrink-0">SHADOW</span>
-            <span className="text-gray-500">Same analysis as Scan, but also submits approved candidates as paper orders. Use to test the full execution pipeline without risking capital.</span>
-          </div>
-        </div>
-        <div className="bg-surface-card border border-surface-border rounded-lg p-4 space-y-2">
-          <div className="text-xs font-semibold text-gray-300 mb-2">Reading the results</div>
-          <div className="flex items-center gap-2 text-xs">
-            <span className="px-2 py-0.5 rounded bg-brand-green/20 text-brand-green font-semibold">APPROVED</span>
-            <span className="text-gray-500">Signal passed regime, strategy, and risk checks. In Shadow mode, an order was submitted.</span>
-          </div>
-          <div className="flex items-center gap-2 text-xs">
-            <span className="px-2 py-0.5 rounded bg-brand-red/20 text-brand-red font-semibold">BLOCKED</span>
-            <span className="text-gray-500">Rejected by the risk engine. Check the Reason column for the specific limit that triggered. Common: drawdown, position size, daily loss.</span>
-          </div>
-          <div className="flex items-center gap-2 text-xs">
-            <span className="px-2 py-0.5 rounded bg-gray-700 text-gray-400 font-semibold">—</span>
-            <span className="text-gray-500">Strategy generated no signal for this underlying given the current regime.</span>
-          </div>
-        </div>
-      </div>
-
-      {/* Controls */}
+      {/* Form */}
       <Card>
-        <CardBody className="flex flex-wrap items-end gap-4">
-          <div className="flex-1 min-w-48">
-            <label className="block text-xs text-gray-500 mb-1">Underlyings (comma-separated)</label>
-            <input
-              value={underlyings}
-              onChange={(e) => {
-                setEditedUnderlyings(true)
-                setUnderlyings(e.target.value)
-              }}
-              className="w-full bg-surface-elevated border border-surface-border rounded-md px-3 py-1.5 text-sm text-gray-200 font-mono focus:outline-none focus:border-brand-blue"
-            />
-          </div>
-
+        <CardHeader title="Scan Parameters" icon={<Zap size={14} />} />
+        <CardBody className="space-y-4">
+          {/* Underlying chips */}
           <div>
-            <label className="block text-xs text-gray-500 mb-1">Mode</label>
-            <div className="flex rounded-md border border-surface-border overflow-hidden">
-              {(['scan', 'shadow'] as const).map((m) => (
+            <label className="block text-xs text-gray-400 mb-2 font-semibold uppercase tracking-wider">Underlyings</label>
+            <div className="flex flex-wrap gap-1.5">
+              {UNDERLYINGS.map((u) => (
                 <button
-                  key={m}
-                  onClick={() => setMode(m)}
+                  key={u}
+                  onClick={() => toggleUnderlying(u)}
                   className={clsx(
-                    'px-3 py-1.5 text-xs font-medium capitalize transition-colors',
-                    mode === m
-                      ? 'bg-brand-blue/20 text-brand-blue'
-                      : 'text-gray-400 hover:text-gray-200 bg-surface-elevated',
+                    'px-2.5 py-1 rounded text-xs font-mono border transition-colors',
+                    selectedUnderlyings.includes(u)
+                      ? 'bg-brand-blue/15 border-brand-blue/30 text-brand-blue'
+                      : 'bg-surface-elevated border-surface-border text-gray-400 hover:text-gray-200',
                   )}
                 >
-                  {m}
+                  {u}
                 </button>
               ))}
             </div>
           </div>
 
-          <button
-            onClick={run}
-            disabled={loading}
-            className="flex items-center gap-2 px-4 py-1.5 rounded-md bg-brand-blue text-surface text-sm font-medium hover:bg-brand-blue/80 disabled:opacity-50 transition-colors"
-          >
-            {loading ? <Loader2 size={14} className="animate-spin" /> : <Play size={14} />}
-            Run Scan
-          </button>
+          {/* Days */}
+          <div>
+            <label className="block text-xs text-gray-400 mb-2 font-semibold uppercase tracking-wider">Lookback</label>
+            <div className="flex gap-1.5">
+              {DAY_OPTIONS.map((d) => (
+                <button
+                  key={d}
+                  onClick={() => setDays(d)}
+                  className={clsx(
+                    'px-3 py-1 rounded text-xs font-mono border transition-colors',
+                    days === d
+                      ? 'bg-brand-cyan/15 border-brand-cyan/30 text-brand-cyan'
+                      : 'bg-surface-elevated border-surface-border text-gray-400 hover:text-gray-200',
+                  )}
+                >
+                  {d}d
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Strategy filter */}
+          <div>
+            <label className="block text-xs text-gray-400 mb-2 font-semibold uppercase tracking-wider">
+              Strategies <span className="text-gray-600 normal-case">(optional)</span>
+            </label>
+            <div className="flex flex-wrap gap-1.5">
+              {STRATEGIES.map((s) => (
+                <button
+                  key={s}
+                  onClick={() => toggleStrategy(s)}
+                  className={clsx(
+                    'px-2 py-1 rounded text-[11px] font-mono border transition-colors',
+                    selectedStrategies.includes(s)
+                      ? 'bg-brand-purple/15 border-brand-purple/30 text-brand-purple'
+                      : 'bg-surface-elevated border-surface-border text-gray-500 hover:text-gray-300',
+                  )}
+                >
+                  {s.replace('Strategy', '')}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Buttons */}
+          <div className="flex gap-3 pt-2">
+            <button
+              onClick={() => runScan(false)}
+              disabled={loading || selectedUnderlyings.length === 0}
+              className="flex items-center gap-2 px-4 py-2 rounded-md bg-brand-green/15 border border-brand-green/30 text-brand-green text-sm font-medium hover:bg-brand-green/25 disabled:opacity-50 transition-colors"
+            >
+              {loading ? <Loader2 size={14} className="animate-spin" /> : <Zap size={14} />}
+              Scan Signals
+            </button>
+            <button
+              onClick={() => runScan(true)}
+              disabled={loading || selectedUnderlyings.length === 0}
+              className="flex items-center gap-2 px-4 py-2 rounded-md bg-brand-yellow/15 border border-brand-yellow/30 text-brand-yellow text-sm font-medium hover:bg-brand-yellow/25 disabled:opacity-50 transition-colors"
+            >
+              {loading ? <Loader2 size={14} className="animate-spin" /> : <Eye size={14} />}
+              Shadow Run
+            </button>
+          </div>
         </CardBody>
       </Card>
 
-      {/* Summary */}
+      {/* Results */}
       {signalResult && (
-        <div className="grid grid-cols-3 gap-3">
-          <div className="bg-surface-card border border-surface-border rounded-lg p-3 text-center">
-            <div className="text-2xl font-bold font-mono text-brand-green">{signalResult.approved_candidates}</div>
-            <div className="text-xs text-gray-500 mt-1">Approved</div>
+        <div className="space-y-4">
+          {/* Summary row */}
+          <div className="flex items-center gap-3 flex-wrap">
+            <span className="text-xs text-gray-400">Mode: <span className="text-gray-200 font-mono">{signalResult.mode}</span></span>
+            <Tag label={`${signalResult.approved_candidates} Approved`}  color="green" />
+            <Tag label={`${signalResult.rejected_candidates} Rejected`}  color="red"   />
+            <Tag label={`${signalResult.submitted_orders} Submitted`}    color="blue"  />
           </div>
-          <div className="bg-surface-card border border-surface-border rounded-lg p-3 text-center">
-            <div className="text-2xl font-bold font-mono text-brand-red">{signalResult.rejected_candidates}</div>
-            <div className="text-xs text-gray-500 mt-1">Rejected</div>
-          </div>
-          <div className="bg-surface-card border border-surface-border rounded-lg p-3 text-center">
-            <div className="text-2xl font-bold font-mono text-brand-blue">{signalResult.submitted_orders}</div>
-            <div className="text-xs text-gray-500 mt-1">Orders</div>
-          </div>
-        </div>
-      )}
 
-      {/* Per-underlying scan results */}
-      {signalResult?.scans.map((scan) => {
-        const key = scan.underlying
-        const isOpen = expanded[key] ?? true
-        return (
-          <Card key={key}>
-            <button
-              className="w-full"
-              onClick={() => toggleExpanded(key)}
-            >
-              <CardHeader
-                title={scan.underlying}
-                subtitle={`${scan.candidates.length} candidates · vol ${pct(scan.volatility_forecast.annualized_volatility * 100)}`}
-                icon={isOpen ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-                action={
-                  <div className="flex items-center gap-2">
-                    {regimeBadge(scan.regime)}
-                    <Badge variant="gray">{scan.selected_strategies.length} strategies</Badge>
+          {/* Per-underlying accordion */}
+          {signalResult.scans.map((scan, idx) => (
+            <Card key={scan.underlying}>
+              <button
+                className="w-full flex items-center justify-between px-4 py-3 text-left hover:bg-surface-elevated/30 transition-colors rounded-t-lg"
+                onClick={() => setExpandedIdx(expandedIdx === idx ? null : idx)}
+              >
+                <div className="flex items-center gap-3 flex-wrap">
+                  <span className="text-sm font-semibold text-gray-100">{scan.underlying}</span>
+                  {regimeBadge(scan.regime)}
+                  <span className="text-xs text-gray-500 font-mono">
+                    Vol: {(scan.volatility_forecast.annualized_volatility * 100).toFixed(1)}%
+                  </span>
+                  <span className="text-xs text-gray-600">{scan.candidates.length} candidates</span>
+                </div>
+                {expandedIdx === idx
+                  ? <ChevronDown size={14} className="text-gray-500 flex-shrink-0" />
+                  : <ChevronRight size={14} className="text-gray-500 flex-shrink-0" />}
+              </button>
+              {expandedIdx === idx && (
+                <div className="border-t border-surface-border">
+                  <div className="px-4 py-2 bg-surface-elevated/30">
+                    <span className="text-xs text-gray-500">
+                      Strategies: {scan.selected_strategies.join(', ') || 'none selected'}
+                    </span>
                   </div>
-                }
-              />
-            </button>
-
-            {isOpen && (
-              <div className="overflow-x-auto">
-                <table className="w-full text-xs">
-                  <thead>
-                    <tr className="border-b border-surface-border text-gray-500 uppercase tracking-wider">
-                      <th className="px-4 py-2 text-left">Strategy</th>
-                      <th className="px-4 py-2 text-left">Instrument</th>
-                      <th className="px-4 py-2 text-left">Side</th>
-                      <th className="px-4 py-2 text-right">Confidence</th>
-                      <th className="px-4 py-2 text-right">Price</th>
-                      <th className="px-4 py-2 text-right">Qty</th>
-                      <th className="px-4 py-2 text-left">Risk</th>
-                      <th className="px-4 py-2 text-left">Reason</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {scan.candidates.map((c: Candidate, i) => (
-                      <tr key={i} className="border-b border-surface-border/40 hover:bg-surface-elevated/40">
-                        <td className="px-4 py-2 font-medium text-gray-200">{c.strategy_name}</td>
-                        <td className="px-4 py-2 font-mono text-brand-blue">{c.instrument.symbol}</td>
-                        <td className="px-4 py-2">
-                          {c.signal ? (
-                            <Badge variant={c.signal.side === 'BUY' ? 'green' : 'red'}>
-                              {c.signal.side}
-                            </Badge>
-                          ) : '—'}
-                        </td>
-                        <td className="px-4 py-2 text-right font-mono">
-                          {c.signal ? `${(c.signal.confidence * 100).toFixed(0)}%` : '—'}
-                        </td>
-                        <td className="px-4 py-2 text-right font-mono">
-                          {c.signal ? inr(c.signal.price, 2) : '—'}
-                        </td>
-                        <td className="px-4 py-2 text-right font-mono">{c.quantity}</td>
-                        <td className="px-4 py-2">
-                          {c.risk_decision ? (
-                            <span title={!c.risk_decision.approved ? c.risk_decision.reason : undefined}>
-                              <Badge variant={c.risk_decision.approved ? 'green' : 'red'}>
-                                {c.risk_decision.approved ? 'OK' : 'BLOCKED'}
-                              </Badge>
-                            </span>
-                          ) : '—'}
-                        </td>
-                        <td className="px-4 py-2 text-gray-400 max-w-48 truncate">{c.reason}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
-          </Card>
-        )
-      })}
-
-      {!signalResult && !loading && (
-        <div className="flex flex-col items-center justify-center py-20 text-gray-600">
-          <Zap size={36} className="mb-3 opacity-40" />
-          <p className="text-sm">Run a scan to see signal candidates</p>
+                  <Table
+                    columns={candidateColumns as Parameters<typeof Table>[0]['columns']}
+                    rows={scan.candidates as unknown as Record<string, unknown>[]}
+                    keyFn={(r) => String((r as unknown as Candidate).instrument?.symbol ?? Math.random())}
+                    emptyMessage="No candidates"
+                    compact
+                  />
+                </div>
+              )}
+            </Card>
+          ))}
         </div>
       )}
 
-      {loading && (
-        <div className="flex flex-col items-center justify-center py-20 text-gray-500">
-          <Loader2 size={32} className="animate-spin mb-3" />
-          <p className="text-sm">Scanning market regimes…</p>
-        </div>
-      )}
     </div>
   )
 }

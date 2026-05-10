@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 import unittest
+from unittest.mock import Mock
 
 from trading_platform.api.runtime import TradingRuntime
 from trading_platform.config import Settings
@@ -42,6 +44,20 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(state["execution_mode"], "LIVE")
         self.assertFalse(state["live_order_confirmation_ready"])
         self.assertFalse(state["live_armed"])
+
+    def test_startup_does_not_auto_start_broker_loops_by_default(self):
+        runtime = TradingRuntime()
+        runtime.start_live_feed = Mock()  # type: ignore[method-assign]
+        runtime.agent.start = Mock()  # type: ignore[method-assign]
+
+        async def run_lifecycle() -> None:
+            await runtime.start_async_services()
+            await runtime.stop_async_services()
+
+        asyncio.run(run_lifecycle())
+
+        runtime.start_live_feed.assert_not_called()
+        runtime.agent.start.assert_not_called()
 
     def test_live_arm_requires_explicit_real_money_confirmation(self):
         runtime = TradingRuntime(
@@ -114,6 +130,10 @@ class RuntimeTests(unittest.TestCase):
         runtime.live_feed._subscribed_symbols = ["NIFTY"]
         runtime.live_feed._running = True
         runtime.live_feed.staleness_tracker.record("NIFTY")
+        runtime.live_canary_readiness_payload = lambda: {
+            "can_consider_live_canary": True,
+            "blocking_reasons": [],
+        }
 
         state = runtime.arm_live(True)
         self.assertTrue(state["live_armed"])
@@ -176,26 +196,41 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(selection["selected_model"], "garch_baseline")
 
     def test_data_status_reports_cache_and_credentials(self):
+        from unittest.mock import patch, PropertyMock
         runtime = TradingRuntime()
-        status = runtime.data_status()
+        with patch.object(
+            type(runtime.settings), "angel_one_configured",
+            new_callable=PropertyMock, return_value=False,
+        ):
+            status = runtime.data_status()
 
         self.assertEqual(status["instrument_source"], "angel_one")
         self.assertIn("instrument_cache_exists", status)
         self.assertFalse(status["angel_one_configured"])
 
     def test_account_status_is_read_only_and_reports_live_gate(self):
+        from unittest.mock import patch, PropertyMock
         runtime = TradingRuntime()
-        status = runtime.account_status()
+        with patch.object(
+            type(runtime.settings), "angel_one_configured",
+            new_callable=PropertyMock, return_value=False,
+        ):
+            status = runtime.account_status()
 
         self.assertEqual(status["broker"], "ANGEL_ONE")
         self.assertFalse(status["read_only_available"])
         self.assertFalse(status["live_orders_possible"])
 
     def test_account_snapshot_requires_credentials(self):
+        from unittest.mock import patch, PropertyMock
         runtime = TradingRuntime()
-
-        with self.assertRaises(ValueError):
-            runtime.account_snapshot()
+        # Settings is a frozen dataclass, so patch the property on its class directly.
+        with patch.object(
+            type(runtime.settings), "angel_one_configured",
+            new_callable=PropertyMock, return_value=False,
+        ):
+            with self.assertRaises(ValueError):
+                runtime.account_snapshot()
 
     def test_strategy_catalog_endpoint_payload(self):
         runtime = TradingRuntime()
@@ -231,9 +266,62 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(result["submitted_orders"], 0)
         self.assertEqual(len(result["scans"]), 2)
         self.assertIn("approved_candidates", result)
+        self.assertEqual(
+            set(result.keys()),
+            {"mode", "submitted_orders", "approved_candidates", "rejected_candidates", "scans"},
+        )
+
+    def test_high_end_scan_uses_baseline_first_canonical_cycle(self):
+        runtime = TradingRuntime()
+        result = runtime.high_end_signal_scan(
+            {
+                "symbols": ["NIFTY"],
+                "days": 30,
+                "strategy_names": ["futures_trend"],
+            }
+        )
+
+        self.assertIn("trace_id", result)
+        self.assertEqual(result["symbols"], ["NIFTY"])
+        self.assertIn("baseline", result)
+        self.assertEqual(result["baseline"]["submitted_orders"], 0)
+        self.assertEqual(len(result["baseline"]["scans"]), 1)
+        self.assertIn("blackboard", result)
+        self.assertEqual(result["blackboard"]["trace_id"], result["trace_id"])
+        self.assertGreaterEqual(result["blackboard"]["n_pipeline_candidates"], 0)
+        self.assertIsNone(result["ai_council"])
+        self.assertIsNone(result["neural"])
+        self.assertIsNone(result["quantum"])
+        self.assertIsNone(result["ensemble"])
+        replay = runtime.trace_replay(result["trace_id"])
+        self.assertIsNotNone(replay)
+        event_types = {event["event_type"] for event in replay["timeline"]}
+        self.assertIn("decision_cycle_started", event_types)
+        self.assertIn("baseline_scan_completed", event_types)
 
     def test_shadow_run_requires_paper_mode(self):
-        runtime = TradingRuntime()
+        from trading_platform.config import Settings
+        runtime = TradingRuntime(
+            Settings(
+                execution_mode=ExecutionMode.BACKTEST,
+                broker="ANGEL_ONE",
+                live_trading_enabled=False,
+                initial_capital=1_000_000,
+                max_drawdown=0.10,
+                max_daily_loss=0.02,
+                max_position_pct=0.05,
+                max_margin_utilization=0.60,
+                live_order_confirmation="",
+                angel_one_api_key="",
+                angel_one_api_secret="",
+                angel_one_client_code="",
+                angel_one_pin="",
+                angel_one_totp_secret="",
+                angel_one_instrument_master_url="https://example.invalid/OpenAPIScripMaster.json",
+                angel_one_instrument_cache_path="data/processed/test_angel_instruments.json",
+                aws_region="ap-south-1",
+            )
+        )
 
         with self.assertRaises(ValueError):
             runtime.shadow_run({"underlyings": ["RELIANCE"], "strategy_names": ["equity_momentum"]})
@@ -254,6 +342,11 @@ class RuntimeTests(unittest.TestCase):
         self.assertGreaterEqual(result["submitted_orders"], 1)
         self.assertEqual(result["submitted_orders"], result["filled_orders"] + result["rejected_orders"])
         self.assertIn("average_latency_ms", result)
+        filled = next((item for item in result["executions"] if item["trade"]), None)
+        if filled:
+            journal = runtime.paper_learning_journal_status(trace_id=filled["trace_id"])
+            self.assertEqual(journal["fill_count"], 1)
+            self.assertEqual(journal["slippage_count"], 1)
 
     def test_monitoring_metrics_tracks_shadow_orders(self):
         runtime = TradingRuntime()
@@ -356,6 +449,13 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(result["mode"], "PAPER")
         self.assertEqual(result["order"]["status"], "FILLED")
         self.assertEqual(result["risk_decision"]["reason"], "approved")
+        journal = runtime.paper_learning_journal_status(trace_id=result["trace_id"])
+        self.assertEqual(journal["fill_count"], 1)
+        self.assertEqual(journal["slippage_count"], 1)
+        self.assertGreater(journal["recent_events"][0]["payload"]["realized_slippage_pct"], 0)
+        replay = runtime.trace_replay(result["trace_id"])
+        self.assertEqual(replay["summary"]["fill_count"], 1)
+        self.assertEqual(replay["summary"]["slippage_count"], 1)
 
     def test_paper_order_refuses_live_mode(self):
         runtime = TradingRuntime()

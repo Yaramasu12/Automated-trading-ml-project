@@ -92,6 +92,11 @@ def live_readiness():
     return runtime.live_readiness_payload()
 
 
+@app.get("/live/canary-readiness", dependencies=[_AuthDep])
+def live_canary_readiness():
+    return runtime.live_canary_readiness_payload()
+
+
 @app.post("/execution-mode", dependencies=[_AuthDep])
 def execution_mode(payload: dict):
     try:
@@ -139,7 +144,7 @@ def agent_status():
 
 
 @app.post("/agent/start", dependencies=[_AuthDep])
-def agent_start(payload: dict | None = None):
+async def agent_start(payload: dict | None = None):
     interval = (payload or {}).get("scan_interval")
     return runtime.start_agent(scan_interval=int(interval) if interval else None)
 
@@ -803,3 +808,153 @@ async def ws_dashboard(websocket: WebSocket):
     finally:
         if websocket in _ws_clients:
             _ws_clients.remove(websocket)
+
+
+# ── Phase 8: High-End AI / Quantum / Neural API endpoints ─────────────────────
+
+@app.post("/high-end/scan", dependencies=[_AuthDep])
+def high_end_scan(payload: dict):
+    """Run full AI council + neural + quantum advisory scan."""
+    return runtime.high_end_signal_scan(payload)
+
+
+# ── Traces ─────────────────────────────────────────────────────────────────────
+
+@app.get("/traces/{trace_id}", dependencies=[_AuthDep])
+def get_trace(trace_id: str):
+    trace = runtime.get_trace(trace_id)
+    if trace is None:
+        raise HTTPException(status_code=404, detail="trace_not_found")
+    return trace
+
+
+@app.get("/traces/{trace_id}/replay", dependencies=[_AuthDep])
+def get_trace_replay(trace_id: str):
+    replay = runtime.trace_replay(trace_id)
+    if replay is None:
+        raise HTTPException(status_code=404, detail="trace_not_found")
+    return replay
+
+
+@app.get("/traces", dependencies=[_AuthDep])
+def list_traces(limit: int = 50):
+    return runtime.list_traces(max_traces=limit)
+
+
+# ── AI Council ─────────────────────────────────────────────────────────────────
+
+@app.get("/ai-council/status")
+def ai_council_status():
+    return runtime.ai_council_status()
+
+
+@app.get("/ai-council/decisions", dependencies=[_AuthDep])
+def ai_council_decisions(limit: int = 20):
+    traces = list(runtime.trace_store.iter_recent(limit))
+    decisions = [
+        t.get("agent_outputs", [])
+        for t in traces
+        if t.get("agent_outputs")
+    ]
+    return {"count": len(decisions), "decisions": decisions[:limit]}
+
+
+@app.post("/ai-council/preview", dependencies=[_AuthDep])
+def ai_council_preview(payload: dict):
+    return runtime.ai_council_preview(payload)
+
+
+# ── Neural Lab ─────────────────────────────────────────────────────────────────
+
+@app.get("/neural/status")
+def neural_status():
+    return runtime.neural_status()
+
+
+@app.get("/neural/meta-labeler")
+def meta_labeler_status():
+    return runtime.meta_labeler_status()
+
+
+@app.get("/paper/learning-journal", dependencies=[_AuthDep])
+def paper_learning_journal(limit: int = 50, trace_id: str | None = None):
+    return runtime.paper_learning_journal_status(limit=limit, trace_id=trace_id)
+
+
+@app.post("/neural/predict-preview", dependencies=[_AuthDep])
+def neural_predict_preview(payload: dict):
+    symbols = payload.get("symbols", ["NIFTY"])
+    from trading_platform.trace.ids import new_trace_id
+    trace_id = new_trace_id("npreview")
+    bundle = runtime._neural_service.predict(trace_id, symbols, {})
+    return bundle.to_dict()
+
+
+# ── Quantum Lab ────────────────────────────────────────────────────────────────
+
+@app.get("/quantum/status")
+def quantum_status():
+    return runtime.quantum_status()
+
+
+@app.get("/quantum/kernel/status")
+def quantum_kernel_status():
+    return runtime.quantum_kernel_status()
+
+
+@app.post("/quantum/optimize-preview", dependencies=[_AuthDep])
+def quantum_optimize_preview(payload: dict):
+    return runtime.quantum_optimize_preview(payload)
+
+
+@app.get("/quantum/results", dependencies=[_AuthDep])
+def quantum_results(limit: int = 20):
+    traces = list(runtime.trace_store.iter_recent(limit))
+    results = [
+        {"trace_id": t.get("trace_id"), "quantum_result_id": t.get("quantum_result_id")}
+        for t in traces
+        if t.get("quantum_result_id")
+    ]
+    return {"count": len(results), "results": results}
+
+
+# ── Goal Governor ──────────────────────────────────────────────────────────────
+
+@app.get("/goal-governor/status")
+def goal_governor_status():
+    return runtime.goal_governor_status()
+
+
+# ── Policy management ──────────────────────────────────────────────────────────
+
+@app.get("/policies", dependencies=[_AuthDep])
+def list_policies():
+    return runtime.list_policies()
+
+
+@app.post("/policies/promote", dependencies=[_AuthDep])
+def promote_policy(payload: dict):
+    result = runtime.promote_policy(payload)
+    if not result.get("ok"):
+        raise HTTPException(status_code=400, detail=result)
+    return result
+
+
+@app.post("/policies/rollback", dependencies=[_AuthDep])
+def rollback_policy(payload: dict):
+    result = runtime.rollback_policy(payload)
+    if not result.get("ok"):
+        raise HTTPException(status_code=400, detail=result)
+    return result
+
+
+# ── MARL lab endpoints ─────────────────────────────────────────────────────────
+
+@app.get("/marl/status")
+def marl_status():
+    return runtime.marl_status()
+
+
+@app.post("/marl/advisory-preview", dependencies=[_AuthDep])
+def marl_advisory_preview(payload: dict):
+    return runtime.marl_advisory_preview(payload)
