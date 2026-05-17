@@ -1,4 +1,4 @@
-import { useEffect, useRef, useCallback } from 'react'
+import { useEffect, useRef, useCallback, useState } from 'react'
 import {
   Area, AreaChart, Bar, BarChart, CartesianGrid, Cell,
   ResponsiveContainer, ReferenceLine, Tooltip, XAxis, YAxis,
@@ -17,8 +17,20 @@ import { fmtDate, fmtDateTime, inr, pct, fmtUptime } from '../utils'
 import {
   getEquityCurve, getDailyPnl, getRecentTrades, getTargetProgress,
   getAICouncilStatus, getNeuralStatus, getQuantumStatus, getGoalGovernorStatus,
+  getBatchTicks, getFeedSnapshot,
 } from '../api'
 import type { Trade } from '../types'
+
+const MARKET_SYMBOLS = ['NIFTY', 'BANKNIFTY', 'FINNIFTY', 'SENSEX', 'RELIANCE', 'TCS', 'INFY', 'HDFCBANK', 'ICICIBANK', 'SBIN']
+
+type DashboardTick = {
+  ltp?: number
+  last_price?: number
+  close?: number
+  change?: number
+  available?: boolean
+  timestamp?: string
+}
 
 const TOOLTIP_STYLE = {
   backgroundColor: '#161b22',
@@ -26,6 +38,49 @@ const TOOLTIP_STYLE = {
   borderRadius: 6,
   fontSize: 12,
   color: '#e6edf3',
+}
+
+function finiteNumber(value: unknown): number | null {
+  const n = Number(value)
+  return Number.isFinite(n) ? n : null
+}
+
+function tickPrice(t: DashboardTick | undefined): number | null {
+  if (!t || t.available === false) return null
+  return finiteNumber(t.ltp ?? t.last_price)
+}
+
+function tickChangePct(t: DashboardTick | undefined): number | null {
+  if (!t || t.available === false) return null
+  const explicit = finiteNumber(t.change)
+  if (explicit !== null) return explicit
+
+  const last = finiteNumber(t.last_price ?? t.ltp)
+  const close = finiteNumber(t.close)
+  if (last === null || close === null || close === 0) return null
+  return ((last - close) / close) * 100
+}
+
+function tickAgeSeconds(t: DashboardTick | undefined): number | null {
+  if (!t?.timestamp) return null
+  const time = new Date(t.timestamp).getTime()
+  if (Number.isNaN(time)) return null
+  return Math.max(0, Math.round((Date.now() - time) / 1000))
+}
+
+function tickStatus(t: DashboardTick | undefined): { label: string; className: string } {
+  if (!t || t.available === false) {
+    return { label: 'NOT SUBSCRIBED', className: 'text-gray-500 border-gray-700 bg-surface' }
+  }
+
+  const age = tickAgeSeconds(t)
+  if (age !== null && age > 60) {
+    return { label: 'STALE', className: 'text-brand-red border-brand-red/40 bg-brand-red/10' }
+  }
+  if (age !== null && age > 15) {
+    return { label: `${age}s`, className: 'text-brand-yellow border-brand-yellow/40 bg-brand-yellow/10' }
+  }
+  return { label: age === null ? 'LIVE' : `${age}s`, className: 'text-brand-green border-brand-green/40 bg-brand-green/10' }
 }
 
 export function Dashboard() {
@@ -53,7 +108,12 @@ export function Dashboard() {
   const setQuantumStatus   = useStore((s) => s.setQuantumStatus)
   const setGoalStatus      = useStore((s) => s.setGoalGovernorStatus)
 
+  const [marketTicks, setMarketTicks] = useState<Record<string, DashboardTick>>({})
+  const [feedSnapshot, setFeedSnapshot] = useState<Record<string, unknown> | null>(null)
+  const [marketUpdatedAt, setMarketUpdatedAt] = useState<string | null>(null)
+
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const marketPollRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
   const refresh = useCallback(async () => {
     const [curve, pnl, trades, progress] = await Promise.allSettled([
@@ -68,6 +128,23 @@ export function Dashboard() {
     if (progress.status === 'fulfilled') setTargetProgress(progress.value)
   }, [setEquityCurve, setDailyPnl, setRecentTrades, setTargetProgress])
 
+  const refreshMarket = useCallback(async () => {
+    const [ticksRes, feedRes] = await Promise.allSettled([
+      getBatchTicks(MARKET_SYMBOLS, true),
+      getFeedSnapshot(),
+    ])
+
+    if (ticksRes.status === 'fulfilled') {
+      const merged: Record<string, DashboardTick> = {}
+      for (const sym of MARKET_SYMBOLS) {
+        merged[sym] = (ticksRes.value.ticks[sym] as DashboardTick | undefined) ?? {}
+      }
+      setMarketTicks(merged)
+      setMarketUpdatedAt(new Date().toLocaleTimeString('en-IN'))
+    }
+    if (feedRes.status === 'fulfilled') setFeedSnapshot(feedRes.value as Record<string, unknown>)
+  }, [])
+
   useEffect(() => {
     refresh()
     pollRef.current = setInterval(refresh, 30_000)
@@ -80,6 +157,12 @@ export function Dashboard() {
       })
     return () => { if (pollRef.current) clearInterval(pollRef.current) }
   }, [refresh])
+
+  useEffect(() => {
+    refreshMarket()
+    marketPollRef.current = setInterval(refreshMarket, 2_000)
+    return () => { if (marketPollRef.current) clearInterval(marketPollRef.current) }
+  }, [refreshMarket])
 
   // ── Derived metrics ──────────────────────────────────────────────────────────
   const latestEquity    = livePortfolio?.portfolio.equity ?? equityCurve[equityCurve.length - 1]?.equity ?? 0
@@ -100,6 +183,7 @@ export function Dashboard() {
   // AI system status count
   const aiSystems = [aiCouncilStatus?.enabled, neuralStatus?.enabled, quantumStatus?.enabled, goalStatus?.enabled]
   const aiEnabledCount = aiSystems.filter(Boolean).length
+  const feedRunning = Boolean(feedSnapshot?.running)
 
   // ── Trade table columns ───────────────────────────────────────────────────────
   const tradeColumns = [
@@ -146,7 +230,7 @@ export function Dashboard() {
         <div className="flex items-center gap-2">
           {runtimeState && execModeBadge(runtimeState.execution_mode)}
           <button
-            onClick={refresh}
+            onClick={() => { refresh(); refreshMarket() }}
             className="flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-surface-elevated border border-surface-border text-xs text-gray-400 hover:text-gray-200 transition-colors"
           >
             <RefreshCw size={12} />
@@ -317,6 +401,49 @@ export function Dashboard() {
           sub={targetProgress ? `${inr(targetProgress.required_run_rate)}/day needed` : undefined}
         />
       </div>
+
+      {/* ── Live Market Strip ───────────────────────────────────────────────── */}
+      <Card>
+        <CardHeader
+          title="Live Market"
+          subtitle={`Updated ${marketUpdatedAt ?? '—'}`}
+          icon={<Activity size={14} />}
+          action={
+            <span className={clsx(
+              'text-[10px] font-mono font-bold px-2 py-0.5 rounded border',
+              feedRunning ? 'text-brand-green border-brand-green/30 bg-brand-green/10' : 'text-brand-red border-brand-red/30 bg-brand-red/10',
+            )}>
+              {feedRunning ? 'FEED LIVE' : 'FEED OFF'}
+            </span>
+          }
+        />
+        <CardBody className="!p-2">
+          <div className="grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-5 gap-2">
+            {MARKET_SYMBOLS.map((sym) => {
+              const tick = marketTicks[sym]
+              const price = tickPrice(tick)
+              const change = tickChangePct(tick)
+              const status = tickStatus(tick)
+              return (
+                <div key={sym} className="flex items-center justify-between gap-2 rounded-md bg-surface-elevated border border-surface-border px-2.5 py-2">
+                  <div className="min-w-0">
+                    <div className="text-xs font-mono font-semibold text-gray-200 truncate">{sym}</div>
+                    <span className={clsx('mt-1 inline-flex rounded border px-1 py-0.5 text-[9px] font-mono leading-none', status.className)}>
+                      {status.label}
+                    </span>
+                  </div>
+                  <div className="text-right shrink-0">
+                    <div className="text-xs font-mono font-bold text-gray-100">{price === null ? '—' : inr(price, 2)}</div>
+                    <div className={clsx('text-[10px] font-mono', (change ?? 0) > 0 ? 'text-brand-green' : (change ?? 0) < 0 ? 'text-brand-red' : 'text-gray-500')}>
+                      {change !== null && change !== 0 ? pct(change) : '—'}
+                    </div>
+                  </div>
+                </div>
+              )
+            })}
+          </div>
+        </CardBody>
+      </Card>
 
       {/* ── Charts Row ───────────────────────────────────────────────────────── */}
       <div className="grid grid-cols-1 xl:grid-cols-3 gap-5">

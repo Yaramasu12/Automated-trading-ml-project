@@ -88,6 +88,9 @@ class ExecutionScheduler:
         self.kill_switch_active = False
         self._processed = 0
         self._rejected = 0
+        # Equity at session open — used to compute intraday P&L for the daily-loss circuit breaker.
+        # Set once by the runtime at startup; resets each morning via set_session_start_equity().
+        self._session_start_equity: float = 0.0
 
     def register_fill_callback(self, cb: FillCallback) -> None:
         self._fill_callbacks.append(cb)
@@ -235,10 +238,14 @@ class ExecutionScheduler:
         symbol = intent.instrument.symbol
 
         # Capital protection check (requires live portfolio snapshot)
-        if self.capital_protection and self.portfolio and intent.priority >= OrderPriority.ENTRY:
+        opens_position = bool(intent.signal.metadata.get("opens_position", True))
+        if self.capital_protection and self.portfolio and opens_position and intent.priority >= OrderPriority.ENTRY:
             now = datetime.now(timezone.utc)
             snapshot = self.portfolio.mark_to_market(now, {intent.instrument.symbol: intent.signal.price})
-            cap_result = self.capital_protection.check(intent, snapshot)
+            # Compute real intraday P&L so the daily-loss circuit breaker fires correctly.
+            # session_start_equity is set at market open; negative delta = today's loss.
+            daily_pnl = (snapshot.equity - self._session_start_equity) if self._session_start_equity > 0 else 0.0
+            cap_result = self.capital_protection.check(intent, snapshot, daily_pnl=daily_pnl)
             if not cap_result.approved:
                 self.oms.append(
                     event_type="capital_check_failed",
@@ -411,6 +418,10 @@ class ExecutionScheduler:
                 "execution",
             )
             self._rejected += 1
+
+    def set_session_start_equity(self, equity: float) -> None:
+        """Record equity at market open so intraday P&L can be computed for the daily-loss circuit breaker."""
+        self._session_start_equity = equity
 
     def update_broker(self, broker: BrokerClient) -> None:
         """Hot-swap broker when execution mode changes PAPER ↔ LIVE."""

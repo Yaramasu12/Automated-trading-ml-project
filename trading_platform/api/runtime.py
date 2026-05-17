@@ -182,6 +182,7 @@ class TradingRuntime:
         )
         self.capital_protection = CapitalProtection(
             max_position_pct=self.settings.max_position_pct,
+            max_futures_margin_pct=RiskLimits().max_futures_margin_pct,
             daily_loss_limit_pct=self.settings.max_daily_loss,
             drawdown_halt_pct=self.settings.max_drawdown,
         )
@@ -207,6 +208,7 @@ class TradingRuntime:
         self.exit_manager = ExitManager(
             enqueue_fn=self.scheduler.enqueue,
             poll_interval=1.0,
+            portfolio=self.portfolio,
         )
         self.multi_leg_manager = MultiLegOrderManager(self.scheduler.enqueue)
         self.square_off_manager = EmergencySquareOff(self.portfolio, self.scheduler.enqueue)
@@ -426,19 +428,32 @@ class TradingRuntime:
         )
         return readiness.to_dict()
 
-    def set_kill_switch(self, active: bool) -> dict:
+    def set_kill_switch(self, active: bool, reason: str = "") -> dict:
+        reason = reason.strip() or ("runtime_direct_activation" if active else "manual_clear")
         self.kill_switch_active = active
         self.scheduler.kill_switch_active = active
         if active:
             self.live_armed = False
+            # Immediately cancel all exit-manager polls so no new exit orders are enqueued
+            # while the kill switch is active. Without this the exit manager continues to
+            # fire and can enqueue sells for positions that the kill switch was meant to freeze.
+            self.exit_manager.kill_all()
         self.monitor.record_event(
             "kill_switch_changed",
-            f"Kill switch set to {active}",
+            f"Kill switch set to {active}: {reason}",
             severity="CRITICAL" if active else "INFO",
         )
+        try:
+            self.db.save_risk_event(
+                event_type="kill_switch_activated" if active else "kill_switch_cleared",
+                reason=reason,
+                approved=not active,
+            )
+        except Exception:
+            pass
         self.event_bus.publish(
             "kill_switch.triggered.v1" if active else "kill_switch.cleared.v1",
-            {"active": active},
+            {"active": active, "reason": reason},
             "control",
         )
         return self.state_payload()
@@ -783,6 +798,19 @@ class TradingRuntime:
             if instrument is None:
                 logger.warning("restore_state: unknown instrument %s — exit plan skipped", symbol)
                 continue
+            # Guard: skip exit plans for positions that are no longer open.
+            # Stale plans from previous sessions cause phantom sells against flat positions.
+            live_pos = self.portfolio.positions.get(symbol)
+            if live_pos is None or live_pos.quantity == 0:
+                logger.info(
+                    "restore_state: exit plan for %s has no matching open position — discarding stale plan",
+                    symbol,
+                )
+                try:
+                    self.db.delete_exit_plans_for_symbol(symbol, execution_mode=exec_mode)
+                except Exception:
+                    pass
+                continue
             expiry = date.fromisoformat(plan_data["expiry_date"]) if plan_data.get("expiry_date") else None
             plan = ExitPlan(
                 plan_id=plan_data["plan_id"],
@@ -832,6 +860,9 @@ class TradingRuntime:
             agent_started = True
 
         await self.restore_state()
+        # Seed the session-start equity so the daily-loss circuit breaker has a baseline.
+        # Must be called after restore_state() so portfolio cash is accurate.
+        self.scheduler.set_session_start_equity(self.portfolio.equity)
         self.monitor.record_event(
             "async_services_started",
             (
@@ -1358,12 +1389,35 @@ class TradingRuntime:
             scope=scope,
             strategy_name=payload.get("strategy_id") or payload.get("strategy_name"),
             symbol=str(payload["symbol"]).upper() if payload.get("symbol") else None,
+            reason=str(payload.get("reason") or "manual_square_off"),
         )
         self.oms.append(
             event_type="square_off_requested",
             order_id=f"square_off:{result['timestamp']}",
             metadata={**result, "reason": payload.get("reason", "")},
         )
+        try:
+            self.db.save_risk_event(
+                event_type="square_off_requested",
+                reason=str(payload.get("reason") or "manual_square_off"),
+                symbol=str(payload["symbol"]).upper() if payload.get("symbol") else None,
+                approved=True,
+            )
+        except Exception:
+            pass
+        if self.execution_mode == ExecutionMode.PAPER:
+            try:
+                self.paper_learning_journal.append(
+                    "emergency_square_off",
+                    trace_id=str(payload.get("trace_id") or ""),
+                    symbol=str(payload.get("symbol") or ""),
+                    strategy_name=str(payload.get("strategy_name") or payload.get("strategy_id") or ""),
+                    execution_mode=self.execution_mode.value,
+                    source="runtime.square_off",
+                    payload={**result, "reason": payload.get("reason", "")},
+                )
+            except Exception:
+                pass
         self.event_bus.publish("square_off.requested.v1", result, "control")
         return result
 

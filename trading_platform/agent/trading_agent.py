@@ -226,6 +226,14 @@ class TradingAgent:
         if not equity_open and not mcx_open:
             wait = seconds_to_next_open(now)
             self._log_activity(f"Market {ms} — sleeping until next open ({wait/3600:.1f}h)")
+            # Sleep inside _tick() for up to 30 minutes so the outer _run() loop
+            # does not wake every scan_interval (5 min) over weekends and holidays.
+            # We still wake at least every 30 min to check for stop events and MCX opens.
+            _closed_sleep = min(wait, 1800.0)
+            try:
+                await asyncio.wait_for(self._stop_event.wait(), timeout=_closed_sleep)
+            except asyncio.TimeoutError:
+                pass
             return
 
         # Filter underlyings to whichever session(s) are active
@@ -235,6 +243,11 @@ class TradingAgent:
         if mcx_open:
             active_underlyings.extend(COMMODITY_UNDERLYINGS)
 
+        active_underlyings = self._filter_stale_underlyings(active_underlyings)
+        if not active_underlyings:
+            self._log_activity("No fresh live ticks available for active session — scan skipped", level="error")
+            return
+
         # Main trading cycle
         await self._scan_and_execute(active_underlyings)
 
@@ -242,6 +255,12 @@ class TradingAgent:
 
     async def _premarket_routine(self) -> None:
         self._log_activity("PRE-MARKET: preparing instruments + starting live feed")
+        # Reset the session-start equity baseline each morning so the daily-loss
+        # circuit breaker measures today's loss, not cumulative multi-day loss.
+        try:
+            self._runtime.scheduler.set_session_start_equity(self._runtime.portfolio.equity)
+        except Exception as _exc:
+            logger.warning("Could not reset session_start_equity: %s", _exc)
         try:
             if self._runtime.settings.angel_one_configured:
                 if self._runtime.settings.premarket_refresh_instruments:
@@ -261,6 +280,17 @@ class TradingAgent:
 
             requested_symbols = list(self._runtime.settings.live_feed_default_symbols) or SCAN_UNDERLYINGS[:10]
             result = self._runtime.start_live_feed(symbols=requested_symbols)
+            # Expand live feed to cover ALL scan underlyings so price sanity checks
+            # and mark-price validation work for every symbol the agent trades.
+            try:
+                extra = [s for s in SCAN_UNDERLYINGS if s not in set(requested_symbols)]
+                if extra:
+                    self._runtime.live_feed.add_subscriptions(extra)
+                    self._log_activity(
+                        f"Live feed expanded: +{len(extra)} symbols ({len(SCAN_UNDERLYINGS)} total)"
+                    )
+            except Exception as _exc:
+                logger.warning("Live feed expansion failed: %s", _exc)
             self._log_activity(
                 f"Live feed started: {result.get('symbol_count', 0)} paper-market symbols"
             )
@@ -277,10 +307,13 @@ class TradingAgent:
         self._log_activity("EOD: squaring off all equity positions (15:25 IST)")
         try:
             positions = self._runtime.portfolio.position_symbols()
-            # Only square off equity positions (not MCX — those close at 23:25)
+            # Only square off equity positions; MCX commodities close at 23:25 IST.
             equity_positions = [s for s in positions if s not in COMMODITY_SET]
             if equity_positions:
-                result = await self._runtime.square_off_manager.square_off()
+                result = await self._runtime.square_off_manager.square_off(
+                    symbols=equity_positions,
+                    reason="eod_squareoff_15:25_ist",
+                )
                 self._log_activity(
                     f"EOD square-off issued for {result.get('positions_targeted', 0)} positions "
                     f"({result.get('intents_enqueued', 0)} enqueued)"
@@ -299,7 +332,10 @@ class TradingAgent:
             positions = self._runtime.portfolio.position_symbols()
             commodity_positions = [s for s in positions if s in COMMODITY_SET]
             if commodity_positions:
-                result = await self._runtime.square_off_manager.square_off()
+                result = await self._runtime.square_off_manager.square_off(
+                    symbols=commodity_positions,
+                    reason="mcx_eod_squareoff_23:25_ist",
+                )
                 self._log_activity(
                     f"MCX EOD square-off issued for {result.get('positions_targeted', 0)} positions "
                     f"({result.get('intents_enqueued', 0)} enqueued)"
@@ -357,6 +393,8 @@ class TradingAgent:
         for scan in scans.get("scans", []):
             underlying = scan.get("underlying", "")
             cycle.regimes[underlying] = scan.get("regime", "unknown")
+            if scan.get("error"):
+                cycle.errors.append(f"{underlying}: {scan['error']}")
 
             for candidate in scan.get("candidates", []):
                 cycle.total_candidates += 1
@@ -423,6 +461,25 @@ class TradingAgent:
             logger.warning("Agent: instrument %s not found in master — skipping", symbol)
             return False
 
+        # Guard: if the current mark price is significantly below the signal price,
+        # the position would trigger a stop-loss immediately after entry.
+        # This catches stale/synthetic prices that diverge from real market prices.
+        signal_price = float(sig_d.get("price", 0) or 0)
+        if signal_price > 0:
+            current_mark = self._runtime.exit_manager.current_mark(symbol)
+            if current_mark is None:
+                # No mark at all — try the underlying name too
+                underlying = inst_d.get("underlying") or symbol
+                current_mark = self._runtime.exit_manager.current_mark(underlying)
+            if current_mark and current_mark > 0:
+                entry_mark_gap = (signal_price - current_mark) / signal_price
+                if entry_mark_gap > 0.05:  # signal is >5% above current market mark
+                    self._log_activity(
+                        f"SKIP {symbol}: signal {signal_price:.0f} vs mark {current_mark:.0f} "
+                        f"({entry_mark_gap:.1%} gap) — would immediate-stop"
+                    )
+                    return False
+
         from trading_platform.domain.enums import Side
         from trading_platform.domain.models import Signal
 
@@ -487,14 +544,23 @@ class TradingAgent:
                         continue
                     future_mom = recs[i + FORWARD_STEPS].get("momentum_5", 0.0)
                     vol = rec.get("realized_volatility", 0.0)
+                    bb_width = rec.get("bb_width", 0.0)
+                    momentum_5 = rec.get("momentum_5", 0.0)
+
+                    # Label assignment — each regime has explicit criteria so the
+                    # classifier is not forced to learn "BREAKOUT = everything else".
                     if future_mom > BULLISH_THRESHOLD or future_mom < BEARISH_THRESHOLD:
                         label = "TRENDING"
                     elif vol > HIGH_VOL_THRESHOLD:
                         label = "HIGH_VOLATILITY"
                     elif abs(vol) < LOW_VOL_THRESHOLD:
                         label = "MEAN_REVERTING"
-                    else:
+                    elif bb_width > 0.0 and bb_width < 0.02 and abs(momentum_5) > 0.01:
+                        # Tight Bollinger Bands + price starting to move = compression breakout
                         label = "BREAKOUT"
+                    else:
+                        # Mid-range vol, mid-range momentum — no clear edge; do not trade
+                        label = "CHOPPY"
                     labeled.append({**rec, "regime": label})
 
             if len(labeled) < 8:
@@ -525,6 +591,24 @@ class TradingAgent:
                 self._runtime.exit_manager.update_marks(marks)
         except Exception as exc:
             logger.warning("mark sync error: %s", exc)
+
+    def _filter_stale_underlyings(self, underlyings: list[str]) -> list[str]:
+        if not getattr(self._runtime.settings, "angel_one_configured", False):
+            return underlyings
+        feed = self._runtime.live_feed
+        if not feed.is_running:
+            return underlyings
+        fresh: list[str] = []
+        stale: list[str] = []
+        for symbol in underlyings:
+            if feed.staleness_tracker.is_stale(symbol):
+                stale.append(symbol)
+            else:
+                fresh.append(symbol)
+        if stale:
+            logger.warning("Agent skipped stale symbols: %s", ",".join(stale[:20]))
+            self._log_activity(f"Skipped {len(stale)} stale symbol(s)", level="error")
+        return fresh
 
     def _finish_cycle(self, cycle: AgentCycleResult, start_ms: int) -> None:
         cycle.duration_ms = _now_ms() - start_ms

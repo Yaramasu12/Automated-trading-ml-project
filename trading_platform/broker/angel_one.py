@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from trading_platform.broker.base import BrokerClient, BrokerResult
@@ -18,6 +18,7 @@ class AngelOneBrokerClient(BrokerClient):
         self._auth_token: str | None = None
         self._feed_token: str | None = None
         self._refresh_token: str | None = None
+        self._session_expires_at: datetime | None = None
 
     def is_ready(self) -> bool:
         return self.settings.can_submit_live_orders
@@ -45,9 +46,15 @@ class AngelOneBrokerClient(BrokerClient):
         self._auth_token = data.get("jwtToken")
         self._refresh_token = data.get("refreshToken")
         self._feed_token = smart_api.getfeedToken()
+        self._session_expires_at = datetime.now(timezone.utc) + timedelta(hours=23, minutes=30)
 
     def ensure_logged_in(self) -> Any:
-        if self._smart_api is None:
+        refresh_at = (
+            self._session_expires_at - timedelta(minutes=30)
+            if self._session_expires_at
+            else None
+        )
+        if self._smart_api is None or (refresh_at is not None and datetime.now(timezone.utc) >= refresh_at):
             self.login()
         return self._smart_api
 

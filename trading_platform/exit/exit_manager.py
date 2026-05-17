@@ -40,7 +40,7 @@ class ExitManager:
         ExitTrigger.MANUAL: OrderPriority.EMERGENCY_EXIT,
     }
 
-    def __init__(self, enqueue_fn: ExitEnqueueFn, poll_interval: float = 1.0) -> None:
+    def __init__(self, enqueue_fn: ExitEnqueueFn, poll_interval: float = 1.0, portfolio=None) -> None:
         self._enqueue = enqueue_fn
         self.poll_interval = poll_interval
         self._plans: dict[str, ExitPlan] = {}
@@ -48,6 +48,9 @@ class ExitManager:
         self._last_known_marks: dict[str, float] = {}   # sticky prices for fallback
         self._running = False
         self._task: asyncio.Task | None = None
+        # Optional portfolio reference — used to guard against phantom exits for
+        # positions that are already flat (e.g. after restart with stale DB plans).
+        self._portfolio = portfolio
 
     def register(self, plan: ExitPlan) -> None:
         self._plans[plan.plan_id] = plan
@@ -122,6 +125,18 @@ class ExitManager:
             logger.warning("ExitPlan %s has no instrument — cannot emit exit intent", plan.plan_id)
             return
 
+        # Guard: suppress phantom exits for already-flat positions.
+        # This prevents duplicate sells after restarts where stale DB exit plans
+        # are re-loaded for positions that were closed in a previous session.
+        if self._portfolio is not None:
+            pos = self._portfolio.positions.get(plan.symbol)
+            if pos is None or pos.quantity == 0:
+                logger.warning(
+                    "ExitPlan %s: position %s is already flat — suppressing phantom exit (trigger=%s)",
+                    plan.plan_id, plan.symbol, trigger.value,
+                )
+                return
+
         exit_side = Side.SELL if plan.side == "BUY" else Side.BUY
         priority = self.PRIORITY_MAP.get(trigger, OrderPriority.TARGET)
 
@@ -153,6 +168,11 @@ class ExitManager:
             "Exit intent enqueued: %s side=%s trigger=%s price=%.2f",
             plan.symbol, exit_side.value, trigger.value, price,
         )
+
+    def current_mark(self, symbol: str) -> float | None:
+        """Return the best available mark price for `symbol`, or None if unknown."""
+        mark = self._mark_prices.get(symbol) or self._last_known_marks.get(symbol)
+        return float(mark) if mark and mark > 0 else None
 
     @property
     def active_plan_count(self) -> int:

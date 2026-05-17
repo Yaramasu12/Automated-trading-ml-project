@@ -43,3 +43,6 @@ backtest_results/*
 !backtest_results/.gitkeep
 models/*
 !models/.gitkeep
+
+# FUSE filesystem artifacts left by Docker Desktop / network volume mounts
+data/.fuse_hidden*

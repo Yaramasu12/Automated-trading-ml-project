@@ -142,17 +142,13 @@ class DecisionCycleOrchestrator:
         scan_mode = self._scan_mode_from_payload(payload)
 
         scans = [
-            self._stamp_scan_payload(
-                self._rt.decision_pipeline.scan(
-                    underlying=symbol,
-                    start=start,
-                    days=days,
-                    execution_mode=scan_mode,
-                    live_armed=self._rt.live_armed,
-                    kill_switch_active=self._rt.kill_switch_active,
-                    strategy_names=strategy_names,
-                ).to_dict(),
-                trace_id,
+            self._scan_symbol(
+                symbol=symbol,
+                start=start,
+                days=days,
+                scan_mode=scan_mode,
+                strategy_names=strategy_names,
+                trace_id=trace_id,
             )
             for symbol in symbols
         ]
@@ -200,6 +196,44 @@ class DecisionCycleOrchestrator:
             "rejected_candidates": rejected,
             "scans": scans,
         }
+
+    def _scan_symbol(
+        self,
+        *,
+        symbol: str,
+        start: date,
+        days: int,
+        scan_mode: ExecutionMode,
+        strategy_names: list[str] | None,
+        trace_id: str,
+    ) -> dict:
+        try:
+            return self._stamp_scan_payload(
+                self._rt.decision_pipeline.scan(
+                    underlying=symbol,
+                    start=start,
+                    days=days,
+                    execution_mode=scan_mode,
+                    live_armed=self._rt.live_armed,
+                    kill_switch_active=self._rt.kill_switch_active,
+                    strategy_names=strategy_names,
+                ).to_dict(),
+                trace_id,
+            )
+        except Exception as exc:
+            logger.warning("decision cycle: skipping %s after scan error: %s", symbol, exc)
+            return {
+                "as_of": datetime.now(timezone.utc).isoformat(),
+                "execution_mode": scan_mode.value,
+                "underlying": symbol,
+                "features": {},
+                "regime": "SCAN_ERROR",
+                "volatility_forecast": {},
+                "selected_strategies": [],
+                "candidates": [],
+                "error": str(exc),
+                "trace_id": trace_id,
+            }
 
     @staticmethod
     def _stamp_scan_payload(scan: dict, trace_id: str) -> dict:
@@ -318,6 +352,23 @@ class DecisionCycleOrchestrator:
                     forecast.symbol: forecast.direction_probability
                     for forecast in neural_bundle.forecasts
                 }
+                for forecast in neural_bundle.forecasts:
+                    try:
+                        self._rt.db.save_model_run(
+                            model_name=forecast.model_id,
+                            symbol=forecast.symbol,
+                            regime=regime,
+                            signal="UP" if forecast.direction_probability >= 0.5 else "DOWN",
+                            confidence=forecast.confidence,
+                            metadata={
+                                "trace_id": trace_id,
+                                "direction_probability": forecast.direction_probability,
+                                "expected_return": forecast.expected_return,
+                                "model_uncertainty": forecast.model_uncertainty,
+                            },
+                        )
+                    except Exception:
+                        pass
                 result["neural_direction_probabilities"] = dict(self._rt._latest_neural_probs)
                 try:
                     publish_model_prediction(self._rt.typed_bus, neural_bundle.to_dict())

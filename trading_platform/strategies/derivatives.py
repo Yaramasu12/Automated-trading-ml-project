@@ -24,23 +24,43 @@ class FuturesTrendStrategy(Strategy):
     name = "futures_trend"
     family = "futures"
     supports_rollover = True
+    min_trend_strength = 1.8
+    # Minimum daily volatility to trade: avoids firing at max-confidence in calm/flat markets
+    # where trend-following historically performs worst.
+    _MIN_DAILY_VOL = 0.005   # 0.5% daily = ~8% annualised
 
     def generate_signal(self, instrument: Instrument, bars: list[MarketBar], now: datetime) -> Signal | None:
         if len(bars) < 21:
             return None
         features = self.feature_engine.compute(bars)
-        if features.trend_strength < 2.5:
+        if features.trend_strength < self.min_trend_strength:
+            return None
+        # Gate: require meaningful volatility so low-vol regimes don't produce
+        # confidence=0.92 signals on a trend_strength inflated by near-zero volatility.
+        if features.realized_volatility < self._MIN_DAILY_VOL:
             return None
         side = Side.BUY if features.momentum_20 > 0 else Side.SELL
+        if side == Side.SELL and features.momentum_alignment > 0:
+            return None
+        # Normalize confidence: cap trend_strength contribution so it cannot
+        # dominate when volatility is low (trend_strength = momentum / vol).
+        normalized_strength = min(features.trend_strength, 10.0)
+        confidence = min(0.88, 0.50 + normalized_strength / 15)
         return Signal(
             strategy_name=self.name,
             symbol=instrument.symbol,
             side=side,
-            confidence=min(0.92, 0.50 + features.trend_strength / 15),
+            confidence=confidence,
             price=features.close,
             reason=f"{instrument.underlying or instrument.symbol} future trend confirmation",
             created_at=now,
-            metadata={"trend_strength": features.trend_strength, "regime": "TRENDING"},
+            metadata={
+                "trend_strength": features.trend_strength,
+                "momentum_alignment": features.momentum_alignment,
+                "realized_volatility": features.realized_volatility,
+                "regime": "TRENDING",
+                "threshold": self.min_trend_strength,
+            },
         )
 
     def estimate_risk(self, instrument: Instrument, price: float, quantity: int) -> StrategyRiskEstimate:
@@ -233,9 +253,29 @@ class OptionsTemplateStrategy(DefinedRiskOptionSpreadStrategy):
         )
 
 
+def _multi_leg_disabled(strategy_name: str, structure: str) -> Signal | None:
+    """Placeholder until MultiLegOrderManager supports simultaneous CE+PE submission.
+
+    Multi-leg strategies require atomically submitting both legs at once.  The
+    current pipeline generates a single Signal and selects only CE *or* PE, so
+    'straddle' / 'iron_condor' entries would be one-legged — giving directional
+    risk with no hedge.  Return None to suppress all signals until the feature is
+    implemented.
+    """
+    import logging as _log
+    _log.getLogger(__name__).debug(
+        "Multi-leg strategy '%s' (%s) disabled: simultaneous CE+PE submission not yet supported",
+        strategy_name, structure,
+    )
+    return None
+
+
 class LongStraddleStrategy(OptionsTemplateStrategy):
     name = "long_straddle"
     option_structure = "long straddle"
+
+    def generate_signal(self, instrument: Instrument, bars: list[MarketBar], now: datetime) -> Signal | None:
+        return _multi_leg_disabled(self.name, self.option_structure)
 
 
 class ShortStraddleStrategy(OptionsTemplateStrategy):
@@ -243,16 +283,25 @@ class ShortStraddleStrategy(OptionsTemplateStrategy):
     option_structure = "short straddle"
     allows_short_options = True
 
+    def generate_signal(self, instrument: Instrument, bars: list[MarketBar], now: datetime) -> Signal | None:
+        return _multi_leg_disabled(self.name, self.option_structure)
+
 
 class StrangleStrategy(OptionsTemplateStrategy):
     name = "strangle"
     option_structure = "strangle"
+
+    def generate_signal(self, instrument: Instrument, bars: list[MarketBar], now: datetime) -> Signal | None:
+        return _multi_leg_disabled(self.name, self.option_structure)
 
 
 class IronCondorStrategy(OptionsTemplateStrategy):
     name = "iron_condor"
     option_structure = "iron condor"
     allows_short_options = True
+
+    def generate_signal(self, instrument: Instrument, bars: list[MarketBar], now: datetime) -> Signal | None:
+        return _multi_leg_disabled(self.name, self.option_structure)
 
 
 class BullCallSpreadStrategy(OptionsTemplateStrategy):
@@ -270,11 +319,17 @@ class CalendarSpreadStrategy(OptionsTemplateStrategy):
     option_structure = "calendar spread"
     supports_rollover = True
 
+    def generate_signal(self, instrument: Instrument, bars: list[MarketBar], now: datetime) -> Signal | None:
+        return _multi_leg_disabled(self.name, self.option_structure)
+
 
 class DeltaNeutralHedgeStrategy(OptionsTemplateStrategy):
     name = "delta_neutral_hedge"
     option_structure = "delta neutral hedge"
     allows_short_options = True
+
+    def generate_signal(self, instrument: Instrument, bars: list[MarketBar], now: datetime) -> Signal | None:
+        return _multi_leg_disabled(self.name, self.option_structure)
 
 
 class FuturesHedgeStrategy(FuturesTrendStrategy):

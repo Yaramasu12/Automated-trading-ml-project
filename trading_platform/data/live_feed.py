@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import random
 import threading
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -78,8 +79,9 @@ class LiveTickFeed:
     def __init__(self, settings, staleness_tracker: FeedStalenessTracker | None = None) -> None:
         self._settings = settings
         self._handlers: list[TickHandler] = []
-        self._token_map: dict[str, str] = {}   # symbol -> token
-        self._exchange_map: dict[str, str] = {}  # symbol -> exchange string
+        self._token_map: dict[str, str] = {}          # symbol -> token
+        self._reverse_token_map: dict[str, str] = {}  # token  -> symbol (O(1) lookup on every tick)
+        self._exchange_map: dict[str, str] = {}       # symbol -> exchange string
         self._ws = None
         self._thread: threading.Thread | None = None
         self._running = False
@@ -97,7 +99,9 @@ class LiveTickFeed:
         """Register Instrument objects so the feed knows symbol→token mappings."""
         for inst in instruments:
             if inst.token:
-                self._token_map[inst.symbol] = str(inst.token)
+                token = str(inst.token)
+                self._token_map[inst.symbol] = token
+                self._reverse_token_map[token] = inst.symbol
                 self._exchange_map[inst.symbol] = inst.exchange.value
 
     def add_handler(self, handler: TickHandler) -> None:
@@ -204,8 +208,9 @@ class LiveTickFeed:
         retries = 0
         while self._running and retries <= self._MAX_RETRIES:
             if retries > 0:
-                backoff = min(self._BASE_BACKOFF * (2 ** (retries - 1)), self._MAX_BACKOFF)
-                logger.warning("LiveTickFeed reconnect attempt %d — waiting %ds", retries, backoff)
+                base_backoff = min(self._BASE_BACKOFF * (2 ** (retries - 1)), self._MAX_BACKOFF)
+                backoff = base_backoff + random.uniform(0, min(5.0, base_backoff * 0.25))
+                logger.warning("LiveTickFeed reconnect attempt %d — waiting %.1fs", retries, backoff)
                 import time
                 time.sleep(backoff)
                 if not self._running:
@@ -313,8 +318,8 @@ class LiveTickFeed:
             return None
 
         token = str(message.get("token", ""))
-        # Reverse-lookup symbol from token
-        symbol = next((s for s, t in self._token_map.items() if t == token), token)
+        # O(1) reverse lookup; falls back to raw token string if unmapped
+        symbol = self._reverse_token_map.get(token, token)
         exchange = self._exchange_map.get(symbol, "NSE")
 
         ltp = float(message.get("last_traded_price", 0)) / 100  # Angel One sends paise

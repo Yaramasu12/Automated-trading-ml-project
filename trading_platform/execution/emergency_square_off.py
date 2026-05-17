@@ -1,7 +1,9 @@
 from __future__ import annotations
 
-import dataclasses
+import json
 import logging
+import os
+import urllib.request
 from datetime import datetime, timezone
 from typing import Callable, Awaitable
 
@@ -30,9 +32,19 @@ class EmergencySquareOff:
         scope: SquareOffScope = SquareOffScope.GLOBAL,
         strategy_name: str | None = None,
         symbol: str | None = None,
+        symbols: list[str] | None = None,
+        reason: str = "emergency_square_off",
     ) -> dict:
+        """Square off positions matching the given scope.
+
+        ``symbols`` is an optional allow-list: only positions whose symbol is in
+        this list will be closed.  Use it to restrict GLOBAL scope to equity-only
+        (pass ``symbols=equity_positions``) or commodity-only without touching the
+        other session's positions.
+        """
         now = datetime.now(timezone.utc)
         positions = self._portfolio.positions
+        _symbols_filter: set[str] | None = set(symbols) if symbols else None
 
         targets: list = []
         for pos in positions.values():
@@ -40,10 +52,13 @@ class EmergencySquareOff:
                 continue
             if scope == SquareOffScope.SYMBOL and pos.instrument.symbol != symbol:
                 continue
+            if _symbols_filter is not None and pos.instrument.symbol not in _symbols_filter:
+                continue
             targets.append(pos)
 
         intents_enqueued: list[str] = []
         errors: list[str] = []
+        self._send_alert(scope=scope, targets=len(targets), reason=reason, symbol=symbol)
 
         for pos in targets:
             close_side = Side.SELL if pos.quantity > 0 else Side.BUY
@@ -54,9 +69,13 @@ class EmergencySquareOff:
                 side=close_side,
                 confidence=1.0,
                 price=mark_price,
-                reason=f"EmergencySquareOff scope={scope.value}",
+                reason=f"EmergencySquareOff scope={scope.value}: {reason}",
                 created_at=now,
-                metadata={"opens_position": False, "square_off_scope": scope.value},
+                metadata={
+                    "opens_position": False,
+                    "square_off_scope": scope.value,
+                    "square_off_reason": reason,
+                },
             )
             intent = OrderIntent(
                 signal=signal,
@@ -80,8 +99,39 @@ class EmergencySquareOff:
 
         return {
             "scope": scope.value,
+            "reason": reason,
             "positions_targeted": len(targets),
             "intents_enqueued": len(intents_enqueued),
             "errors": errors,
             "timestamp": now.isoformat(),
         }
+
+    def _send_alert(
+        self,
+        *,
+        scope: SquareOffScope,
+        targets: int,
+        reason: str,
+        symbol: str | None,
+    ) -> None:
+        webhook = os.environ.get("EMERGENCY_SQUARE_OFF_WEBHOOK_URL", "").strip()
+        if not webhook:
+            return
+        payload = {
+            "event": "emergency_square_off",
+            "scope": scope.value,
+            "symbol": symbol,
+            "positions_targeted": targets,
+            "reason": reason,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }
+        try:
+            req = urllib.request.Request(
+                webhook,
+                data=json.dumps(payload).encode("utf-8"),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            urllib.request.urlopen(req, timeout=3).close()
+        except Exception as exc:
+            logger.warning("EmergencySquareOff alert webhook failed: %s", exc)

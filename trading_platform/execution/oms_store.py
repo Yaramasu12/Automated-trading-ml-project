@@ -189,3 +189,14 @@ class OMSEventStore:
         with self._cursor() as cur:
             cur.execute("SELECT COUNT(*) FROM oms_events")
             return cur.fetchone()[0]
+
+    def checkpoint(self) -> None:
+        conn = self._conn()
+        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+
+    def close(self) -> None:
+        conn = getattr(self._local, "conn", None)
+        if conn:
+            conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            conn.close()
+            self._local.conn = None

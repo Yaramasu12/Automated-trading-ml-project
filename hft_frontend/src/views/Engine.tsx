@@ -28,14 +28,6 @@ const FALLBACK_CORE_EQUITIES = ['RELIANCE', 'TCS', 'INFY', 'HDFCBANK', 'ICICIBAN
 const FALLBACK_EXT_EQUITIES  = ['WIPRO', 'KOTAKBANK', 'AXISBANK', 'MARUTI', 'SUNPHARMA',
                                 'TATAMOTORS', 'BAJFINANCE', 'HINDUNILVR', 'BHARTIARTL', 'NTPC']
 
-const BASE_PRICE: Record<string, number> = {
-  NIFTY: 24500, BANKNIFTY: 52000, FINNIFTY: 24200, MIDCPNIFTY: 12100,
-  SENSEX: 80500, BANKEX: 55000,
-  RELIANCE: 2850, TCS: 3500, INFY: 1500, HDFCBANK: 1620, ICICIBANK: 1130, SBIN: 800,
-  WIPRO: 460, KOTAKBANK: 1800, AXISBANK: 1070, MARUTI: 11200, SUNPHARMA: 1680,
-  TATAMOTORS: 760, BAJFINANCE: 7200, HINDUNILVR: 2320, BHARTIARTL: 1630, NTPC: 375,
-}
-
 const EXEC_MODES = ['BACKTEST', 'PAPER', 'SHADOW_LIVE', 'LIVE']
 
 const TABS = [
@@ -47,10 +39,77 @@ const TABS = [
   { id: 'derivatives', label: 'Derivatives', icon: <Cpu size={13} /> },
 ]
 
-type Tick = { ltp?: number; change?: number; volume?: number; live?: boolean }
+type Tick = {
+  ltp?: number
+  last_price?: number
+  close?: number
+  change?: number
+  volume?: number
+  live?: boolean
+  available?: boolean
+  timestamp?: string
+}
 type Position = {
   symbol: string; quantity: number; side: string; average_price: number
   mark_price: number; unrealized_pnl: number; pnl_pct: number; live: boolean
+}
+
+function finiteNumber(value: unknown): number | null {
+  const n = Number(value)
+  return Number.isFinite(n) ? n : null
+}
+
+function agentTradePrice(row: Record<string, unknown>): number | null {
+  return finiteNumber(row.price ?? row.exit_price ?? row.entry_price)
+}
+
+function agentTradeTime(row: Record<string, unknown>): string | null {
+  const raw = row.timestamp ?? row.ts
+  if (!raw) return null
+  const d = new Date(String(raw))
+  return Number.isNaN(d.getTime()) ? null : String(raw)
+}
+
+function agentTradeStrategy(row: Record<string, unknown>): string {
+  return String(row.strategy_name ?? row.strategy ?? row.type ?? '—')
+}
+
+function tickPrice(t: Tick | undefined): number | null {
+  if (!t || t.available === false) return null
+  return finiteNumber(t.ltp ?? t.last_price)
+}
+
+function tickChangePct(t: Tick | undefined): number | null {
+  if (!t || t.available === false) return null
+  const explicit = finiteNumber(t.change)
+  if (explicit !== null) return explicit
+
+  const last = finiteNumber(t.last_price ?? t.ltp)
+  const close = finiteNumber(t.close)
+  if (last === null || close === null || close === 0) return null
+  return ((last - close) / close) * 100
+}
+
+function tickAgeSeconds(t: Tick | undefined): number | null {
+  if (!t?.timestamp) return null
+  const time = new Date(t.timestamp).getTime()
+  if (Number.isNaN(time)) return null
+  return Math.max(0, Math.round((Date.now() - time) / 1000))
+}
+
+function tickStatus(t: Tick | undefined): { label: string; className: string } {
+  if (!t || t.available === false) {
+    return { label: 'NOT SUBSCRIBED', className: 'text-gray-500 border-gray-700 bg-surface' }
+  }
+
+  const age = tickAgeSeconds(t)
+  if (age !== null && age > 60) {
+    return { label: 'STALE', className: 'text-brand-red border-brand-red/40 bg-brand-red/10' }
+  }
+  if (age !== null && age > 15) {
+    return { label: `${age}s`, className: 'text-yellow-300 border-yellow-400/40 bg-yellow-400/10' }
+  }
+  return { label: age === null ? 'LIVE' : `${age}s`, className: 'text-brand-green border-brand-green/40 bg-brand-green/10' }
 }
 
 export function Engine() {
@@ -307,15 +366,21 @@ export function Engine() {
   // Tick grid helper
   const TickCell = ({ sym }: { sym: string }) => {
     const t = ticks[sym]
-    const ltp = t?.ltp ?? BASE_PRICE[sym]
-    const chg = t?.change ?? 0
+    const price = tickPrice(t)
+    const chg = tickChangePct(t)
+    const status = tickStatus(t)
     return (
       <div className="flex items-center justify-between px-2 py-1.5 rounded bg-surface-elevated hover:bg-surface-border/30 transition-colors">
-        <span className="text-xs font-mono text-gray-300 truncate">{sym}</span>
+        <div className="min-w-0">
+          <span className="block text-xs font-mono text-gray-300 truncate">{sym}</span>
+          <span className={clsx('mt-0.5 inline-flex rounded border px-1 py-0.5 text-[9px] font-mono leading-none', status.className)}>
+            {status.label}
+          </span>
+        </div>
         <div className="text-right">
-          <div className="text-xs font-mono font-semibold text-gray-100">{inr(ltp ?? 0, 2)}</div>
-          <div className={clsx('text-[10px] font-mono', chg > 0 ? 'text-brand-green' : chg < 0 ? 'text-brand-red' : 'text-gray-500')}>
-            {chg !== 0 ? pct(chg) : '—'}
+          <div className="text-xs font-mono font-semibold text-gray-100">{price === null ? '—' : inr(price, 2)}</div>
+          <div className={clsx('text-[10px] font-mono', (chg ?? 0) > 0 ? 'text-brand-green' : (chg ?? 0) < 0 ? 'text-brand-red' : 'text-gray-500')}>
+            {chg !== null && chg !== 0 ? pct(chg) : '—'}
           </div>
         </div>
       </div>
@@ -537,12 +602,19 @@ export function Engine() {
               columns={[
                 { key: 'symbol', label: 'Symbol', render: (v) => <span className="text-brand-blue font-semibold">{String(v)}</span> },
                 { key: 'side', label: 'Side', render: (v) => <span className={v === 'BUY' ? 'text-brand-green' : 'text-brand-red'}>{String(v)}</span> },
-                { key: 'strategy_name', label: 'Strategy' },
-                { key: 'price', label: 'Price', align: 'right', render: (v) => inr(Number(v), 2) },
-                { key: 'timestamp', label: 'Time', render: (v) => <span className="text-xs text-gray-500">{fmtDateTime(String(v))}</span> },
+                { key: 'quantity', label: 'Qty', align: 'right', render: (v) => finiteNumber(v)?.toLocaleString('en-IN') ?? '—' },
+                { key: 'strategy_name', label: 'Strategy', render: (_, row) => agentTradeStrategy(row as Record<string, unknown>) },
+                { key: 'price', label: 'Price', align: 'right', render: (_, row) => {
+                  const price = agentTradePrice(row as Record<string, unknown>)
+                  return price == null ? '—' : inr(price, 2)
+                } },
+                { key: 'timestamp', label: 'Time', render: (_, row) => {
+                  const ts = agentTradeTime(row as Record<string, unknown>)
+                  return <span className="text-xs text-gray-500">{ts ? fmtDateTime(ts) : '—'}</span>
+                } },
               ]}
               rows={agentTrades.slice(0, 20)}
-              keyFn={(r) => String(r.trade_id ?? Math.random())}
+              keyFn={(r, i) => String(r.trade_id ?? `${r.ts ?? r.timestamp ?? i}:${r.symbol ?? ''}:${r.type ?? ''}`)}
               emptyMessage="No agent trades yet"
               compact
             />

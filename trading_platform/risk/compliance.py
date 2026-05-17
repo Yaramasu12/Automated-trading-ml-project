@@ -13,6 +13,18 @@ class ComplianceResult:
     checked_at: str
 
 
+# Strategy names used by test harnesses, diagnostics, and manual approval previews.
+# Orders from these strategies are exempt from the daily order cap so they never
+# exhaust the production budget that real trading signals need.
+_TEST_STRATEGY_NAMES: frozenset[str] = frozenset({
+    "manual_preview",
+    "trace_fill_test",
+    "manual_approval_test",
+    "momentum_v1",      # seeded MARL stub policy — not a real production strategy
+    "noop_baseline",
+})
+
+
 class ComplianceGuard:
     """Pre-submission compliance checks: position limits, duplicate detection,
     banned symbols, and intraday order caps.
@@ -62,14 +74,18 @@ class ComplianceGuard:
                 checked_at=now.isoformat(),
             )
 
-        if self._orders_today >= self.max_orders_per_day:
+        # Test/diagnostic strategies are exempt from the daily cap so they never
+        # exhaust the budget available for real production signals.
+        is_test = intent.signal.strategy_name in _TEST_STRATEGY_NAMES
+        if not is_test and self._orders_today >= self.max_orders_per_day:
             return ComplianceResult(
                 approved=False,
                 reason=f"Daily order cap reached ({self._orders_today}/{self.max_orders_per_day})",
                 checked_at=now.isoformat(),
             )
 
-        self._orders_today += 1
+        if not is_test:
+            self._orders_today += 1
         return ComplianceResult(approved=True, reason="OK", checked_at=now.isoformat())
 
     def ban_symbol(self, symbol: str) -> None:

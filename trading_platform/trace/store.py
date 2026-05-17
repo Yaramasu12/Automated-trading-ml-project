@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import gzip
 import json
 import logging
+import shutil
 import threading
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Iterator
 
@@ -12,6 +15,8 @@ logger = logging.getLogger(__name__)
 
 _DEFAULT_DIR = Path("data/decision_traces")
 _SECRET_KEYS = {"token", "secret", "password", "api_key", "credential", "pin", "totp", "key"}
+_DEFAULT_MAX_FILE_BYTES = 50 * 1024 * 1024
+_DEFAULT_UNCOMPRESSED_DAYS = 7
 
 
 def _scrub_secrets(obj: object) -> object:
@@ -32,14 +37,21 @@ class TraceStore:
     Thread-safe. Each trace is a single JSON line in a date-partitioned file.
     """
 
-    def __init__(self, base_dir: Path | str | None = None) -> None:
+    def __init__(
+        self,
+        base_dir: Path | str | None = None,
+        *,
+        max_file_bytes: int = _DEFAULT_MAX_FILE_BYTES,
+        keep_uncompressed_days: int = _DEFAULT_UNCOMPRESSED_DAYS,
+    ) -> None:
         self._base_dir = Path(base_dir) if base_dir else _DEFAULT_DIR
         self._base_dir.mkdir(parents=True, exist_ok=True)
+        self._max_file_bytes = max_file_bytes
+        self._keep_uncompressed_days = keep_uncompressed_days
         self._lock = threading.Lock()
         self._traces: dict[str, DecisionTrace] = {}
 
     def _current_file(self) -> Path:
-        from datetime import date
         return self._base_dir / f"traces_{date.today().isoformat()}.jsonl"
 
     def save(self, trace: DecisionTrace) -> None:
@@ -47,8 +59,10 @@ class TraceStore:
         with self._lock:
             self._traces[trace.trace_id] = trace
             try:
-                with self._current_file().open("a", encoding="utf-8") as fh:
-                    fh.write(json.dumps(safe_dict) + "\n")
+                self._maintenance()
+                path = self._writable_file()
+                with path.open("a", encoding="utf-8") as fh:
+                    fh.write(json.dumps(safe_dict, separators=(",", ":")) + "\n")
             except OSError as exc:
                 logger.warning("TraceStore: could not write trace %s: %s", trace.trace_id, exc)
 
@@ -58,9 +72,9 @@ class TraceStore:
                 return self._traces[trace_id]
         # Scan newest files and newest rows first. Trace updates are append-only,
         # so the latest matching row is the authoritative replay state.
-        for path in sorted(self._base_dir.glob("traces_*.jsonl"), reverse=True):
+        for path in self._trace_paths():
             try:
-                for line in reversed(path.read_text(encoding="utf-8").splitlines()):
+                for line in reversed(self._read_lines(path)):
                     if not line.strip():
                         continue
                     d = json.loads(line)
@@ -77,9 +91,9 @@ class TraceStore:
         """Yield the most recent traces as dicts (newest first)."""
         collected: list[dict] = []
         seen: set[str] = set()
-        for path in sorted(self._base_dir.glob("traces_*.jsonl"), reverse=True):
+        for path in self._trace_paths():
             try:
-                lines = path.read_text(encoding="utf-8").splitlines()
+                lines = self._read_lines(path)
                 for line in reversed(lines):
                     if not line.strip():
                         continue
@@ -102,9 +116,51 @@ class TraceStore:
 
     def count(self) -> int:
         total = 0
-        for path in self._base_dir.glob("traces_*.jsonl"):
+        for path in self._trace_paths():
             try:
-                total += sum(1 for line in path.read_text(encoding="utf-8").splitlines() if line.strip())
+                total += sum(1 for line in self._read_lines(path) if line.strip())
             except OSError:
                 pass
         return total
+
+    def _writable_file(self) -> Path:
+        current = self._current_file()
+        if current.exists() and current.stat().st_size >= self._max_file_bytes:
+            rollover = self._base_dir / f"traces_{date.today().isoformat()}_{datetime.now().strftime('%H%M%S')}.jsonl"
+            if not rollover.exists():
+                current.rename(rollover)
+        return current
+
+    def _maintenance(self) -> None:
+        cutoff = date.today() - timedelta(days=self._keep_uncompressed_days)
+        for path in self._base_dir.glob("traces_*.jsonl"):
+            path_date = self._date_from_path(path)
+            if path_date is None or path_date >= cutoff:
+                continue
+            gz_path = path.with_suffix(path.suffix + ".gz")
+            if gz_path.exists():
+                path.unlink(missing_ok=True)
+                continue
+            with path.open("rb") as src, gzip.open(gz_path, "wb") as dst:
+                shutil.copyfileobj(src, dst)
+            path.unlink(missing_ok=True)
+
+    def _trace_paths(self) -> list[Path]:
+        paths = list(self._base_dir.glob("traces_*.jsonl")) + list(self._base_dir.glob("traces_*.jsonl.gz"))
+        return sorted(paths, reverse=True)
+
+    @staticmethod
+    def _read_lines(path: Path) -> list[str]:
+        if path.suffix == ".gz":
+            with gzip.open(path, "rt", encoding="utf-8") as fh:
+                return fh.read().splitlines()
+        return path.read_text(encoding="utf-8").splitlines()
+
+    @staticmethod
+    def _date_from_path(path: Path) -> date | None:
+        stem = path.name.removeprefix("traces_")
+        raw = stem[:10]
+        try:
+            return date.fromisoformat(raw)
+        except ValueError:
+            return None

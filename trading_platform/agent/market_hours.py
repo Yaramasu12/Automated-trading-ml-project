@@ -88,12 +88,22 @@ def seconds_to_next_open(dt: datetime | None = None) -> float:
 # ── MCX helpers ───────────────────────────────────────────────────────────────
 
 def is_mcx_entry_allowed(dt: datetime | None = None) -> bool:
-    """MCX non-agri commodities: entry allowed 09:00–23:25 IST on trading days."""
+    """MCX non-agri commodities: entry allowed 09:00–23:25 IST on trading days.
+
+    The MCX session runs entirely within a single calendar day (never past midnight),
+    so no date-rollover logic is needed.  The explicit time range check below is
+    sufficient.
+    """
     now = dt or now_ist()
     if not is_trading_day(now.date()):
         return False
     t = now.time()
-    return _MCX_OPEN <= t < _MCX_ENTRY_CUTOFF
+    # Guard: if t is after midnight (00:00–08:59) the IST date has already rolled
+    # to the next day.  The session ended at 23:30 on the previous day, so we are
+    # no longer in a valid MCX session.
+    if t < _MCX_OPEN:
+        return False
+    return t < _MCX_ENTRY_CUTOFF
 
 
 def is_mcx_eod_squareoff(dt: datetime | None = None) -> bool:

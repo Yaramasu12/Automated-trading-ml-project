@@ -40,6 +40,7 @@ VALID_EVENT_TYPES = frozenset({
     "slippage_recorded",
     "outcome_label_created",
     "post_trade_learning_updated",
+    "emergency_square_off",
 })
 
 
@@ -231,5 +232,10 @@ class PaperLearningJournal:
     def close(self) -> None:
         conn = getattr(self._local, "conn", None)
         if conn:
+            conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
             conn.close()
             self._local.conn = None
+
+    def checkpoint(self) -> None:
+        conn = self._conn()
+        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
