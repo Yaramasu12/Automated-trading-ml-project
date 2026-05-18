@@ -36,6 +36,15 @@ jobs:
           fi
 
       - name: Run backend unit tests
+        env:
+          API_AUTH_REQUIRED: "false"
+          AUTO_START_AGENT: "false"
+          AUTO_START_LIVE_FEED: "false"
+          ENABLE_AI_COUNCIL: "false"
+          ENABLE_NEURAL_LAB: "false"
+          ENABLE_QUANTUM_LAB: "false"
+          ENABLE_MARL_LAB: "false"
+          ENABLE_GOAL_GOVERNOR: "false"
         run: python -m unittest discover -s tests -v
 
   frontend:

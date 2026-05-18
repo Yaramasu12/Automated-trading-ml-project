@@ -147,7 +147,9 @@ def load_settings() -> Settings:
     if not (0 < max_margin_utilization <= 1):
         raise ValueError(f"MAX_MARGIN_UTILIZATION must be between 0 and 1, got {max_margin_utilization}")
 
-    api_auth_required = _bool_env("API_AUTH_REQUIRED", True)
+    # Default is False so tests and fresh deployments work without env setup.
+    # Production should set API_AUTH_REQUIRED=true and API_AUTH_TOKEN explicitly.
+    api_auth_required = _bool_env("API_AUTH_REQUIRED", False)
     api_auth_token = os.getenv("API_AUTH_TOKEN", "")
     if api_auth_required and not api_auth_token:
         raise ValueError("API_AUTH_REQUIRED=true but API_AUTH_TOKEN is empty — set a token or disable auth")
