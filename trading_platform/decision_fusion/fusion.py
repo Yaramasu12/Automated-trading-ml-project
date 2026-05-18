@@ -18,9 +18,10 @@ logger = logging.getLogger(__name__)
 
 # Regime-dependent weights for each source
 _REGIME_WEIGHTS: dict[str, dict[str, float]] = {
-    "trending": {"rule": 0.35, "neural": 0.30, "agent": 0.20, "quantum": 0.10, "rl": 0.05},
-    "ranging": {"rule": 0.30, "neural": 0.25, "agent": 0.25, "quantum": 0.15, "rl": 0.05},
-    "volatile": {"rule": 0.40, "neural": 0.20, "agent": 0.25, "quantum": 0.10, "rl": 0.05},
+    "TRENDING": {"rule": 0.35, "neural": 0.30, "agent": 0.20, "quantum": 0.10, "rl": 0.05},
+    "MEAN_REVERTING": {"rule": 0.30, "neural": 0.25, "agent": 0.25, "quantum": 0.15, "rl": 0.05},
+    "HIGH_VOLATILITY": {"rule": 0.40, "neural": 0.20, "agent": 0.25, "quantum": 0.10, "rl": 0.05},
+    "BREAKOUT": {"rule": 0.35, "neural": 0.30, "agent": 0.20, "quantum": 0.10, "rl": 0.05},
     "unknown": {"rule": 0.40, "neural": 0.25, "agent": 0.20, "quantum": 0.10, "rl": 0.05},
 }
 
@@ -141,8 +142,16 @@ class EnsembleDecisionEngine:
             )
         )
 
-        # RL advisory
-        rl_score = float(bb.rl_advisory.get("score", 0.5))
+        # RL advisory — translate majority_action + majority_confidence into a score
+        rl_advisory = bb.rl_advisory or {}
+        majority_action = rl_advisory.get("majority_action")
+        majority_confidence = float(rl_advisory.get("majority_confidence", 0.5))
+        if majority_action in (1, 2):   # 1=ENTRY, 2=EXIT per TradingSimEnv actions
+            rl_score = majority_confidence
+        elif majority_action == 0:      # 0=HOLD
+            rl_score = 0.5
+        else:
+            rl_score = float(rl_advisory.get("score", 0.5))
         reasoning.append(f"rl_score={rl_score:.2f}")
 
         # ── Weighted vote ──────────────────────────────────────────────────
@@ -163,12 +172,11 @@ class EnsembleDecisionEngine:
         if weighted >= self._no_trade_threshold:
             action = "PROCEED"
             proceed = True
+            if agent_action == "REDUCE":
+                action = "REDUCE"
+                proceed = False
         else:
             action = "NO_TRADE"
-            proceed = False
-
-        if agent_action == "REDUCE":
-            action = "REDUCE"
             proceed = False
 
         return EnsembleOutput(

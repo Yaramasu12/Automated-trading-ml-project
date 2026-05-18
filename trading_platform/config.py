@@ -147,6 +147,11 @@ def load_settings() -> Settings:
     if not (0 < max_margin_utilization <= 1):
         raise ValueError(f"MAX_MARGIN_UTILIZATION must be between 0 and 1, got {max_margin_utilization}")
 
+    api_auth_required = _bool_env("API_AUTH_REQUIRED", True)
+    api_auth_token = os.getenv("API_AUTH_TOKEN", "")
+    if api_auth_required and not api_auth_token:
+        raise ValueError("API_AUTH_REQUIRED=true but API_AUTH_TOKEN is empty — set a token or disable auth")
+
     return Settings(
         execution_mode=ExecutionMode(os.getenv("EXECUTION_MODE", "BACKTEST").upper()),
         broker=os.getenv("BROKER", "ANGEL_ONE"),
@@ -171,11 +176,11 @@ def load_settings() -> Settings:
             "data/processed/angel_one_instruments.json",
         ),
         aws_region=os.getenv("AWS_REGION", "ap-south-1"),
-        api_auth_token=os.getenv("API_AUTH_TOKEN", ""),
+        api_auth_token=api_auth_token,
         api_cors_origins=_parse_cors_origins(
             os.getenv("API_CORS_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173")
         ),
-        api_auth_required=_bool_env("API_AUTH_REQUIRED", True),
+        api_auth_required=api_auth_required,
         auto_start_agent=_bool_env("AUTO_START_AGENT", False),
         auto_start_live_feed=_bool_env("AUTO_START_LIVE_FEED", False),
         auto_load_instrument_cache=_bool_env("AUTO_LOAD_INSTRUMENT_CACHE", True),

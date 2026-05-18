@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 from datetime import date
 from typing import Any
 
+from trading_platform.agent.market_hours import now_ist
 from trading_platform.domain.enums import OptionType, Side
 
 
@@ -344,7 +345,7 @@ def validate_plan(
         reasons.append(f"max_loss_exceeds_cap:{round(loss, 2)}>{round(max_allowed_loss, 2)}")
 
     if min_days_to_expiry > 0:
-        anchor = as_of or date.today()
+        anchor = as_of or now_ist().date()
         for leg in plan.legs:
             dte = (leg.expiry - anchor).days
             if dte < min_days_to_expiry:

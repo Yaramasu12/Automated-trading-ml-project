@@ -22,7 +22,8 @@ CREATE TABLE IF NOT EXISTS trades (
     charges       REAL NOT NULL DEFAULT 0,
     timestamp     TEXT NOT NULL,
     strategy_name TEXT NOT NULL,
-    execution_mode TEXT NOT NULL DEFAULT 'BACKTEST'
+    execution_mode TEXT NOT NULL DEFAULT 'BACKTEST',
+    is_test       INTEGER NOT NULL DEFAULT 0
 )
 """
 
@@ -127,6 +128,7 @@ class TradingDatabase:
         if not getattr(self._local, "conn", None):
             conn = sqlite3.connect(str(self.db_path), check_same_thread=False)
             conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA synchronous=NORMAL")
             conn.execute("PRAGMA foreign_keys=ON")
             conn.row_factory = sqlite3.Row
             self._local.conn = conn
@@ -154,21 +156,36 @@ class TradingDatabase:
             cur.execute(_CREATE_RISK_EVENTS)
             cur.execute(_CREATE_OPEN_POSITIONS)
             cur.execute(_CREATE_ACTIVE_EXIT_PLANS)
+            self._ensure_column(cur, "trades", "is_test", "INTEGER NOT NULL DEFAULT 0")
+            cur.execute(
+                """UPDATE trades
+                   SET is_test=1
+                   WHERE strategy_name IN ('manual_preview', 'trace_fill_test')"""
+            )
             cur.execute("CREATE INDEX IF NOT EXISTS idx_trades_timestamp ON trades (timestamp)")
             cur.execute("CREATE INDEX IF NOT EXISTS idx_trades_mode ON trades (execution_mode)")
+            cur.execute("CREATE INDEX IF NOT EXISTS idx_trades_is_test ON trades (is_test)")
             cur.execute("CREATE INDEX IF NOT EXISTS idx_snapshots_mode ON portfolio_snapshots (execution_mode)")
+
+    @staticmethod
+    def _ensure_column(cur: sqlite3.Cursor, table: str, column: str, definition: str) -> None:
+        cur.execute(f"PRAGMA table_info({table})")
+        existing = {str(row[1]) for row in cur.fetchall()}
+        if column not in existing:
+            cur.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
 
     # ------------------------------------------------------------------
     # Trades
     # ------------------------------------------------------------------
 
     def save_trade(self, trade, execution_mode: str = "BACKTEST") -> None:
+        is_test = int(trade.strategy_name in {"manual_preview", "trace_fill_test"})
         with self._cursor() as cur:
             cur.execute(
                 """INSERT OR IGNORE INTO trades
                    (trade_id, order_id, symbol, side, quantity, price, charges,
-                    timestamp, strategy_name, execution_mode)
-                   VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                    timestamp, strategy_name, execution_mode, is_test)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
                 (
                     trade.trade_id,
                     trade.order_id,
@@ -180,6 +197,7 @@ class TradingDatabase:
                     trade.timestamp.isoformat(),
                     trade.strategy_name,
                     execution_mode,
+                    is_test,
                 ),
             )
 
@@ -189,6 +207,7 @@ class TradingDatabase:
         since: datetime | None = None,
         execution_mode: str | None = None,
         limit: int = 500,
+        include_test: bool = False,
     ) -> list[dict]:
         clauses = []
         params: list = []
@@ -201,6 +220,8 @@ class TradingDatabase:
         if execution_mode:
             clauses.append("execution_mode = ?")
             params.append(execution_mode)
+        if not include_test:
+            clauses.append("COALESCE(is_test, 0) = 0")
         where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
         with self._cursor() as cur:
             cur.execute(
@@ -209,12 +230,17 @@ class TradingDatabase:
             )
             return [dict(row) for row in cur.fetchall()]
 
-    def trade_count(self, execution_mode: str | None = None) -> int:
+    def trade_count(self, execution_mode: str | None = None, include_test: bool = False) -> int:
+        clauses = []
+        params: list = []
+        if execution_mode:
+            clauses.append("execution_mode=?")
+            params.append(execution_mode)
+        if not include_test:
+            clauses.append("COALESCE(is_test, 0)=0")
+        where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
         with self._cursor() as cur:
-            if execution_mode:
-                cur.execute("SELECT COUNT(*) FROM trades WHERE execution_mode=?", (execution_mode,))
-            else:
-                cur.execute("SELECT COUNT(*) FROM trades")
+            cur.execute(f"SELECT COUNT(*) FROM trades {where}", params)
             return cur.fetchone()[0]
 
     # ------------------------------------------------------------------
@@ -370,6 +396,10 @@ class TradingDatabase:
         with self._cursor() as cur:
             cur.execute("SELECT COUNT(*) FROM trades")
             total_trades = cur.fetchone()[0]
+            cur.execute("SELECT COUNT(*) FROM trades WHERE COALESCE(is_test, 0)=0")
+            production_trades = cur.fetchone()[0]
+            cur.execute("SELECT COUNT(*) FROM trades WHERE COALESCE(is_test, 0)=1")
+            test_trades = cur.fetchone()[0]
             cur.execute("SELECT COUNT(*) FROM trades WHERE execution_mode='LIVE'")
             live_trades = cur.fetchone()[0]
             cur.execute("SELECT COUNT(*) FROM portfolio_snapshots")
@@ -379,6 +409,8 @@ class TradingDatabase:
         return {
             "db_path": str(self.db_path),
             "total_trades": total_trades,
+            "production_trades": production_trades,
+            "test_trades": test_trades,
             "live_trades": live_trades,
             "portfolio_snapshots": snapshots,
             "risk_blocks": risk_blocks,
@@ -471,3 +503,7 @@ class TradingDatabase:
             conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
             conn.close()
             self._local.conn = None
+
+    def checkpoint(self) -> None:
+        conn = self._conn()
+        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")

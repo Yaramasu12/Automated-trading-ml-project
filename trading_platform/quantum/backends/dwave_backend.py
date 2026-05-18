@@ -43,12 +43,13 @@ class DWaveBackend:
             logger.warning("DWaveBackend: optimization error: %s", exc)
             return None
 
-    def _run_hybrid(self, req: PortfolioOptimizationRequest) -> tuple[list[int], float]:
-        from trading_platform.quantum.qubo import build_qubo, evaluate_solution
+    def _run_hybrid(self, req: PortfolioOptimizationRequest) -> tuple[list[int], float] | None:
+        from trading_platform.quantum.qubo import build_qubo
         qubo = build_qubo(req)
         n = qubo.n
         if n == 0:
             return [], 0.0
-        # Placeholder: returns all-zero solution (no D-Wave execution without real token)
-        sol = [0] * n
-        return sol, evaluate_solution(sol, req)
+        # Real D-Wave execution not yet implemented — signal unavailable so
+        # the service falls back to classical rather than accepting all-zeros.
+        logger.warning("DWaveBackend._run_hybrid: real execution not implemented; returning None")
+        return None

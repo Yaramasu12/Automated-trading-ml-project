@@ -11,6 +11,7 @@ from trading_platform.domain.enums import (
     OptionType,
     Segment,
 )
+from trading_platform.agent.market_hours import now_ist
 
 # ── MCX commodity futures ─────────────────────────────────────────────────────
 # lot_size = units per contract (used for P&L: value = price × lot_size × qty)
@@ -392,7 +393,7 @@ def _add_derivatives(universe: dict[str, Instrument], as_of: date, underlyings: 
 
 
 def build_default_universe(as_of: date | None = None) -> InstrumentMaster:
-    anchor = as_of or date.today()
+    anchor = as_of or now_ist().date()
     universe: dict[str, Instrument] = {}
     for symbol, meta in INDEX_UNDERLYINGS.items():
         exchange = Exchange.BSE if meta.get("exchange") == "BSE" else Exchange.NSE

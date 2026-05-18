@@ -205,7 +205,11 @@ class OnnxExporter:
 
     @staticmethod
     def _manifest_path(path: str) -> str:
-        base = path.rstrip(".onnx").rstrip(".pkl")
+        # str.rstrip() strips individual characters, not substrings.
+        # Use removesuffix() (Python 3.9+) to avoid silently corrupting
+        # paths that contain any of the suffix characters (e.g. 'o','n','x','.').
+        import os
+        base, _ = os.path.splitext(path)
         return base + ".manifest.json"
 
     @staticmethod
@@ -503,6 +507,8 @@ class NeuralPredictionService:
         if self._tft_forecaster.is_available():
             try:
                 result = self._tft_forecaster.predict(sym, bars)
+                if result is None:
+                    raise ValueError("TFT returned None — model weights not loaded")
                 self._failures["tft"] = 0
                 return result
             except Exception as exc:

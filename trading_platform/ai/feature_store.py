@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import fcntl
 import json
 import logging
 import math
@@ -11,9 +10,24 @@ from typing import Callable
 
 from trading_platform.ai.features import FeatureSnapshot
 
+# fcntl is Unix-only; provide a no-op fallback so the module imports on Windows.
+try:
+    import fcntl as _fcntl
+
+    def _flock_ex(fd: int) -> None:
+        _fcntl.flock(fd, _fcntl.LOCK_EX)
+
+    def _flock_un(fd: int) -> None:
+        _fcntl.flock(fd, _fcntl.LOCK_UN)
+
+except ImportError:  # pragma: no cover — Windows path
+    _flock_ex = lambda fd: None  # noqa: E731
+    _flock_un = lambda fd: None  # noqa: E731
+
 logger = logging.getLogger(__name__)
 
 _DEFAULT_STORE_DIR = Path(__file__).parent.parent.parent / "data" / "feature_store"
+_DEFAULT_MAX_ROWS_PER_SYMBOL = 5_000
 
 _DRIFT_KEYS = ["momentum_5", "momentum_20", "realized_volatility", "volume_ratio", "trend_strength"]
 
@@ -29,10 +43,14 @@ class FeatureStore:
     without coupling FeatureStore to the streaming layer.
     """
 
-    def __init__(self, store_dir: Path | None = None):
+    def __init__(self, store_dir: Path | None = None, max_rows_per_symbol: int = _DEFAULT_MAX_ROWS_PER_SYMBOL):
         self.store_dir = store_dir or _DEFAULT_STORE_DIR
         self.store_dir.mkdir(parents=True, exist_ok=True)
+        self.max_rows_per_symbol = max_rows_per_symbol
         self._publish_hook: "Callable[[str, dict], None] | None" = None
+        # In-memory row count cache: avoids reading the full file on every append.
+        # Populated lazily on first append and incremented on each write.
+        self._row_counts: dict[str, int] = {}
 
     def set_publish_hook(self, fn: "Callable[[str, dict], None]") -> None:
         """Register a callback invoked on every append(). Thread-safe (write-once)."""
@@ -53,13 +71,26 @@ class FeatureStore:
             **asdict(features),
         }
         path = self._path(symbol)
+
+        # Lazily initialize the in-memory row count from the file on first append.
+        if symbol not in self._row_counts:
+            try:
+                self._row_counts[symbol] = sum(1 for line in path.open() if line.strip()) if path.exists() else 0
+            except OSError:
+                self._row_counts[symbol] = 0
+
         with path.open("a") as fp:
-            fcntl.flock(fp.fileno(), fcntl.LOCK_EX)
+            _flock_ex(fp.fileno())
             try:
                 fp.write(json.dumps(record) + "\n")
                 fp.flush()
+                self._row_counts[symbol] = self._row_counts.get(symbol, 0) + 1
+                # Only rewrite the file when the count actually exceeds the cap —
+                # avoids full read+write on the hot path (59 symbols × every scan).
+                if self.max_rows_per_symbol > 0 and self._row_counts[symbol] > self.max_rows_per_symbol:
+                    self._trim_locked_file(path, symbol)
             finally:
-                fcntl.flock(fp.fileno(), fcntl.LOCK_UN)
+                _flock_un(fp.fileno())
 
         # Notify streaming bus if a publish hook is registered
         if self._publish_hook is not None:
@@ -84,6 +115,27 @@ class FeatureStore:
                         logger.warning("Skipping malformed JSONL line in %s: %s", path.name, exc)
                         continue
         return records[-limit:] if limit else records
+
+    def _trim_locked_file(self, path: Path, symbol: str | None = None) -> None:
+        """Rewrite the file keeping only the most recent max_rows_per_symbol lines.
+
+        Called only when the in-memory row count exceeds the cap, so the expensive
+        full read+write does not happen on every append.
+        """
+        if self.max_rows_per_symbol <= 0:
+            return
+        try:
+            lines = path.read_text().splitlines()
+        except OSError:
+            return
+        if len(lines) <= self.max_rows_per_symbol:
+            if symbol:
+                self._row_counts[symbol] = len(lines)
+            return
+        keep = lines[-self.max_rows_per_symbol:]
+        path.write_text("\n".join(keep) + "\n")
+        if symbol:
+            self._row_counts[symbol] = len(keep)
 
     def all_symbols(self) -> list[str]:
         return [p.stem for p in self.store_dir.glob("*.jsonl")]

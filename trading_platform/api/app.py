@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
@@ -107,7 +108,14 @@ def execution_mode(payload: dict):
 
 @app.post("/kill-switch", dependencies=[_AuthDep])
 def kill_switch(payload: dict):
-    return runtime.set_kill_switch(bool(payload.get("active", True)))
+    active = bool(payload.get("active", True))
+    reason = str(payload.get("reason", "")).strip()
+    if active and not reason:
+        raise HTTPException(status_code=400, detail="kill_switch_reason_required")
+    try:
+        return runtime.set_kill_switch(active, reason=reason)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @app.get("/universe")
@@ -731,7 +739,7 @@ def api_v1_news_events(limit: int = 50):
     return news_events(limit)
 
 
-@app.post("/api/v1/news/analyze")
+@app.post("/api/v1/news/analyze", dependencies=[_AuthDep])
 def api_v1_news_analyze(payload: dict):
     return analyze_news(payload)
 
@@ -766,6 +774,8 @@ async def ws_dashboard(websocket: WebSocket):
     query_token = websocket.query_params.get("token")
     authed = verify_token(query_token)
     _ws_clients.append(websocket)
+    _last_snapshot_hash: str = ""
+    _push_interval = 5.0  # push at most every 5 seconds to reduce serialization load
     try:
         while True:
             snapshot = {
@@ -782,9 +792,15 @@ async def ws_dashboard(websocket: WebSocket):
                 "event_bus": runtime.event_bus_summary(),
                 "portfolio": runtime.portfolio_positions(),
             }
-            await websocket.send_text(json.dumps(snapshot))
+            # Only send the snapshot when content has actually changed to avoid
+            # redundant serialization and bandwidth on every poll cycle.
+            snapshot_text = json.dumps(snapshot)
+            snapshot_hash = hashlib.md5(snapshot_text.encode(), usedforsecurity=False).hexdigest()
+            if snapshot_hash != _last_snapshot_hash:
+                await websocket.send_text(snapshot_text)
+                _last_snapshot_hash = snapshot_hash
             try:
-                raw = await asyncio.wait_for(websocket.receive_text(), timeout=1.0)
+                raw = await asyncio.wait_for(websocket.receive_text(), timeout=_push_interval)
                 cmd = json.loads(raw)
                 action = cmd.get("action")
                 if action == "auth":

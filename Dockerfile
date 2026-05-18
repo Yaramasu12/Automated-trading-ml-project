@@ -4,7 +4,9 @@ WORKDIR /app
 
 # System deps for smartapi-python websocket client
 RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
     gcc \
+    && update-ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Python dependencies first (layer-cached unless requirements change)

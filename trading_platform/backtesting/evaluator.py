@@ -109,7 +109,8 @@ class StrategyEvaluator:
         return StrategyEvaluationResult(start=start, days=days, underlyings=underlyings, leaderboard=ranked)
 
     def _score(self, metrics: PerformanceMetrics) -> float:
-        profit_quality = min(3.0, metrics.profit_factor) * 0.15
+        # Shift by 1 so factor<1.0 penalises and factor>1.0 rewards.
+        profit_quality = (min(3.0, metrics.profit_factor) - 1.0) * 0.15
         risk_adjusted = metrics.sharpe_like * 0.10
         return metrics.return_pct + profit_quality + risk_adjusted - (metrics.max_drawdown * 1.5)
 
@@ -338,8 +339,8 @@ class WalkForwardEvaluator:
         ]
         if confidences:
             confidences_sorted = sorted(confidences)
-            # Drop the bottom quartile of training confidences.
-            q1_index = max(0, len(confidences_sorted) // 4 - 1)
+            # Drop the bottom quartile: index len//4 is the true Q1 boundary.
+            q1_index = len(confidences_sorted) // 4
             confidence_floor = confidences_sorted[q1_index]
         else:
             confidence_floor = 0.55
@@ -352,8 +353,8 @@ class WalkForwardEvaluator:
             expected_edge = metrics.return_pct / max(1, metrics.trade_count)
 
         accept = (
-            metrics.trade_count >= 1
-            and metrics.profit_factor >= 1.0
+            metrics.trade_count >= 5
+            and metrics.profit_factor >= 1.2
             and metrics.return_pct > 0.0
         )
         return WalkForwardFittedParams(

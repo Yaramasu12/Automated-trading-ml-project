@@ -39,6 +39,11 @@ class ExecutionRouter:
         self.final_gate = final_gate
         self.orders_sent_today = 0
         self.trades_today = 0
+        # Equity at session open for intraday P&L calculation.
+        self._session_start_equity: float = 0.0
+
+    def set_session_start_equity(self, equity: float) -> None:
+        self._session_start_equity = equity
 
     def submit(self, intent: OrderIntent, now: datetime, mark_prices: dict[str, float], charges: float = 0.0) -> ExecutionReport:
         if self.final_gate is not None:
@@ -55,6 +60,7 @@ class ExecutionRouter:
                 return ExecutionReport(order, risk_decision, None)
 
         snapshot = self.portfolio.mark_to_market(now, mark_prices)
+        daily_pnl = (snapshot.equity - self._session_start_equity) if self._session_start_equity > 0 else 0.0
         risk_decision = self.risk_engine.evaluate(
             intent=intent,
             portfolio=snapshot,
@@ -62,8 +68,9 @@ class ExecutionRouter:
             execution_mode=self.execution_mode,
             live_armed=self.live_armed,
             kill_switch_active=self.kill_switch_active,
+            daily_pnl=daily_pnl,
             orders_sent_today=self.orders_sent_today,
-            trades_today=max(1, self.trades_today),
+            trades_today=self.trades_today,
         )
         order = Order(intent=intent)
         if not risk_decision.approved:

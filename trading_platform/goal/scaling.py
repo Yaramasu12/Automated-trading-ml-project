@@ -51,10 +51,11 @@ class PositionScaler:
         price: float,
         lot_size: int = 1,
     ) -> int:
-        if avg_loss <= 0 or price <= 0:
+        if avg_loss <= 0 or avg_win <= 0 or price <= 0:
             return 1
-        edge = win_rate - (1 - win_rate) * (avg_loss / avg_win)
-        kelly_pct = max(0.0, edge / (avg_loss / avg_win)) * self.kelly_fraction
+        # Standard fractional Kelly: f* = (win_rate * avg_win - (1-win_rate) * avg_loss) / avg_win
+        edge = win_rate * avg_win - (1 - win_rate) * avg_loss
+        kelly_pct = max(0.0, edge / avg_win) * self.kelly_fraction
         notional = capital * kelly_pct
         qty = max(1, math.floor(notional / (price * lot_size)))
         return qty

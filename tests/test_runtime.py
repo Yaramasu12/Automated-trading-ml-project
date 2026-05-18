@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import unittest
 from unittest.mock import Mock
 
 from trading_platform.api.runtime import TradingRuntime
-from trading_platform.config import Settings
+from trading_platform.config import Settings, load_settings
 from trading_platform.domain.enums import ExecutionMode
 
 
@@ -46,7 +47,9 @@ class RuntimeTests(unittest.TestCase):
         self.assertFalse(state["live_armed"])
 
     def test_startup_does_not_auto_start_broker_loops_by_default(self):
-        runtime = TradingRuntime()
+        base = load_settings()
+        settings = dataclasses.replace(base, auto_start_agent=False, auto_start_live_feed=False)
+        runtime = TradingRuntime(settings)
         runtime.start_live_feed = Mock()  # type: ignore[method-assign]
         runtime.agent.start = Mock()  # type: ignore[method-assign]
 
@@ -272,7 +275,17 @@ class RuntimeTests(unittest.TestCase):
         )
 
     def test_high_end_scan_uses_baseline_first_canonical_cycle(self):
-        runtime = TradingRuntime()
+        # Force all advisory layers off so the test is environment-independent
+        # (e.g. .env may have ENABLE_AI_COUNCIL=true in dev/production).
+        base_settings = load_settings()
+        settings = dataclasses.replace(
+            base_settings,
+            enable_ai_council=False,
+            enable_neural_lab=False,
+            enable_quantum_lab=False,
+            enable_marl_lab=False,
+        )
+        runtime = TradingRuntime(settings)
         result = runtime.high_end_signal_scan(
             {
                 "symbols": ["NIFTY"],

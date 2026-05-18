@@ -24,6 +24,8 @@ On exit fill:
         neural_meta_labeler.update(...)
 """
 
+import collections
+import itertools
 import math
 import threading
 from dataclasses import dataclass, field
@@ -188,7 +190,7 @@ class OutcomeFactory:
     def __init__(self, params: TripleBarrierParams | None = None) -> None:
         self._params = params or self.DEFAULT_PARAMS
         self._pending: dict[str, _EntryRecord] = {}
-        self._labels: list[OutcomeLabel] = []
+        self._labels: collections.deque[OutcomeLabel] = collections.deque(maxlen=5000)
         self._lock = threading.RLock()
 
     # ── Entry registration ────────────────────────────────────────────────────
@@ -308,7 +310,7 @@ class OutcomeFactory:
     def recent_labels(self, n: int = 50) -> list[dict]:
         """Return the most recent n labels as dicts (newest last)."""
         with self._lock:
-            return [lbl.to_dict() for lbl in self._labels[-n:]]
+            return [lbl.to_dict() for lbl in itertools.islice(reversed(self._labels), n)][::-1]
 
     def count(self) -> int:
         with self._lock:

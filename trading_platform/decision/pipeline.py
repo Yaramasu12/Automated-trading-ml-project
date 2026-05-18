@@ -5,7 +5,7 @@ from dataclasses import asdict, dataclass
 from datetime import date, datetime, timezone
 from typing import TYPE_CHECKING
 
-from trading_platform.agent.market_hours import is_entry_allowed
+from trading_platform.agent.market_hours import is_entry_allowed, now_ist
 from trading_platform.ai.agents import MarketRegimeAgent, StrategySelectionAgent
 from trading_platform.ai.features import FeatureEngine, FeatureSnapshot
 from trading_platform.ai.models import VolatilityForecast, VolatilityForecaster
@@ -254,7 +254,7 @@ class DecisionPipeline:
                 instrument = self.instrument_master.get(underlying)
                 from datetime import datetime as _dt
                 from_dt = _dt.combine(start, _dt.min.time())
-                to_dt = _dt.combine(date.today(), _dt.min.time())
+                to_dt = _dt.combine(now_ist().date(), _dt.min.time())
                 bars = self.history_provider.get_candles(instrument, from_dt, to_dt, interval="ONE_DAY")
                 if len(bars) >= min_bars:
                     return bars[-min_bars:]
@@ -307,22 +307,33 @@ class DecisionPipeline:
                 f"low_confidence:{signal.confidence:.2f}<{self._MIN_CONFIDENCE}",
             )
 
-        # Gate 2: PRICE SANITY — reject if signal price is stale/synthetic vs live tick
-        # This is the primary loss driver: entry at synthetic 3448 when real price is 1452
-        if self.live_feed is not None and instrument.instrument_type not in {
-            InstrumentType.OPTION, InstrumentType.FUTURE
-        }:
+        # Gate 2: PRICE SANITY — reject if signal price is stale/synthetic vs live tick.
+        # Applies to EQUITY, INDEX, and FUTURES (futures signal price = underlying close).
+        # OPTIONS are excluded because option premium ≠ underlying spot price.
+        # For futures the underlying tick is the correct reference (signal.price tracks
+        # the underlying, not the derivative quote).
+        if self.live_feed is not None and instrument.instrument_type != InstrumentType.OPTION:
             try:
                 tick = self.live_feed.latest_tick(underlying)
                 if tick is not None:
                     lp = tick.last_price if hasattr(tick, "last_price") else tick.get("last_price", 0)
                     if lp and lp > 0 and signal.price > 0:
                         price_error = abs(signal.price - lp) / lp
-                        if price_error > 0.10:   # >10% away from real tick = synthetic contamination
+                        if price_error > 0.08:   # >8% away from live tick = stale/synthetic price
                             return DecisionCandidate(
                                 underlying, strategy_name, instrument, signal, 0, None,
                                 f"price_sanity_fail:signal={signal.price:.0f}_tick={lp:.0f}_err={price_error:.1%}",
                             )
+                elif instrument.instrument_type != InstrumentType.OPTION and (
+                    execution_mode.value.startswith("LIVE") or bool(getattr(self.live_feed, "is_running", False))
+                ):
+                    # No live tick available — block futures entries entirely (they carry the
+                    # highest notional risk and are most sensitive to price errors).
+                    if instrument.instrument_type == InstrumentType.FUTURE:
+                        return DecisionCandidate(
+                            underlying, strategy_name, instrument, signal, 0, None,
+                            "no_live_tick:futures_entry_blocked_without_price_confirmation",
+                        )
             except Exception:
                 pass
 
@@ -406,63 +417,8 @@ class DecisionPipeline:
         return max(1, int(budget / lot_notional))
 
     def _base_price(self, underlying: str) -> float:
-        # IMPORTANT: These are calibrated to real NSE/BSE market prices (May 2026).
-        # Update weekly by running: scripts/update_base_prices.py
-        # Wrong base prices = synthetic bars at wrong levels = instant stop-loss losses.
-        bases = {
-            # ── Indices ──────────────────────────────────────────────────────────
-            "NIFTY":      23900,
-            "BANKNIFTY":  54400,
-            "FINNIFTY":   25600,
-            "MIDCPNIFTY": 13900,
-            "SENSEX":     76700,
-            "BANKEX":     61300,
-            # ── Large-cap equities (real prices as of May 2026) ──────────────────
-            "RELIANCE":   1452,
-            "TCS":        2444,
-            "INFY":       1175,
-            "HDFCBANK":    770,
-            "ICICIBANK":  1250,
-            "SBIN":       1060,
-            "WIPRO":       201,
-            "KOTAKBANK":   372,
-            "AXISBANK":   1263,
-            "MARUTI":    13428,
-            "SUNPHARMA":  1807,
-            "TATAMOTORS":  341,
-            "BAJFINANCE":  941,
-            "HINDUNILVR": 2292,
-            "BHARTIARTL": 1822,
-            "NTPC":        397,
-            "POWERGRID":   318,
-            "TITAN":      4373,
-            "ASIANPAINT": 2432,
-            "LTIM":       4240,
-            "ONGC":        288,
-            "ITC":         310,
-            "LT":         4036,
-            "HCLTECH":    1196,
-            "M&M":        3077,
-            "COALINDIA":   474,
-            "HEROMOTOCO": 5030,
-            "HINDALCO":   1042,
-            "JSWSTEEL":   1258,
-            "ULTRACEMCO": 11500,  # approx when live feed unavailable
-            "GRASIM":     2854,
-            "BPCL":        297,
-            "CIPLA":      1318,
-            "DRREDDY":    1279,
-            "EICHERMOT":  7261,
-            "ADANIENT":   2471,
-            "ADANIPORTS": 1729,
-            "APOLLOHOSP": 7710,
-            "TATACONSUM": 1150,
-            "TRENT":      4106,
-            "BAJAJFINSV": 1756,
-            "DIVISLAB":   6601,
-            "SHRIRAMFIN":  955,
-        }
-        # Prefer live tick price over hardcoded base — live price is always accurate
+        # Single source of truth: SyntheticDataProvider._BASE_PRICES in data/market_data.py.
+        # Prefer live tick price when available — it is always more accurate than any hardcoded value.
         if self.live_feed is not None:
             try:
                 tick = self.live_feed.latest_tick(underlying)
@@ -472,7 +428,7 @@ class DecisionPipeline:
                         return float(lp)
             except Exception:
                 pass
-        return bases.get(underlying, 1000.0)
+        return self.data_provider._BASE_PRICES.get(underlying, 1000.0)
 
     def _market_time(self, bar: MarketBar) -> datetime:
         if bar.timestamp.tzinfo is None:

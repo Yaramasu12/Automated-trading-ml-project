@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import collections
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -166,7 +167,7 @@ class NewsIntelligence:
     """
 
     def __init__(self) -> None:
-        self._events: list[NewsAnalysis] = []
+        self._events: collections.deque[NewsAnalysis] = collections.deque(maxlen=10_000)
 
     def analyze(self, payload: dict[str, Any]) -> NewsAnalysis:
         now = datetime.now(timezone.utc)
@@ -212,10 +213,13 @@ class NewsIntelligence:
         return analysis
 
     def recent_events(self, limit: int = 50) -> list[dict[str, Any]]:
-        return [event.to_dict() for event in self._events[-limit:]][::-1]
+        import itertools
+        return [event.to_dict() for event in itertools.islice(reversed(self._events), limit)]
 
     def feature_snapshot(self) -> dict[str, Any]:
-        active = [event for event in self._events if event.expires_at > datetime.now(timezone.utc)]
+        events = list(self._events)  # snapshot for thread safety
+        now = datetime.now(timezone.utc)
+        active = [event for event in events if event.expires_at > now]
         mapped_symbols = sorted(
             {
                 symbol

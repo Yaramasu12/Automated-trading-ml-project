@@ -28,8 +28,11 @@ class EquityMomentumStrategy(Strategy):
         if f.momentum_alignment < 0:
             return None
 
-        # Volatility-normalized confidence: strong in calm, weaker in high-vol
-        vol_penalty = min(1.0, 0.015 / max(f.realized_volatility, 0.001))
+        # Volatility-normalized confidence: full weight at ≤1.5% daily vol,
+        # scales down linearly for higher-vol days. The formula is:
+        #   vol_penalty = clamp(ref_vol / realized_vol, 0.3, 1.0)
+        # A day with 3% realized vol gets penalty ≈ 0.5; 1.5% gets 1.0.
+        vol_penalty = max(0.3, min(1.0, 0.015 / max(f.realized_volatility, 0.015)))
         base_conf = 0.55 + (f.trend_strength / 20) * vol_penalty
 
         if f.momentum_5 > self._MOM5_BUY and f.momentum_20 > self._MOM20_BUY:

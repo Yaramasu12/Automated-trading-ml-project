@@ -14,6 +14,9 @@ logger = logging.getLogger(__name__)
 
 EnqueueFn = Callable[[OrderIntent], Awaitable[str]]
 
+# How long to wait for each leg's broker fill before treating it as failed (seconds).
+_LEG_FILL_TIMEOUT = 30.0
+
 
 @dataclass
 class Leg:
@@ -82,12 +85,27 @@ class MultiLegOrderManager:
 
     On any leg failure the filled legs are immediately reversed to avoid
     naked exposure. Fill callbacks notify the exit manager for each filled leg.
+
+    Each leg is submitted to the execution queue, then we wait for the OMS fill
+    event before proceeding to the next leg.  Marking a leg FILLED on enqueue
+    (before broker confirmation) causes phantom P&L and incorrect rollback
+    decisions — the fill event is the authoritative state transition.
     """
 
     def __init__(self, enqueue_fn: EnqueueFn) -> None:
         self._enqueue = enqueue_fn
         self._orders: dict[str, MultiLegOrder] = {}
+        # idempotency_key → asyncio.Event signalled when the fill arrives
+        self._fill_events: dict[str, asyncio.Event] = {}
+        # idempotency_key → Trade from the actual broker fill
         self._fill_registry: dict[str, Trade] = {}
+
+    def notify_fill(self, idempotency_key: str, trade: Trade) -> None:
+        """Called by the fill-callback path (ExecutionScheduler) when a broker fill arrives."""
+        self._fill_registry[idempotency_key] = trade
+        ev = self._fill_events.get(idempotency_key)
+        if ev is not None:
+            ev.set()
 
     async def submit(
         self,
@@ -104,11 +122,30 @@ class MultiLegOrderManager:
         for leg in ml_order.legs:
             if leg.intent is None:
                 continue
+            idem_key = leg.intent.idempotency_key
+            fill_event = asyncio.Event()
+            self._fill_events[idem_key] = fill_event
             try:
                 leg.status = LegStatus.SUBMITTED
                 await self._enqueue(leg.intent)
+                # Wait for the actual broker fill, not just the enqueue acknowledgement.
+                try:
+                    await asyncio.wait_for(fill_event.wait(), timeout=_LEG_FILL_TIMEOUT)
+                except asyncio.TimeoutError:
+                    raise RuntimeError(
+                        f"Leg {leg.leg_id} timed out waiting for broker fill after {_LEG_FILL_TIMEOUT}s"
+                    )
+                trade = self._fill_registry.get(idem_key)
+                if trade is None:
+                    raise RuntimeError(f"Leg {leg.leg_id} fill event set but no trade recorded")
                 leg.status = LegStatus.FILLED
+                leg.fill_price = trade.price
+                leg.filled_at = trade.timestamp
+                leg.broker_order_id = trade.order_id
                 filled_legs.append(leg)
+            except asyncio.CancelledError:
+                # Task cancelled while waiting — propagate so asyncio can clean up properly.
+                raise
             except Exception as exc:
                 leg.status = LegStatus.FAILED
                 leg.error = str(exc)
@@ -121,6 +158,9 @@ class MultiLegOrderManager:
                 ml_order.active = False
                 ml_order.completed_at = datetime.now(timezone.utc)
                 return ml_order
+            finally:
+                self._fill_events.pop(idem_key, None)
+                self._fill_registry.pop(idem_key, None)
 
         ml_order.completed_at = datetime.now(timezone.utc)
         ml_order.active = False
@@ -150,9 +190,6 @@ class MultiLegOrderManager:
                 leg.status = LegStatus.CANCELLED
             except Exception as exc:
                 logger.exception("MultiLeg rollback failed for leg %s: %s", leg.leg_id, exc)
-
-    def register_fill(self, idempotency_key: str, trade: Trade) -> None:
-        self._fill_registry[idempotency_key] = trade
 
     def active_orders(self) -> list[dict]:
         return [o.to_dict() for o in self._orders.values() if o.active]

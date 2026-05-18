@@ -46,7 +46,7 @@ class SyntheticDataProvider:
         start: date,
         days: int = 30,
         base_price: float = 1000.0,
-        drift: float = 0.0015,
+        drift: float = 0.0,
         volatility: float = 0.012,
     ) -> list[MarketBar]:
         rng = random.Random(f"{self.seed}:{symbol}:{start.isoformat()}")
@@ -81,24 +81,33 @@ class SyntheticDataProvider:
             generated += 1
         return bars
 
-    # Real NSE/BSE market prices as of May 2026 — used as synthetic bar anchors.
-    # Update periodically; wrong anchors produce losing backtests.
+    # Real NSE/BSE/MCX market prices as of May 2026 — used as synthetic bar anchors.
+    # IMPORTANT: Keep in sync with DecisionPipeline._base_price() in decision/pipeline.py.
+    # Wrong anchors produce synthetic bars at stale price levels, causing instant stop-losses.
     _BASE_PRICES: dict[str, float] = {
+        # Indices
         "NIFTY": 23900, "BANKNIFTY": 54400, "FINNIFTY": 25600,
         "MIDCPNIFTY": 13900, "SENSEX": 76700, "BANKEX": 61300,
+        # Large-cap equities (real prices as of May 2026)
         "RELIANCE": 1452, "TCS": 2444, "INFY": 1175, "HDFCBANK": 770,
         "ICICIBANK": 1250, "SBIN": 1060, "WIPRO": 201, "KOTAKBANK": 372,
         "AXISBANK": 1263, "MARUTI": 13428, "SUNPHARMA": 1807,
         "TATAMOTORS": 341, "BAJFINANCE": 941, "HINDUNILVR": 2292,
-        "LTIM": 5100, "LT": 3880, "HCLTECH": 1654, "ITC": 413,
-        "BAJAJFINSV": 2105, "TITAN": 3501, "ONGC": 257, "NTPC": 337,
-        "COALINDIA": 383, "POWERGRID": 296, "CIPLA": 1454,
-        "DRREDDY": 1166, "DIVISLAB": 5456, "EICHERMOT": 5390,
-        "APOLLOHOSP": 6801, "GRASIM": 2793, "HINDALCO": 649,
-        "JSWSTEEL": 987, "TATACONSUM": 955, "BHARTIARTL": 1897,
-        "ASIANPAINT": 2214, "ULTRACEMCO": 11680, "HEROMOTOCO": 4097,
-        "BPCL": 289, "SHRIRAMFIN": 650, "M&M": 3069, "TRENT": 5545,
-        "ADANIENT": 2212, "ADANIPORTS": 1343,
+        "LTIM": 4240, "LT": 4036, "HCLTECH": 1196, "ITC": 310,
+        "BAJAJFINSV": 1756, "TITAN": 4373, "ONGC": 288, "NTPC": 397,
+        "COALINDIA": 474, "POWERGRID": 318, "CIPLA": 1318,
+        "DRREDDY": 1279, "DIVISLAB": 6601, "EICHERMOT": 7261,
+        "APOLLOHOSP": 7710, "GRASIM": 2854, "HINDALCO": 1042,
+        "JSWSTEEL": 1258, "TATACONSUM": 1150, "BHARTIARTL": 1822,
+        "ASIANPAINT": 2432, "ULTRACEMCO": 11500, "HEROMOTOCO": 5030,
+        "BPCL": 297, "SHRIRAMFIN": 955, "M&M": 3077, "TRENT": 4106,
+        "ADANIENT": 2471, "ADANIPORTS": 1729,
+        # MCX commodities (per lot unit in INR)
+        "GOLD": 73000, "GOLDM": 73000,
+        "SILVER": 88000, "SILVERMIC": 88000,
+        "CRUDEOIL": 6200, "CRUDEOILM": 6200,
+        "NATURALGAS": 210,
+        "COPPER": 780, "ZINC": 230, "NICKEL": 1450,
     }
 
     def generate_many(self, symbols: Iterable[str], start: date, days: int = 30) -> dict[str, list[MarketBar]]:

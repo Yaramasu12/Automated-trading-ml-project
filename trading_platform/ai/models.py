@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import logging
 import math
 from dataclasses import dataclass
 from statistics import mean, pstdev
 
 from trading_platform.ai.agents import ModelPerformance, ModelSelectionAgent
 from trading_platform.ai.features import FeatureSnapshot
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -483,7 +486,7 @@ class RegimeClassifier:
             try:
                 raw = self._model.predict([self._vec(features)])[0]
             except Exception:
-                # sklearn can raise for malformed inputs; defensively fall back.
+                logger.warning("RegimeClassifier.predict failed; falling back to rule-based", exc_info=True)
                 return self._rule_based(features)
             label = str(raw)
             if label not in self.REGIMES:
@@ -502,6 +505,7 @@ class RegimeClassifier:
                 probs = self._model.predict_proba([self._vec(features)])[0]
                 classes = list(self._model.classes_)
             except Exception:
+                logger.warning("RegimeClassifier.predict_proba failed; falling back to rule-based", exc_info=True)
                 regime = self._rule_based(features)
                 return {r: (1.0 if r == regime else 0.0) for r in self.REGIMES}
             # Filter to only known regimes and renormalise; drop unknowns.
@@ -559,6 +563,7 @@ class RegimeClassifier:
         except FileNotFoundError:
             return False
         except Exception:
+            logger.warning("RegimeClassifier.load failed unexpectedly", exc_info=True)
             return False
 
     @staticmethod
@@ -653,6 +658,7 @@ class MetaModel:
         except FileNotFoundError:
             return False
         except Exception:
+            logger.warning("ModelSelectionAgent.load failed unexpectedly", exc_info=True)
             return False
 
 

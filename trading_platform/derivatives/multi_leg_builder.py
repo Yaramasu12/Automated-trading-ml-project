@@ -14,6 +14,8 @@ from dataclasses import dataclass, field
 from datetime import date, timedelta
 from typing import Callable
 
+from trading_platform.agent.market_hours import now_ist
+
 from trading_platform.data.instrument_master import (
     EQUITY_FO_UNDERLYINGS,
     INDEX_UNDERLYINGS,
@@ -51,7 +53,7 @@ def synthetic_oracle(annual_vol: float = 0.18) -> PremiumOracle:
         if expiry is None:
             dte_days = 7
         else:
-            dte_days = max(1, (expiry - date.today()).days)
+            dte_days = max(1, (expiry - now_ist().date()).days)
         sigma = max(annual_vol, 0.10)
         atm = spot * sigma * math.sqrt(dte_days / 252.0) * 0.4
         # Decay away from ATM by exp(-((K-S)/(sigma*S))²/2). Cheap proxy.

@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
+from trading_platform.domain.enums import InstrumentType
 from trading_platform.domain.models import OrderIntent
 from trading_platform.portfolio.ledger import PortfolioSnapshot
 
@@ -29,11 +30,15 @@ class CapitalProtection:
     def __init__(
         self,
         max_position_pct: float = 0.20,
+        max_futures_margin_pct: float = 0.20,
+        futures_margin_pct: float = 0.12,
         daily_loss_limit_pct: float = 0.02,
         drawdown_halt_pct: float = 0.10,
         margin_multiplier: float = 5.0,
     ) -> None:
         self.max_position_pct = max_position_pct
+        self.max_futures_margin_pct = max_futures_margin_pct
+        self.futures_margin_pct = futures_margin_pct
         self.daily_loss_limit_pct = daily_loss_limit_pct
         self.drawdown_halt_pct = drawdown_halt_pct
         self.margin_multiplier = margin_multiplier
@@ -46,23 +51,44 @@ class CapitalProtection:
     ) -> CapitalCheckResult:
         now = datetime.now(timezone.utc).isoformat()
         equity = snapshot.equity
+        opens_position = bool(intent.signal.metadata.get("opens_position", True))
+        is_future = intent.instrument.instrument_type in {
+            InstrumentType.FUTURE,
+            InstrumentType.COMMODITY_FUTURE,
+        }
+        effective_exposure = (
+            intent.notional_value * self.futures_margin_pct
+            if is_future
+            else intent.notional_value
+        )
+        applicable_limit = self.max_futures_margin_pct if is_future else self.max_position_pct
 
         if equity <= 0:
             return CapitalCheckResult(
                 approved=False,
                 reason="Portfolio equity is zero or negative",
                 available_capital=0.0,
-                required_capital=intent.notional_value,
+                required_capital=effective_exposure,
                 utilization_pct=1.0,
                 checked_at=now,
             )
 
-        if snapshot.drawdown >= self.drawdown_halt_pct:
+        if not opens_position:
+            return CapitalCheckResult(
+                approved=True,
+                reason="OK: position-reducing order",
+                available_capital=snapshot.cash,
+                required_capital=0.0,
+                utilization_pct=0.0,
+                checked_at=now,
+            )
+
+        if opens_position and snapshot.drawdown >= self.drawdown_halt_pct:
             return CapitalCheckResult(
                 approved=False,
                 reason=f"Max drawdown circuit breaker: {snapshot.drawdown:.1%} >= {self.drawdown_halt_pct:.1%}",
                 available_capital=snapshot.cash,
-                required_capital=intent.notional_value,
+                required_capital=effective_exposure,
                 utilization_pct=snapshot.drawdown,
                 checked_at=now,
             )
@@ -78,18 +104,21 @@ class CapitalProtection:
                 checked_at=now,
             )
 
-        max_notional = equity * self.max_position_pct
-        if intent.notional_value > max_notional:
+        max_exposure = equity * applicable_limit
+        if opens_position and effective_exposure > max_exposure:
             return CapitalCheckResult(
                 approved=False,
-                reason=f"Notional {intent.notional_value:,.0f} exceeds {self.max_position_pct:.0%} of equity {equity:,.0f}",
+                reason=(
+                    f"Effective exposure {effective_exposure:,.0f} exceeds "
+                    f"{applicable_limit:.0%} of equity {equity:,.0f}"
+                ),
                 available_capital=snapshot.cash,
-                required_capital=intent.notional_value,
-                utilization_pct=intent.notional_value / equity,
+                required_capital=effective_exposure,
+                utilization_pct=effective_exposure / equity,
                 checked_at=now,
             )
 
-        margin_required = intent.notional_value / self.margin_multiplier
+        margin_required = effective_exposure if is_future else intent.notional_value / self.margin_multiplier
         if margin_required > snapshot.cash:
             return CapitalCheckResult(
                 approved=False,
@@ -104,7 +133,7 @@ class CapitalProtection:
             approved=True,
             reason="OK",
             available_capital=snapshot.cash,
-            required_capital=intent.notional_value,
-            utilization_pct=intent.notional_value / equity,
+            required_capital=effective_exposure,
+            utilization_pct=effective_exposure / equity,
             checked_at=now,
         )
