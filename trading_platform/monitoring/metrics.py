@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import collections
+import itertools
+import threading
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from typing import Any
@@ -68,13 +71,16 @@ class OperationalSnapshot:
 class OperationalMonitor:
     def __init__(self):
         self.started_at = datetime.now(timezone.utc)
-        self.events: list[OperationalEvent] = []
+        self.events: collections.deque[OperationalEvent] = collections.deque(maxlen=10_000)
         self.total_orders = 0
         self.filled_orders = 0
         self.rejected_orders = 0
-        self.latencies_ms: list[float] = []
+        self.latencies_ms: collections.deque[float] = collections.deque(maxlen=10_000)
+        self._latency_sum: float = 0.0
+        self._latency_max: float = 0.0
         # strategy_name -> {fills, realized_pnl, win_count}
         self._strategy_stats: dict[str, dict] = {}
+        self._lock = threading.Lock()
 
     def record_event(
         self,
@@ -94,25 +100,29 @@ class OperationalMonitor:
         )
 
     def record_order(self, order: dict) -> None:
-        self.total_orders += 1
-        status = str(order.get("status", "")).upper()
-        if status == "FILLED":
-            self.filled_orders += 1
-            # Track per-strategy metrics when fill P&L is available
-            strategy = order.get("strategy_name", "unknown")
-            pnl = float(order.get("realized_pnl", 0.0))
-            stats = self._strategy_stats.setdefault(
-                strategy, {"fills": 0, "realized_pnl": 0.0, "win_count": 0}
-            )
-            stats["fills"] += 1
-            stats["realized_pnl"] += pnl
-            if pnl > 0:
-                stats["win_count"] += 1
-        if status in {"REJECTED", "RISK_REJECTED", "CANCELLED"}:
-            self.rejected_orders += 1
-        latency = order.get("latency_ms")
-        if latency is not None:
-            self.latencies_ms.append(float(latency))
+        with self._lock:
+            self.total_orders += 1
+            status = str(order.get("status", "")).upper()
+            if status == "FILLED":
+                self.filled_orders += 1
+                strategy = order.get("strategy_name", "unknown")
+                pnl = float(order.get("realized_pnl", 0.0))
+                stats = self._strategy_stats.setdefault(
+                    strategy, {"fills": 0, "realized_pnl": 0.0, "win_count": 0}
+                )
+                stats["fills"] += 1
+                stats["realized_pnl"] += pnl
+                if pnl > 0:
+                    stats["win_count"] += 1
+            if status in {"REJECTED", "RISK_REJECTED", "CANCELLED"}:
+                self.rejected_orders += 1
+            latency = order.get("latency_ms")
+            if latency is not None:
+                lat = float(latency)
+                self.latencies_ms.append(lat)
+                self._latency_sum += lat
+                if lat > self._latency_max:
+                    self._latency_max = lat
 
     def record_orders(self, orders: list[dict]) -> None:
         for order in orders:
@@ -127,8 +137,9 @@ class OperationalMonitor:
     ) -> OperationalSnapshot:
         now = datetime.now(timezone.utc)
         rejection_rate = self.rejected_orders / self.total_orders if self.total_orders else 0.0
-        average_latency = sum(self.latencies_ms) / len(self.latencies_ms) if self.latencies_ms else 0.0
-        max_latency = max(self.latencies_ms) if self.latencies_ms else 0.0
+        n_lat = len(self.latencies_ms)
+        average_latency = self._latency_sum / n_lat if n_lat else 0.0
+        max_latency = self._latency_max
         status = "HEALTHY"
         if kill_switch_active:
             status = "HALTED"
@@ -166,4 +177,4 @@ class OperationalMonitor:
         )
 
     def recent_events(self, limit: int = 20) -> list[dict]:
-        return [event.to_dict() for event in self.events[-limit:]]
+        return [event.to_dict() for event in itertools.islice(reversed(self.events), limit)][::-1]

@@ -44,13 +44,14 @@ class QiskitBackend:
             logger.warning("QiskitBackend: optimization error: %s", exc)
             return None
 
-    def _run_qaoa(self, req: PortfolioOptimizationRequest) -> tuple[list[int], float]:
-        from trading_platform.quantum.qubo import build_qubo, evaluate_solution
+    def _run_qaoa(self, req: PortfolioOptimizationRequest) -> tuple[list[int], float] | None:
+        from trading_platform.quantum.qubo import build_qubo
         # Build QUBO then run QAOA sampler
         qubo = build_qubo(req)
         n = qubo.n
         if n == 0:
             return [], 0.0
-        # Placeholder: returns all-zero solution (no Qiskit execution without real backend)
-        sol = [0] * n
-        return sol, evaluate_solution(sol, req)
+        # Real QAOA execution not yet implemented — signal unavailable so
+        # the service falls back to classical rather than accepting all-zeros.
+        logger.warning("QiskitBackend._run_qaoa: real execution not implemented; returning None")
+        return None

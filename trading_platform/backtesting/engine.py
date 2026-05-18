@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import logging
 from dataclasses import asdict, dataclass, replace
 from datetime import date, datetime, time, timedelta
+
+logger = logging.getLogger(__name__)
 
 from trading_platform.ai.agents import MarketRegimeAgent, StrategySelectionAgent
 from trading_platform.ai.features import FeatureEngine
@@ -17,6 +20,7 @@ from trading_platform.execution.router import ExecutionReport, ExecutionRouter
 from trading_platform.portfolio.ledger import PortfolioLedger
 from trading_platform.risk.engine import RiskEngine, RiskLimits
 from trading_platform.strategies.factory import StrategyFactory
+from trading_platform.agent.market_hours import now_ist
 
 
 @dataclass(frozen=True)
@@ -71,7 +75,7 @@ class BacktestEngine:
         # caller and we must not mutate them.
         self._default_master_cache: dict[date, InstrumentMaster] = {}
         if self._uses_default_master:
-            self._default_master_cache[date.today()] = self.instrument_master
+            self._default_master_cache[now_ist().date()] = self.instrument_master
         self._iv_calculator = ImpliedVolatilityCalculator()
 
     def run(
@@ -282,7 +286,7 @@ class BacktestEngine:
             # Not enough metadata to price properly — degrade gracefully.
             return max(1.0, underlying_price * 0.015)
 
-        as_of = as_of or date.today()
+        as_of = as_of or now_ist().date()
         # Intrinsic value at/after expiry is the exact correct exit price.
         if expiry is not None and expiry <= as_of:
             if option_type == OptionType.CE:
@@ -307,6 +311,7 @@ class BacktestEngine:
                     option_type=option_type,
                 )
             except Exception:
+                logger.debug("IV calculation failed for %s; using σ=0.25 fallback", strike, exc_info=True)
                 sigma = 0.25
         try:
             t = days_to_expiry / 365.0
@@ -319,6 +324,7 @@ class BacktestEngine:
                 r=0.06,
             )
         except Exception:
+            logger.debug("BS pricing failed for strike=%s; using 1.5%% spot fallback", strike, exc_info=True)
             price = underlying_price * 0.015
         return max(price, instrument.tick_size or 0.05)
 

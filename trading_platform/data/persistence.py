@@ -128,6 +128,7 @@ class TradingDatabase:
         if not getattr(self._local, "conn", None):
             conn = sqlite3.connect(str(self.db_path), check_same_thread=False)
             conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA synchronous=NORMAL")
             conn.execute("PRAGMA foreign_keys=ON")
             conn.row_factory = sqlite3.Row
             self._local.conn = conn

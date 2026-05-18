@@ -4,6 +4,8 @@ from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from enum import Enum
 
+from trading_platform.agent.market_hours import now_ist
+
 
 class GoalPhase(str, Enum):
     ON_TRACK = "ON_TRACK"
@@ -46,7 +48,7 @@ class GoalGovernance:
         drawdown_halt_pct: float = 0.10,
     ) -> None:
         self.annual_target_pct = annual_target_pct
-        self.start_date = start_date or date(datetime.now(timezone.utc).year, 1, 1)
+        self.start_date = start_date or date(now_ist().year, 1, 1)
         self.start_capital = start_capital
         self.drawdown_halt_pct = drawdown_halt_pct
 
@@ -86,7 +88,9 @@ class GoalGovernance:
                 message=f"Trading halted: drawdown {drawdown:.1%} >= limit {self.drawdown_halt_pct:.1%}",
             )
 
-        if gap_pct > 0 and required_run_rate > actual_run_rate * 2:
+        # Floor actual_run_rate at 0 before doubling: negative run-rate × 2 is more
+        # negative, which makes the condition trivially true whenever we're losing money.
+        if gap_pct > 0 and required_run_rate > max(actual_run_rate, 0.0) * 2:
             return GoalState(
                 phase=GoalPhase.AT_RISK,
                 annual_target_pct=self.annual_target_pct,

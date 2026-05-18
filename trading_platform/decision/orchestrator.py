@@ -19,6 +19,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
+from trading_platform.agent.market_hours import now_ist
 from trading_platform.agent.trading_agent import SCAN_UNDERLYINGS
 from trading_platform.agents.schemas import AgentInputContext
 from trading_platform.decision_fusion.schemas import DecisionBlackboard
@@ -121,7 +122,7 @@ class DecisionCycleOrchestrator:
         return [str(item).upper() for item in raw if str(item).strip()]
 
     def _start_from_payload(self, payload: dict) -> date:
-        default_start = (date.today() - timedelta(days=60)).isoformat()
+        default_start = (now_ist().date() - timedelta(days=60)).isoformat()
         return date.fromisoformat(str(payload.get("start", default_start)))
 
     def _scan_mode_from_payload(self, payload: dict) -> ExecutionMode:
@@ -472,7 +473,7 @@ class DecisionCycleOrchestrator:
 
     def _bars_map_for_neural(self, symbols: list[str]) -> dict[str, list[dict]]:
         bars_map: dict[str, list[dict]] = {}
-        start = date.today() - timedelta(days=60)
+        start = now_ist().date() - timedelta(days=60)
         for sym in list(symbols)[:10]:
             try:
                 bars = self._rt.synthetic_data.generate_daily_bars(sym, start, days=60)

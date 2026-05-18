@@ -5,7 +5,7 @@ from dataclasses import asdict, dataclass
 from datetime import date, datetime, timezone
 from typing import TYPE_CHECKING
 
-from trading_platform.agent.market_hours import is_entry_allowed
+from trading_platform.agent.market_hours import is_entry_allowed, now_ist
 from trading_platform.ai.agents import MarketRegimeAgent, StrategySelectionAgent
 from trading_platform.ai.features import FeatureEngine, FeatureSnapshot
 from trading_platform.ai.models import VolatilityForecast, VolatilityForecaster
@@ -254,7 +254,7 @@ class DecisionPipeline:
                 instrument = self.instrument_master.get(underlying)
                 from datetime import datetime as _dt
                 from_dt = _dt.combine(start, _dt.min.time())
-                to_dt = _dt.combine(date.today(), _dt.min.time())
+                to_dt = _dt.combine(now_ist().date(), _dt.min.time())
                 bars = self.history_provider.get_candles(instrument, from_dt, to_dt, interval="ONE_DAY")
                 if len(bars) >= min_bars:
                     return bars[-min_bars:]

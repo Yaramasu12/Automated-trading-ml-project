@@ -739,7 +739,7 @@ def api_v1_news_events(limit: int = 50):
     return news_events(limit)
 
 
-@app.post("/api/v1/news/analyze")
+@app.post("/api/v1/news/analyze", dependencies=[_AuthDep])
 def api_v1_news_analyze(payload: dict):
     return analyze_news(payload)
 

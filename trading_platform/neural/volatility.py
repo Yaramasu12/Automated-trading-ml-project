@@ -7,14 +7,50 @@ from typing import Any
 
 from trading_platform.neural.schemas import TailRiskPrediction, VolatilityPrediction
 
+# Grid used for MLE parameter search; kept small for O(1) prediction latency.
+_ALPHA_GRID = (0.05, 0.08, 0.10, 0.12, 0.15, 0.20)
+_BETA_GRID = (0.70, 0.75, 0.80, 0.85, 0.88, 0.90)
+
+
+def _fit_garch(returns: list[float]) -> tuple[float, float, float]:
+    """Grid-search MLE for GARCH(1,1) omega/alpha/beta on the provided returns.
+
+    Returns (omega, alpha, beta). Falls back to EWMA-derived defaults when
+    the returns series is too short for a reliable fit (< 20 observations).
+    """
+    n = len(returns)
+    sigma2_bar = sum(r * r for r in returns) / n
+
+    if n < 20:
+        # EWMA fallback: alpha=0.06, beta=0.94 (RiskMetrics-style)
+        alpha, beta = 0.06, 0.94
+        return sigma2_bar * (1.0 - alpha - beta), alpha, beta
+
+    best_ll = float("-inf")
+    best_alpha, best_beta = 0.10, 0.85
+    for alpha in _ALPHA_GRID:
+        for beta in _BETA_GRID:
+            if alpha + beta >= 0.9999:
+                continue
+            omega = sigma2_bar * (1.0 - alpha - beta)
+            if omega <= 0:
+                continue
+            h = sigma2_bar
+            ll = 0.0
+            for r in returns:
+                h = omega + alpha * r * r + beta * h
+                h = max(h, 1e-12)
+                ll -= 0.5 * (math.log(h) + r * r / h)
+            if ll > best_ll:
+                best_ll = ll
+                best_alpha, best_beta = alpha, beta
+
+    omega = sigma2_bar * (1.0 - best_alpha - best_beta)
+    return max(omega, 1e-12), best_alpha, best_beta
+
 
 class GARCHVolatilityModel:
-    """Simplified GARCH(1,1) baseline. Deterministic; no optional dependencies."""
-
-    def __init__(self, omega: float = 1e-6, alpha: float = 0.05, beta: float = 0.90) -> None:
-        self.omega = omega
-        self.alpha = alpha
-        self.beta = beta
+    """GARCH(1,1) with MLE-fitted parameters. No optional dependencies."""
 
     def predict(self, symbol: str, returns: list[float]) -> VolatilityPrediction:
         if not returns:
@@ -23,12 +59,14 @@ class GARCHVolatilityModel:
                 garch_volatility=0.2, tail_risk_score=0.5,
             )
 
-        # Estimate unconditional variance
+        omega, alpha, beta = _fit_garch(returns)
+
+        # Run GARCH recursion over the full series to get current conditional variance
         var = sum(r ** 2 for r in returns) / len(returns)
-        # Run GARCH recursion
-        for r in returns[-30:]:
-            var = self.omega + self.alpha * r ** 2 + self.beta * var
-        daily_vol = math.sqrt(max(var, 1e-10))
+        for r in returns:
+            var = omega + alpha * r ** 2 + beta * var
+            var = max(var, 1e-12)
+        daily_vol = math.sqrt(var)
         ann_vol = daily_vol * math.sqrt(252)
 
         # Simple tail-risk proxy: fraction of returns beyond 2σ
@@ -47,7 +85,10 @@ class GARCHVolatilityModel:
 
 
 class DeepVolatilityForecaster:
-    """Optional deep volatility model — lazy import; graceful fallback."""
+    """Optional deep volatility model — lazy import; graceful fallback to GARCH."""
+
+    def __init__(self) -> None:
+        self._garch = GARCHVolatilityModel()
 
     def is_available(self) -> bool:
         try:
@@ -56,10 +97,9 @@ class DeepVolatilityForecaster:
         except ImportError:
             return False
 
-    def predict(self, symbol: str, returns: list[float]) -> VolatilityPrediction | None:
-        if not self.is_available():
-            return None
-        return None  # Placeholder until model weights loaded
+    def predict(self, symbol: str, returns: list[float]) -> VolatilityPrediction:
+        # Deep model weights not yet loaded; GARCH is always the production path.
+        return self._garch.predict(symbol, returns)
 
 
 class TailRiskModel:

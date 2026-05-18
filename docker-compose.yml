@@ -13,10 +13,53 @@ services:
       - ./data:/app/data
       - ./backtest_results:/app/backtest_results
       - ./models:/app/models
-    env_file:
-      - .env
+    # Secrets are injected from the host environment, not from a mounted .env file.
+    # Export variables in your shell (or CI/CD secrets store) before running
+    # docker compose up. See .env.example for the full list of required variables.
     environment:
       - PYTHONUNBUFFERED=1
+      - EXECUTION_MODE=${EXECUTION_MODE:-BACKTEST}
+      - BROKER=${BROKER:-ANGEL_ONE}
+      - LIVE_TRADING_ENABLED=${LIVE_TRADING_ENABLED:-false}
+      - INITIAL_CAPITAL=${INITIAL_CAPITAL:-1000000}
+      - MAX_DRAWDOWN=${MAX_DRAWDOWN:-0.10}
+      - MAX_DAILY_LOSS=${MAX_DAILY_LOSS:-0.02}
+      - MAX_POSITION_PCT=${MAX_POSITION_PCT:-0.05}
+      - MAX_MARGIN_UTILIZATION=${MAX_MARGIN_UTILIZATION:-0.60}
+      - LIVE_ORDER_CONFIRMATION=${LIVE_ORDER_CONFIRMATION:-}
+      - ANGEL_ONE_API_KEY=${ANGEL_ONE_API_KEY:-}
+      - ANGEL_ONE_API_SECRET=${ANGEL_ONE_API_SECRET:-}
+      - ANGEL_ONE_CLIENT_CODE=${ANGEL_ONE_CLIENT_CODE:-}
+      - ANGEL_ONE_PIN=${ANGEL_ONE_PIN:-}
+      - ANGEL_ONE_TOTP_SECRET=${ANGEL_ONE_TOTP_SECRET:-}
+      - ANGEL_ONE_INSTRUMENT_MASTER_URL=${ANGEL_ONE_INSTRUMENT_MASTER_URL:-https://margincalculator.angelone.in/OpenAPI_File/files/OpenAPIScripMaster.json}
+      - ANGEL_ONE_INSTRUMENT_CACHE_PATH=${ANGEL_ONE_INSTRUMENT_CACHE_PATH:-data/processed/angel_one_instruments.json}
+      # Set API_AUTH_TOKEN in your shell/CI secrets before running in production.
+      # Local dev: auth is disabled by default so the container starts without a token.
+      # Production: export API_AUTH_REQUIRED=true API_AUTH_TOKEN=<your-secret> before compose up.
+      - API_AUTH_TOKEN=${API_AUTH_TOKEN:-}
+      - API_AUTH_REQUIRED=${API_AUTH_REQUIRED:-false}
+      - API_CORS_ORIGINS=${API_CORS_ORIGINS:-http://localhost:5173,http://127.0.0.1:5173}
+      - AUTO_START_AGENT=${AUTO_START_AGENT:-false}
+      - AUTO_START_LIVE_FEED=${AUTO_START_LIVE_FEED:-false}
+      - AUTO_LOAD_INSTRUMENT_CACHE=${AUTO_LOAD_INSTRUMENT_CACHE:-true}
+      - AUTO_LOAD_MODELS=${AUTO_LOAD_MODELS:-false}
+      - PREMARKET_REFRESH_INSTRUMENTS=${PREMARKET_REFRESH_INSTRUMENTS:-false}
+      - LIVE_FEED_DEFAULT_SYMBOLS=${LIVE_FEED_DEFAULT_SYMBOLS:-NIFTY,BANKNIFTY,FINNIFTY,SENSEX,RELIANCE,TCS,INFY,HDFCBANK,ICICIBANK,SBIN}
+      - LIVE_FEED_MAX_SYMBOLS=${LIVE_FEED_MAX_SYMBOLS:-80}
+      - ENABLE_AI_COUNCIL=${ENABLE_AI_COUNCIL:-false}
+      - ENABLE_NEURAL_LAB=${ENABLE_NEURAL_LAB:-false}
+      - ENABLE_QUANTUM_LAB=${ENABLE_QUANTUM_LAB:-false}
+      - ENABLE_MARL_LAB=${ENABLE_MARL_LAB:-false}
+      - ENABLE_GOAL_GOVERNOR=${ENABLE_GOAL_GOVERNOR:-false}
+      - LOCAL_LLM_GATEWAY=${LOCAL_LLM_GATEWAY:-disabled}
+      - LOCAL_LLM_RUNTIME=${LOCAL_LLM_RUNTIME:-stub}
+      - LOCAL_LLM_BASE_URL=${LOCAL_LLM_BASE_URL:-http://localhost:11434}
+      - QUANTUM_BACKEND=${QUANTUM_BACKEND:-classical}
+      - QUANTUM_TIMEOUT_SECONDS=${QUANTUM_TIMEOUT_SECONDS:-3}
+      - YEARLY_PROFIT_TARGET=${YEARLY_PROFIT_TARGET:-50000000}
+      - AWS_REGION=${AWS_REGION:-ap-south-1}
+      - TRADING_API_BASE_URL=${TRADING_API_BASE_URL:-http://trading-api:8000}
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
       interval: 30s
@@ -34,10 +77,21 @@ services:
     command: ["python", "scripts/daily_scheduler.py"]
     volumes:
       - ./data:/app/data
-    env_file:
-      - .env
+    # Inherit the same environment variables from host; no .env file mount.
     environment:
       - PYTHONUNBUFFERED=1
+      - EXECUTION_MODE=${EXECUTION_MODE:-BACKTEST}
+      - BROKER=${BROKER:-ANGEL_ONE}
+      - ANGEL_ONE_API_KEY=${ANGEL_ONE_API_KEY:-}
+      - ANGEL_ONE_API_SECRET=${ANGEL_ONE_API_SECRET:-}
+      - ANGEL_ONE_CLIENT_CODE=${ANGEL_ONE_CLIENT_CODE:-}
+      - ANGEL_ONE_PIN=${ANGEL_ONE_PIN:-}
+      - ANGEL_ONE_TOTP_SECRET=${ANGEL_ONE_TOTP_SECRET:-}
+      - API_AUTH_TOKEN=${API_AUTH_TOKEN:-}
+      - TRADING_API_BASE_URL=${TRADING_API_BASE_URL:-http://trading-api:8000}
+      - INITIAL_CAPITAL=${INITIAL_CAPITAL:-1000000}
+      - MAX_DRAWDOWN=${MAX_DRAWDOWN:-0.10}
+      - MAX_DAILY_LOSS=${MAX_DAILY_LOSS:-0.02}
     depends_on:
       trading-api:
         condition: service_healthy

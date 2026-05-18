@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import logging
 import zoneinfo
 from datetime import date, datetime, time, timedelta
+
+logger = logging.getLogger(__name__)
 
 IST = zoneinfo.ZoneInfo("Asia/Kolkata")
 
@@ -18,8 +21,9 @@ _MCX_CLOSE = time(23, 30)
 _MCX_ENTRY_CUTOFF = time(23, 25)   # no new commodity entries after this
 _MCX_EOD_SQUAREOFF = time(23, 25)  # force-close all commodity positions
 
-# NSE holidays 2026
+# NSE holidays 2026 + 2027
 _HOLIDAYS: set[date] = {
+    # 2026
     date(2026, 1, 26),  # Republic Day
     date(2026, 3, 25),  # Holi
     date(2026, 4, 3),   # Good Friday
@@ -29,7 +33,19 @@ _HOLIDAYS: set[date] = {
     date(2026, 10, 2),  # Gandhi Jayanti
     date(2026, 11, 4),  # Diwali Laxmi Puja
     date(2026, 12, 25), # Christmas
+    # 2027
+    date(2027, 1, 26),  # Republic Day
+    date(2027, 3, 15),  # Holi
+    date(2027, 3, 26),  # Good Friday
+    date(2027, 4, 14),  # Ambedkar Jayanti / Dr. Ambedkar Jayanti
+    date(2027, 5, 1),   # Maharashtra Day
+    date(2027, 8, 15),  # Independence Day
+    date(2027, 10, 2),  # Gandhi Jayanti
+    date(2027, 10, 20), # Diwali Laxmi Puja (tentative — verify NSE circular)
+    date(2027, 12, 25), # Christmas
 }
+
+_MAX_HOLIDAY_YEAR = max(d.year for d in _HOLIDAYS)
 
 
 def now_ist() -> datetime:
@@ -38,6 +54,11 @@ def now_ist() -> datetime:
 
 def is_trading_day(d: date | None = None) -> bool:
     d = d or now_ist().date()
+    if d.year > _MAX_HOLIDAY_YEAR:
+        logger.warning(
+            "market_hours: no holiday data for %d — update _HOLIDAYS in market_hours.py",
+            d.year,
+        )
     return d.weekday() < 5 and d not in _HOLIDAYS
 
 

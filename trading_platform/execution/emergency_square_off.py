@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -52,13 +53,24 @@ class EmergencySquareOff:
                 continue
             if scope == SquareOffScope.SYMBOL and pos.instrument.symbol != symbol:
                 continue
+            if scope == SquareOffScope.STRATEGY:
+                if not strategy_name:
+                    # No strategy name given — skip all (safer than closing everything)
+                    continue
+                pos_strategy = getattr(pos, "strategy_name", None)
+                if pos_strategy != strategy_name:
+                    continue
             if _symbols_filter is not None and pos.instrument.symbol not in _symbols_filter:
                 continue
             targets.append(pos)
 
         intents_enqueued: list[str] = []
         errors: list[str] = []
-        self._send_alert(scope=scope, targets=len(targets), reason=reason, symbol=symbol)
+        # Fire webhook asynchronously so we don't block position closure
+        asyncio.get_event_loop().run_in_executor(
+            None, self._send_alert,
+            scope, len(targets), reason, symbol
+        )
 
         for pos in targets:
             close_side = Side.SELL if pos.quantity > 0 else Side.BUY
@@ -108,7 +120,6 @@ class EmergencySquareOff:
 
     def _send_alert(
         self,
-        *,
         scope: SquareOffScope,
         targets: int,
         reason: str,

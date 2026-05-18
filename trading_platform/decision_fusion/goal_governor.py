@@ -6,12 +6,15 @@ SAFETY: GoalGovernor can NEVER automatically raise hard risk limits.
 It can only recommend increasing research intensity or reducing risk.
 """
 
+import collections
 import math
 import logging
 import random
 from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
 from typing import TYPE_CHECKING
+
+from trading_platform.agent.market_hours import now_ist
 
 logger = logging.getLogger(__name__)
 
@@ -66,20 +69,22 @@ class GoalGovernor:
         self._max_drawdown_budget = max_drawdown_budget
         self._initial_capital = initial_capital
         self._rng = random.Random(seed)
-        self._daily_pnls: list[float] = []
+        self._daily_pnls: collections.deque[float] = collections.deque(maxlen=252)
+        self._total_days: int = 0
         self._realized_pnl = 0.0
         self._peak_equity = initial_capital
-        self._start_date = date.today()
+        self._start_date = now_ist().date()
 
     def record_daily_pnl(self, pnl: float, equity: float) -> None:
         self._daily_pnls.append(pnl)
+        self._total_days += 1
         self._realized_pnl += pnl
         if equity > self._peak_equity:
             self._peak_equity = equity
 
     def compute_state(self, equity: float | None = None) -> GoalState:
         current_equity = equity or (self._initial_capital + self._realized_pnl)
-        days_elapsed = max(1, len(self._daily_pnls))
+        days_elapsed = max(1, self._total_days)
         days_remaining = max(1, 252 - days_elapsed)
 
         drawdown = (self._peak_equity - current_equity) / max(self._peak_equity, 1.0)

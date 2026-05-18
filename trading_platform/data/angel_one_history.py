@@ -33,17 +33,25 @@ class AngelOneHistoricalDataProvider:
             "todate": to_dt.strftime("%Y-%m-%d %H:%M"),
         }
         # Try with cached session first; on any failure re-authenticate once.
+        last_response = None
+        last_exc: Exception | None = None
         for attempt in range(2):
             smart_api = self._smart_api or self._login()
             try:
-                response = smart_api.getCandleData(params)
-            except Exception:
-                response = None
-            if response and response.get("status"):
-                return [_parse_candle(instrument.symbol, candle) for candle in response.get("data") or []]
+                last_response = smart_api.getCandleData(params)
+                last_exc = None
+            except Exception as exc:
+                last_response = None
+                last_exc = exc
+            if last_response and last_response.get("status"):
+                return [_parse_candle(instrument.symbol, candle) for candle in last_response.get("data") or []]
             # Session likely expired — force re-login on next attempt
             self._smart_api = None
-        raise RuntimeError(f"Angel One candle request failed after re-auth: {response}")
+        if last_exc is not None:
+            raise RuntimeError(
+                f"Angel One candle request failed after re-auth for {instrument.symbol}: {last_exc}"
+            ) from last_exc
+        raise RuntimeError(f"Angel One candle request failed after re-auth: {last_response}")
 
     def _login(self):
         if not self.settings.angel_one_configured:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import collections
 import json
 import logging
 import math
@@ -61,6 +62,7 @@ from trading_platform.risk.event_risk import EventRiskGuard
 from trading_platform.risk.manual_approval import ManualApprovalGate
 from trading_platform.strategies.factory import StrategyFactory
 from trading_platform.agent.trading_agent import TradingAgent, SCAN_UNDERLYINGS
+from trading_platform.agent.market_hours import now_ist
 
 # ── Phase 1–9: new components (lazy-safe imports) ─────────────────────────────
 from trading_platform.trace.ids import new_trace_id
@@ -144,8 +146,8 @@ class TradingRuntime:
         self.feature_store = FeatureStore()
         self.iv_surface_builder = IVSurfaceBuilder()
         # In-memory logs for dashboard visibility
-        self._risk_rejection_log: list[dict] = []   # last 500 risk rejections
-        self._agent_trade_log: list[dict] = []      # every entry/exit fill the agent sees
+        self._risk_rejection_log: collections.deque[dict] = collections.deque(maxlen=500)
+        self._agent_trade_log: collections.deque[dict] = collections.deque(maxlen=500)
         self._entry_fill_context: dict[str, dict] = {}  # symbol -> {strategy, regime, entry_price}
         self.walk_forward_evaluator = WalkForwardEvaluator(self.backtest_engine)
         self.synthetic_data = SyntheticDataProvider()
@@ -213,8 +215,12 @@ class TradingRuntime:
         self.multi_leg_manager = MultiLegOrderManager(self.scheduler.enqueue)
         self.square_off_manager = EmergencySquareOff(self.portfolio, self.scheduler.enqueue)
 
-        # Register fill callback: create exit plan after every entry fill
+        # Register fill callbacks
         self.scheduler.register_fill_callback(self._on_fill)
+        # Wire multi-leg fill notifications so spread legs don't time out and roll back
+        self.scheduler.register_fill_callback(
+            lambda trade, intent: self.multi_leg_manager.notify_fill(intent.idempotency_key, trade)
+        )
 
         # Goal governance
         self.goal_governance = GoalGovernance(
@@ -263,11 +269,6 @@ class TradingRuntime:
             except Exception:
                 pass
 
-        # ── Gap 2: VectorMemory + RAG ─────────────────────────────────────────
-        self._vector_store = VectorMemoryStore()
-        self._vector_store.seed_defaults()
-        self._rag_retriever = RAGRetriever(self._vector_store)
-
         # ── Gap 3: Typed streaming bus ────────────────────────────────────────
         # Wraps existing InMemoryEventBus; backward-compat — all existing
         # callers of self.event_bus continue to work unchanged.
@@ -281,27 +282,46 @@ class TradingRuntime:
             lambda sym, rec: publish_features(self.typed_bus, sym, rec)
         )
 
-        # LLM gateway now includes the RAG retriever so every agent call
-        # is grounded in the VectorMemoryStore.
-        self._llm_gateway = LocalModelGateway(
-            runtime=self.settings.local_llm_runtime,
-            base_url=self.settings.local_llm_base_url,
-            timeout=self.settings.local_llm_timeout_seconds,
-            max_tokens=self.settings.local_llm_max_output_tokens,
-            rag_retriever=self._rag_retriever,
-        )
-        self._agent_council = AgentCouncilSupervisor(
-            gateway=self._llm_gateway,
-            trace_store=self.trace_store,
-        )
-        self._neural_service = NeuralPredictionService(trace_store=self.trace_store)
-        self._quantum_service = QuantumOptimizationService(
-            backend=self.settings.quantum_backend,
-            timeout=self.settings.quantum_timeout_seconds,
-            min_baseline_improvement=self.settings.quantum_min_baseline_improvement,
-            trace_store=self.trace_store,
-        )
+        # ── Gap 2: VectorMemory + RAG (only needed when AI council is active) ──
+        if self.settings.enable_ai_council:
+            self._vector_store = VectorMemoryStore()
+            self._vector_store.seed_defaults()
+            self._rag_retriever = RAGRetriever(self._vector_store)
+            self._llm_gateway = LocalModelGateway(
+                runtime=self.settings.local_llm_runtime,
+                base_url=self.settings.local_llm_base_url,
+                timeout=self.settings.local_llm_timeout_seconds,
+                max_tokens=self.settings.local_llm_max_output_tokens,
+                rag_retriever=self._rag_retriever,
+            )
+            self._agent_council = AgentCouncilSupervisor(
+                gateway=self._llm_gateway,
+                trace_store=self.trace_store,
+            )
+        else:
+            self._vector_store = None
+            self._rag_retriever = None
+            self._llm_gateway = None
+            self._agent_council = None
+
+        if self.settings.enable_neural_lab:
+            self._neural_service = NeuralPredictionService(trace_store=self.trace_store)
+        else:
+            self._neural_service = None
+
+        if self.settings.enable_quantum_lab:
+            self._quantum_service = QuantumOptimizationService(
+                backend=self.settings.quantum_backend,
+                timeout=self.settings.quantum_timeout_seconds,
+                min_baseline_improvement=self.settings.quantum_min_baseline_improvement,
+                trace_store=self.trace_store,
+            )
+        else:
+            self._quantum_service = None
+        # Kernel service is shadow-only and has no external deps — always instantiate.
         self._quantum_kernel_service = QuantumKernelResearchService()
+
+        # Ensemble engine and goal governor are lightweight; always instantiate.
         self._ensemble_engine = EnsembleDecisionEngine()
         self._goal_governor = GoalGovernor(
             yearly_target=self.settings.yearly_profit_target,
@@ -613,8 +633,6 @@ class TradingRuntime:
                     "ts": now_ts, "type": "EXIT", "symbol": symbol,
                     "strategy": strategy_name, "side": side, "exit_price": fill_price,
                 })
-            if len(self._agent_trade_log) > 500:
-                self._agent_trade_log = self._agent_trade_log[-500:]
             # Remove persisted exit plan now that the position is closed
             try:
                 self.db.delete_exit_plans_for_symbol(symbol, execution_mode=exec_mode)
@@ -688,8 +706,6 @@ class TradingRuntime:
             "strategy": strategy_name, "side": side, "entry_price": fill_price,
             "quantity": intent.quantity,
         })
-        if len(self._agent_trade_log) > 500:
-            self._agent_trade_log = self._agent_trade_log[-500:]
 
         # ── Create ExitPlan — use strategy-specific exit rules and ATR stops ──
         expiry_date = intent.instrument.expiry
@@ -847,6 +863,13 @@ class TradingRuntime:
         if self.settings.auto_load_instrument_cache:
             self._load_cached_instruments_if_available()
 
+        # Restore state BEFORE starting the feed/agent so the agent sees
+        # already-open positions and doesn't create duplicates on its first tick.
+        await self.restore_state()
+        # Seed the session-start equity so the daily-loss circuit breaker has a baseline.
+        # Must be called after restore_state() so portfolio cash is accurate.
+        self.scheduler.set_session_start_equity(self.portfolio.equity)
+
         live_feed_started = False
         agent_started = False
         if self.settings.auto_start_live_feed and self.settings.angel_one_configured:
@@ -858,11 +881,6 @@ class TradingRuntime:
         if self.settings.auto_start_agent:
             self.agent.start()
             agent_started = True
-
-        await self.restore_state()
-        # Seed the session-start equity so the daily-loss circuit breaker has a baseline.
-        # Must be called after restore_state() so portfolio cash is accurate.
-        self.scheduler.set_session_start_equity(self.portfolio.equity)
         self.monitor.record_event(
             "async_services_started",
             (
@@ -1911,7 +1929,7 @@ class TradingRuntime:
             correlated_exposure_pct=float(payload.get("correlated_exposure_pct", 0.0)),
             margin_utilization=float(payload.get("margin_utilization", 0.0)),
             orders_sent_today=self.compliance.orders_today,
-            trades_today=max(1, int(self.scheduler.stats.get("processed", 0))),
+            trades_today=int(self.scheduler.stats.get("processed", 0)),
         )
         if not risk_decision.approved:
             decision = FinalGateDecision.reject(
@@ -1966,8 +1984,6 @@ class TradingRuntime:
             "regime": intent.signal.metadata.get("regime", ""),
         }
         self._risk_rejection_log.append(row)
-        if len(self._risk_rejection_log) > 500:
-            self._risk_rejection_log = self._risk_rejection_log[-500:]
         self.oms.append(
             event_type="risk_rejected",
             order_id=intent.idempotency_key,
@@ -2050,7 +2066,7 @@ class TradingRuntime:
             raise ValueError("Shadow paper run requires runtime mode PAPER")
         payload = payload or {}
         underlyings = [str(item).upper() for item in payload.get("underlyings", SCAN_UNDERLYINGS)]
-        _default_start = (date.today() - timedelta(days=60)).isoformat()
+        _default_start = (now_ist().date() - timedelta(days=60)).isoformat()
         start = date.fromisoformat(str(payload.get("start", _default_start)))
         days = int(payload.get("days", 60))
         strategy_names = [str(item) for item in payload["strategy_names"]] if payload.get("strategy_names") else None
@@ -2183,7 +2199,7 @@ class TradingRuntime:
         return marks
 
     def expiries(self, underlying: str) -> dict:
-        today = date.today()
+        today = now_ist().date()
         expiries = self.expiry_calendar.expiries(underlying.upper(), today)
         return {
             "underlying": underlying.upper(),
@@ -2199,9 +2215,9 @@ class TradingRuntime:
             if tick and tick.last_price > 0:
                 spot_price = tick.last_price
         spot = float(spot_price or 0.0)
-        expiry_date = date.fromisoformat(expiry) if expiry else self.expiry_calendar.nearest(underlying, date.today())
+        expiry_date = date.fromisoformat(expiry) if expiry else self.expiry_calendar.nearest(underlying, now_ist().date())
         chain = self.option_chain_builder.build(underlying, expiry_date)
-        dte = max(1, (expiry_date - date.today()).days)
+        dte = max(1, (expiry_date - now_ist().date()).days)
         liquid_strikes = chain.liquid_strikes(spot) if spot else chain.strikes
 
         def enrich(instrument, option_type: str) -> dict:
@@ -2277,12 +2293,12 @@ class TradingRuntime:
     def target_progress(self, payload: dict | None = None) -> dict:
         payload = payload or {}
         start_raw = payload.get("start_date", "2026-01-01")
-        as_of_raw = payload.get("as_of", date.today().isoformat())
+        as_of_raw = payload.get("as_of", now_ist().date().isoformat())
         progress = self.target_tracker.evaluate(
             start_date=date.fromisoformat(start_raw),
             as_of=date.fromisoformat(as_of_raw),
             start_capital=float(payload.get("start_capital", self.settings.initial_capital)),
-            current_equity=float(payload.get("current_equity", self.portfolio.cash)),
+            current_equity=float(payload.get("current_equity", self.portfolio.equity)),
             drawdown=float(payload.get("drawdown", 0.0)),
             profit_factor=float(payload.get("profit_factor", 1.0)),
             sharpe=float(payload.get("sharpe", 0.0)),
@@ -2324,10 +2340,10 @@ class TradingRuntime:
 
         expiry_date = (
             date.fromisoformat(expiry) if expiry
-            else self.expiry_calendar.nearest(underlying, date.today())
+            else self.expiry_calendar.nearest(underlying, now_ist().date())
         )
         chain = self.option_chain_builder.build(underlying, expiry_date)
-        dte = max(1, (expiry_date - date.today()).days)
+        dte = max(1, (expiry_date - now_ist().date()).days)
 
         def _enrich(instrument, opt_type: str) -> dict:
             base = self._serialize_instrument(instrument)
@@ -2528,7 +2544,7 @@ class TradingRuntime:
         market_prices: dict[str, float] = {str(k): float(v) for k, v in (payload.get("market_prices") or {}).items()}
         risk_free_rate = float(payload.get("risk_free_rate", 0.06))
 
-        as_of = date.fromisoformat(str(payload.get("as_of", date.today().isoformat())))
+        as_of = date.fromisoformat(str(payload.get("as_of", now_ist().date().isoformat())))
         if expiry_raw:
             expiry_date = date.fromisoformat(str(expiry_raw))
         else:
@@ -2643,7 +2659,7 @@ class TradingRuntime:
         symbol = str(payload.get("symbol", "")).upper()
         if not symbol:
             raise ValueError("symbol is required")
-        as_of_raw = str(payload.get("as_of", date.today().isoformat()))
+        as_of_raw = str(payload.get("as_of", now_ist().date().isoformat()))
         as_of = date.fromisoformat(as_of_raw)
         regime = str(payload.get("regime", "UNKNOWN"))
 
@@ -2760,7 +2776,7 @@ class TradingRuntime:
         return snap
 
     def _resolve_feed_symbols(self, requested_symbols: list[str] | tuple[str, ...]) -> list[str]:
-        today = date.today()
+        today = now_ist().date()
         resolved: list[str] = []
         seen: set[str] = set()
         all_symbols = set(self.instrument_master.instruments)
@@ -2906,14 +2922,14 @@ class TradingRuntime:
 
     def agent_trade_log(self, limit: int = 100) -> dict:
         """History of every entry/exit fill the agent processed."""
-        log = self._agent_trade_log[-limit:]
-        log.reverse()
+        import itertools
+        log = list(itertools.islice(reversed(self._agent_trade_log), limit))
         return {"count": len(log), "trades": log}
 
     def risk_rejection_log(self, limit: int = 100) -> dict:
         """Recent risk engine rejections with reason codes."""
-        log = self._risk_rejection_log[-limit:]
-        log.reverse()
+        import itertools
+        log = list(itertools.islice(reversed(self._risk_rejection_log), limit))
         return {"count": len(log), "rejections": log}
 
     def governance_dashboard(self) -> dict:
@@ -2991,7 +3007,7 @@ class TradingRuntime:
 
     def economic_calendar_events(self, from_date: str | None = None, days: int = 30) -> dict:
         from datetime import date as _date
-        start = _date.fromisoformat(from_date) if from_date else _date.today()
+        start = _date.fromisoformat(from_date) if from_date else now_ist().date()
         events = self.economic_calendar.upcoming(start, days)
         return {
             "from_date": start.isoformat(),
@@ -3549,6 +3565,8 @@ class TradingRuntime:
 
     def quantum_kernel_status(self) -> dict:
         """Return quantum kernel research service status and shadow-only flag."""
+        if self._quantum_kernel_service is None:
+            return {"available": False, "shadow_only": True, "note": "quantum_lab not enabled"}
         available = self._quantum_kernel_service.is_available()
         return {
             "available": available,

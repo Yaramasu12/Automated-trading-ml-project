@@ -42,12 +42,13 @@ class EnvStep:
 
 # Action space constants
 ACTION_NOOP = 0
-ACTION_PROPOSE_ENTRY = 1
+ACTION_PROPOSE_ENTRY = 1          # long entry
 ACTION_PROPOSE_EXIT = 2
 ACTION_PROPOSE_HEDGE = 3
 ACTION_SIZE_UP = 4
 ACTION_SIZE_DOWN = 5
-N_ACTIONS = 6
+ACTION_PROPOSE_SHORT_ENTRY = 6    # short entry
+N_ACTIONS = 7
 
 
 class TradingSimEnv:
@@ -85,6 +86,9 @@ class TradingSimEnv:
         self._equity = self._initial_capital
         self._peak = self._initial_capital
         self._positions = 0
+        # +1 = long, -1 = short; 0 when flat
+        self._position_sign = 0
+        self._avg_entry_price = 0.0
         self._daily_pnl = 0.0
         self._cum_pnl = 0.0
         self._returns: list[float] = list(self._base_returns) or self._gen_returns()
@@ -97,38 +101,53 @@ class TradingSimEnv:
         r = self._returns[self._step]
         self._step += 1
 
-        pnl = 0.0
+        # P&L from existing positions this bar (before any action this step)
+        per_slot = self._equity * 0.05
+        held_pnl = self._positions * per_slot * self._position_sign * r
+
+        pnl = held_pnl
         turnover = 0.0
 
         if action == ACTION_PROPOSE_ENTRY and self._positions < 3:
-            pnl = r * self._equity * 0.05
+            # New long entry; does not earn the current bar's return (fills at open)
             self._positions += 1
-            turnover = self._equity * 0.05
+            self._position_sign = 1
+            turnover = per_slot
+
+        elif action == ACTION_PROPOSE_SHORT_ENTRY and self._positions < 3:
+            # Short entry; symmetric to long but position_sign = -1
+            self._positions += 1
+            self._position_sign = -1
+            turnover = per_slot
 
         elif action == ACTION_PROPOSE_EXIT and self._positions > 0:
-            pnl = r * self._equity * 0.05
+            # Closing one long slot — P&L already captured in held_pnl above
             self._positions -= 1
-            turnover = self._equity * 0.05
+            if self._positions == 0:
+                self._position_sign = 0
+            turnover = per_slot
 
         elif action == ACTION_PROPOSE_HEDGE:
-            pnl = -abs(r) * self._equity * 0.01  # hedge cost
+            pnl = held_pnl - abs(r) * self._equity * 0.01  # held P&L minus hedge cost
             turnover = self._equity * 0.01
 
         elif action == ACTION_SIZE_UP and self._positions > 0:
-            pnl = r * self._equity * 0.02
+            # Add one more slot; new slot doesn't earn this bar
             self._positions = min(self._positions + 1, 5)
 
         elif action == ACTION_SIZE_DOWN and self._positions > 0:
-            pnl = r * self._equity * 0.01
+            # Remove one slot; remaining slots already captured in held_pnl
             self._positions = max(self._positions - 1, 0)
+            if self._positions == 0:
+                self._position_sign = 0
 
         self._equity += pnl
         self._cum_pnl += pnl
         self._daily_pnl = pnl
 
-        drawdown = (self._peak - self._equity) / max(self._peak, 1.0)
         if self._equity > self._peak:
             self._peak = self._equity
+        drawdown = (self._peak - self._equity) / max(self._peak, 1.0)
 
         # Reward: PnL - penalties
         reward = pnl / self._initial_capital
@@ -162,11 +181,13 @@ class TradingSimEnv:
 
     def _obs(self) -> EnvObservation:
         daily_vol = self._volatility / math.sqrt(252)
+        position_sign = getattr(self, "_position_sign", 0)
         feat = [
             self._cum_pnl / max(self._initial_capital, 1.0),
             float(self._positions) / 5.0,
             daily_vol,
             min(1.0, self._step / max(1, self._max_steps)),
+            float(position_sign),
         ]
         return EnvObservation(
             features=feat,
@@ -179,7 +200,10 @@ class TradingSimEnv:
 
     def _gen_returns(self) -> list[float]:
         daily_vol = self._volatility / math.sqrt(252)
-        drift = 0.08 / 252
+        # Sample drift from {bull, flat, bear} with equal probability so
+        # the policy trains on all regimes, not just upward-drifting markets.
+        regime_drifts = [0.08 / 252, 0.0, -0.08 / 252]
+        drift = self._rng.choice(regime_drifts)
         return [
             drift + self._rng.gauss(0, daily_vol)
             for _ in range(self._max_steps)

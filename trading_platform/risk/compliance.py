@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
+from trading_platform.agent.market_hours import IST
 from trading_platform.domain.models import OrderIntent
 
 
@@ -47,7 +48,10 @@ class ComplianceGuard:
 
     def check(self, intent: OrderIntent) -> ComplianceResult:
         now = datetime.now(timezone.utc)
-        today = now.date().isoformat()
+        # Use IST date for the daily reset — the NSE/MCX trading day runs
+        # 09:15–23:30 IST. Resetting on UTC midnight (05:30 IST) would fire
+        # mid-session and could exhaust the daily cap before the day ends.
+        today = datetime.now(IST).date().isoformat()
 
         if today != self._last_reset_date:
             self._orders_today = 0

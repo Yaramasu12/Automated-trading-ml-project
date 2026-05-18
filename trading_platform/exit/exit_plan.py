@@ -132,11 +132,12 @@ class ExitPlan:
             return ExitTrigger.EXPIRY
 
         if self.side == "BUY":
-            if self.stop_loss_price and current_price <= self.stop_loss_price:
+            if self.stop_loss_price is not None and current_price <= self.stop_loss_price:
                 return ExitTrigger.STOP_LOSS
-            if self.target_price and current_price >= self.target_price:
+            if self.target_price is not None and current_price >= self.target_price:
                 # Partial exit ladder: first trigger = exit 50%, then trail the rest
-                if self.partial_exit_enabled and not self.partial_exit_done:
+                # Only apply partial logic for multi-lot positions
+                if self.partial_exit_enabled and not self.partial_exit_done and self.quantity >= 2:
                     self.partial_exit_done = True
                     self.partial_exit_qty = self.quantity // 2
                     # Raise stop to entry (breakeven) after partial booking
@@ -145,10 +146,10 @@ class ExitPlan:
                     return ExitTrigger.PARTIAL_TARGET
                 return ExitTrigger.TARGET
         else:
-            if self.stop_loss_price and current_price >= self.stop_loss_price:
+            if self.stop_loss_price is not None and current_price >= self.stop_loss_price:
                 return ExitTrigger.STOP_LOSS
-            if self.target_price and current_price <= self.target_price:
-                if self.partial_exit_enabled and not self.partial_exit_done:
+            if self.target_price is not None and current_price <= self.target_price:
+                if self.partial_exit_enabled and not self.partial_exit_done and self.quantity >= 2:
                     self.partial_exit_done = True
                     self.partial_exit_qty = self.quantity // 2
                     if self.stop_loss_price is None or self.stop_loss_price > self.entry_price:

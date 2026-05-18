@@ -6,6 +6,7 @@ from datetime import datetime
 from trading_platform.domain.enums import ExecutionMode, InstrumentType, OptionType, Side
 from trading_platform.domain.models import OrderIntent
 from trading_platform.portfolio.ledger import PortfolioSnapshot
+from trading_platform.agent.market_hours import now_ist
 
 
 @dataclass(frozen=True)
@@ -125,7 +126,7 @@ class RiskEngine:
                 return RiskDecision(False, "contract_expired", 1.0)
             if (
                 days_to_expiry == 0
-                and now.hour >= self.limits.expiry_day_open_cutoff_hour
+                and now_ist().hour >= self.limits.expiry_day_open_cutoff_hour
                 and intent.signal.metadata.get("opens_position", True)
             ):
                 return RiskDecision(False, "expiry_day_open_cutoff", 0.85)

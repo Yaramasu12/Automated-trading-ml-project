@@ -40,6 +40,59 @@ _SYSTEM_BASE = (
 _VALID_ACTIONS = frozenset({"BUY", "SELL", "HOLD", "REDUCE", "HALT", "HEDGE"})
 
 
+def _build_market_context(ctx: AgentInputContext) -> str:
+    """Build a compact market context block from all available ctx fields.
+
+    Included in every specialist prompt so agents reason from real data
+    rather than returning generic HOLD responses.
+    """
+    lines: list[str] = [f"SYMBOLS: {', '.join(ctx.symbols)}"]
+    lines.append(f"REGIME: {ctx.market_regime}")
+
+    # Portfolio state
+    ps = ctx.portfolio_state
+    if ps:
+        drawdown = ps.get("drawdown", ps.get("peak_drawdown", None))
+        cum_pnl = ps.get("cum_pnl", ps.get("daily_pnl", None))
+        open_pos = ps.get("open_positions", ps.get("positions", None))
+        equity = ps.get("equity", ps.get("capital", None))
+        parts = []
+        if drawdown is not None:
+            parts.append(f"drawdown={drawdown:.2%}" if isinstance(drawdown, float) else f"drawdown={drawdown}")
+        if cum_pnl is not None:
+            parts.append(f"cum_pnl={cum_pnl}")
+        if open_pos is not None:
+            parts.append(f"open_positions={open_pos}")
+        if equity is not None:
+            parts.append(f"equity={equity}")
+        if parts:
+            lines.append("PORTFOLIO: " + ", ".join(parts))
+
+    # Feature signals (prices, indicators, candidate signals)
+    feats = ctx.features
+    if feats:
+        feat_parts: list[str] = []
+        for key in ("regime", "close", "momentum_5", "momentum_20", "realized_volatility",
+                    "volume_ratio", "trend_strength", "rsi_14", "atr_14", "bb_width",
+                    "momentum_alignment", "direction_probability", "expected_return",
+                    "predicted_volatility", "tail_risk_score", "top_signals"):
+            val = feats.get(key)
+            if val is not None:
+                if isinstance(val, float):
+                    feat_parts.append(f"{key}={val:.4f}")
+                else:
+                    feat_parts.append(f"{key}={val}")
+        # Include any other numeric features
+        for k, v in feats.items():
+            if k not in ("_debate",) and k not in {p.split("=")[0] for p in feat_parts}:
+                if isinstance(v, (int, float)):
+                    feat_parts.append(f"{k}={v}")
+        if feat_parts:
+            lines.append("INDICATORS: " + ", ".join(feat_parts[:15]))
+
+    return "\n".join(lines)
+
+
 def _safe_vote(
     agent_name: str,
     model_id: str,
@@ -76,9 +129,10 @@ class NewsMacroAgent:
         self._gw = gateway
 
     def run(self, ctx: AgentInputContext) -> AgentVote:
+        mkt = _build_market_context(ctx)
         prompt = (
-            f"Symbols: {ctx.symbols}. Regime: {ctx.market_regime}. "
-            "Assess macro/news event risk. "
+            f"{mkt}\n"
+            "Assess macro/news event risk for the symbols above. "
             "Output JSON: action, confidence, reasoning, evidence_ids."
         )
         resp = self._gw.generate("gemma4-e4b", _SYSTEM_BASE, prompt)
@@ -92,9 +146,11 @@ class QuantResearchAgent:
         self._gw = gateway
 
     def run(self, ctx: AgentInputContext) -> AgentVote:
+        mkt = _build_market_context(ctx)
         prompt = (
-            f"Symbols: {ctx.symbols}. "
-            "Analyze feature importance, strategy decay signals, and alpha hypotheses. "
+            f"{mkt}\n"
+            "Analyze feature importance, strategy decay signals, and alpha hypotheses "
+            "given the indicators above. "
             "Output JSON: action, confidence, reasoning, evidence_ids."
         )
         resp = self._gw.generate("gemma4-31b", _SYSTEM_BASE, prompt)
@@ -108,9 +164,10 @@ class TrendMomentumAgent:
         self._gw = gateway
 
     def run(self, ctx: AgentInputContext) -> AgentVote:
+        mkt = _build_market_context(ctx)
         prompt = (
-            f"Symbols: {ctx.symbols}. Regime: {ctx.market_regime}. "
-            "Assess trend and momentum strength. "
+            f"{mkt}\n"
+            "Assess trend and momentum strength using the momentum and trend_strength indicators above. "
             "Output JSON: action, confidence, reasoning, evidence_ids."
         )
         resp = self._gw.generate("gemma4-e4b", _SYSTEM_BASE, prompt)
@@ -124,9 +181,10 @@ class MeanReversionAgent:
         self._gw = gateway
 
     def run(self, ctx: AgentInputContext) -> AgentVote:
+        mkt = _build_market_context(ctx)
         prompt = (
-            f"Symbols: {ctx.symbols}. Regime: {ctx.market_regime}. "
-            "Assess mean reversion opportunity using z-score and bollinger bands. "
+            f"{mkt}\n"
+            "Assess mean reversion opportunity using rsi_14, bb_width, and realized_volatility above. "
             "Output JSON: action, confidence, reasoning, evidence_ids."
         )
         resp = self._gw.generate("gemma4-e4b", _SYSTEM_BASE, prompt)
@@ -140,9 +198,10 @@ class BreakoutAgent:
         self._gw = gateway
 
     def run(self, ctx: AgentInputContext) -> AgentVote:
+        mkt = _build_market_context(ctx)
         prompt = (
-            f"Symbols: {ctx.symbols}. "
-            "Detect breakout setups from consolidation ranges. "
+            f"{mkt}\n"
+            "Detect breakout setups from consolidation ranges using volume_ratio and atr_14 above. "
             "Output JSON: action, confidence, reasoning, evidence_ids."
         )
         resp = self._gw.generate("gemma4-e4b", _SYSTEM_BASE, prompt)
@@ -156,9 +215,10 @@ class GapEventAgent:
         self._gw = gateway
 
     def run(self, ctx: AgentInputContext) -> AgentVote:
+        mkt = _build_market_context(ctx)
         prompt = (
-            f"Symbols: {ctx.symbols}. "
-            "Assess gap fill or gap continuation potential based on overnight events. "
+            f"{mkt}\n"
+            "Assess gap fill or gap continuation potential based on overnight events and the indicators above. "
             "Output JSON: action, confidence, reasoning, evidence_ids."
         )
         resp = self._gw.generate("gemma4-e4b", _SYSTEM_BASE, prompt)
@@ -172,9 +232,10 @@ class PairsStatArbAgent:
         self._gw = gateway
 
     def run(self, ctx: AgentInputContext) -> AgentVote:
+        mkt = _build_market_context(ctx)
         prompt = (
-            f"Symbols: {ctx.symbols}. "
-            "Identify pairs trading and statistical arbitrage opportunities. "
+            f"{mkt}\n"
+            "Identify pairs trading and statistical arbitrage opportunities among the symbols above. "
             "Output JSON: action, confidence, reasoning, evidence_ids."
         )
         resp = self._gw.generate("gemma4-e4b", _SYSTEM_BASE, prompt)
@@ -188,9 +249,11 @@ class OptionsVolatilityAgent:
         self._gw = gateway
 
     def run(self, ctx: AgentInputContext) -> AgentVote:
+        mkt = _build_market_context(ctx)
         prompt = (
-            f"Symbols: {ctx.symbols}. "
-            "Assess implied volatility surface, term structure skew, and vol-of-vol signals. "
+            f"{mkt}\n"
+            "Assess implied volatility surface, term structure skew, and vol-of-vol signals "
+            "using predicted_volatility and tail_risk_score above. "
             "Output JSON: action, confidence, reasoning, evidence_ids."
         )
         resp = self._gw.generate("gemma4-26b-moe", _SYSTEM_BASE, prompt)
@@ -204,9 +267,10 @@ class FuturesCarryAgent:
         self._gw = gateway
 
     def run(self, ctx: AgentInputContext) -> AgentVote:
+        mkt = _build_market_context(ctx)
         prompt = (
-            f"Symbols: {ctx.symbols}. "
-            "Evaluate futures carry, basis, and roll yield opportunities. "
+            f"{mkt}\n"
+            "Evaluate futures carry, basis, and roll yield opportunities for the symbols above. "
             "Output JSON: action, confidence, reasoning, evidence_ids."
         )
         resp = self._gw.generate("gemma4-e4b", _SYSTEM_BASE, prompt)
@@ -220,9 +284,11 @@ class HedgeBuilderAgent:
         self._gw = gateway
 
     def run(self, ctx: AgentInputContext) -> AgentVote:
+        mkt = _build_market_context(ctx)
         prompt = (
-            f"Portfolio state: {ctx.portfolio_state}. Symbols: {ctx.symbols}. "
-            "Recommend hedges to reduce tail risk without excessive cost. "
+            f"{mkt}\n"
+            "Recommend hedges to reduce tail risk without excessive cost, "
+            "considering the portfolio drawdown and tail_risk_score above. "
             "Output JSON: action (HEDGE/HOLD), confidence, reasoning, evidence_ids."
         )
         resp = self._gw.generate("gemma4-e4b", _SYSTEM_BASE, prompt)
@@ -243,10 +309,12 @@ class RiskCriticAgent:
             "Respond in JSON with keys: veto (bool), risk_score (0-1), concerns (list), "
             "recommended_action (PROCEED|REDUCE|HALT), evidence_ids (list)."
         )
+        mkt = _build_market_context(ctx)
         prompt = (
+            f"{mkt}\n"
             f"Proposals: {[p.to_dict() for p in proposals]}. "
-            f"Portfolio: {ctx.portfolio_state}. Regime: {ctx.market_regime}. "
-            "Identify crowding, stale data, event risk, high slippage, or model disagreement."
+            "Identify crowding, stale data, event risk, high slippage, or model disagreement "
+            "given the indicators and portfolio state above."
         )
         resp = self._gw.generate("gemma4-31b", system, prompt)
         veto = bool(resp.get("veto", False))

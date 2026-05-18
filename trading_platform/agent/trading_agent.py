@@ -124,6 +124,7 @@ class TradingAgent:
         self._state.running = True
         self._state.premarket_done = False
         self._state.eod_done = False
+        self._state.mcx_eod_done = False
         self._state.started_at = datetime.now(timezone.utc).isoformat()
         self._stop_event.clear()
         self._task = asyncio.create_task(self._run(), name="trading-agent")
@@ -177,7 +178,7 @@ class TradingAgent:
                 except asyncio.TimeoutError:
                     pass   # normal — next scan cycle
         except asyncio.CancelledError:
-            pass
+            raise  # must propagate so the task is correctly marked cancelled
         except Exception as exc:
             logger.error("TradingAgent fatal error: %s", exc, exc_info=True)
         finally:
@@ -372,7 +373,7 @@ class TradingAgent:
 
         # Scan decision pipeline
         try:
-            scan_start = date.today() - timedelta(days=LOOKBACK_DAYS)
+            scan_start = now_ist().date() - timedelta(days=LOOKBACK_DAYS)
             scans = await asyncio.to_thread(
                 self._runtime.signal_scan,
                 {
@@ -443,7 +444,7 @@ class TradingAgent:
         self._finish_cycle(cycle, start_ms)
 
         # Periodically attempt to train the ML regime classifier from accumulated data
-        if self._state.scan_count % 10 == 0:
+        if self._state.scan_count > 0 and self._state.scan_count % 10 == 0:
             await asyncio.to_thread(self._try_train_regime_classifier)
 
     async def _enqueue_candidate(self, candidate: dict, regime: str) -> bool:
@@ -473,7 +474,7 @@ class TradingAgent:
                 current_mark = self._runtime.exit_manager.current_mark(underlying)
             if current_mark and current_mark > 0:
                 entry_mark_gap = (signal_price - current_mark) / signal_price
-                if entry_mark_gap > 0.05:  # signal is >5% above current market mark
+                if abs(entry_mark_gap) > 0.05:  # signal price differs >5% from current mark
                     self._log_activity(
                         f"SKIP {symbol}: signal {signal_price:.0f} vs mark {current_mark:.0f} "
                         f"({entry_mark_gap:.1%} gap) — would immediate-stop"
