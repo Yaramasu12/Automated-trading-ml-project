@@ -10,14 +10,6 @@ import { Risk } from './views/Risk'
 import { Account } from './views/Account'
 import { Execution } from './views/Execution'
 import { Intelligence } from './views/Intelligence'
-import { AILab } from './views/AILab'
-import { AICouncil } from './views/AICouncil'
-import { NeuralLab } from './views/NeuralLab'
-import { QuantumLab } from './views/QuantumLab'
-import { Tournament } from './views/Tournament'
-import { GoalGovernor } from './views/GoalGovernor'
-import { TraceReplay } from './views/TraceReplay'
-import { Policies } from './views/Policies'
 
 export function App() {
   const activeView = useStore((s) => s.activeView)
@@ -35,14 +27,6 @@ export function App() {
       case 'risk':         return <Risk />
       case 'execution':    return <Execution />
       case 'intelligence': return <Intelligence />
-      case 'ai-lab':       return <AILab />
-      case 'ai-council':   return <AICouncil />
-      case 'neural-lab':   return <NeuralLab />
-      case 'quantum-lab':  return <QuantumLab />
-      case 'tournament':   return <Tournament />
-      case 'goal-governor': return <GoalGovernor />
-      case 'traces':       return <TraceReplay />
-      case 'policies':     return <Policies />
       case 'account':      return <Account />
       default:             return <Dashboard />
     }

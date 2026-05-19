@@ -1,39 +1,33 @@
 import { clsx } from 'clsx'
 import type { ReactNode } from 'react'
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-export interface Column<T = any> {
+export interface Column<T> {
   key: string
-  label?: string
-  /** Legacy alias for label */
   header?: string
-  render?: (val: unknown, row: T) => ReactNode
+  label?: string
+  render?: (value: unknown, row: T) => ReactNode
   align?: 'left' | 'right' | 'center'
   className?: string
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-export interface TableProps<T = any> {
+interface TableProps<T> {
   columns: Column<T>[]
-  rows?: T[]
-  /** Legacy alias for rows */
   data?: T[]
-  keyFn?: (row: T, index?: number) => string
-  emptyMessage?: string
-  /** Legacy alias for emptyMessage */
+  rows?: T[]
+  keyFn: (row: T, index: number) => string
   emptyText?: string
+  emptyMessage?: string
   className?: string
   compact?: boolean
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-export function Table<T = any>({
+export function Table<T>({
   columns,
-  rows,
   data,
+  rows,
   keyFn,
-  emptyMessage,
   emptyText,
+  emptyMessage,
   className,
   compact,
 }: TableProps<T>) {
@@ -51,9 +45,9 @@ export function Table<T = any>({
                 className={clsx(
                   'font-medium text-gray-500 uppercase tracking-wider text-xs',
                   compact ? 'px-3 py-2' : 'px-4 py-3',
-                  col.align === 'right'  && 'text-right',
+                  col.align === 'right' && 'text-right',
                   col.align === 'center' && 'text-center',
-                  !col.align             && 'text-left',
+                  !col.align && 'text-left',
                   col.className,
                 )}
               >
@@ -70,27 +64,28 @@ export function Table<T = any>({
               </td>
             </tr>
           ) : (
-            items.map((row, idx) => (
+            items.map((row, index) => (
               <tr
-                key={keyFn ? keyFn(row, idx) : String(idx)}
+                key={keyFn(row, index)}
                 className="border-b border-surface-border/50 hover:bg-surface-elevated/50 transition-colors"
               >
-                {columns.map((col) => (
-                  <td
-                    key={col.key}
-                    className={clsx(
-                      'text-gray-300 font-mono',
-                      compact ? 'px-3 py-2' : 'px-4 py-3',
-                      col.align === 'right'  && 'text-right',
-                      col.align === 'center' && 'text-center',
-                      col.className,
-                    )}
-                  >
-                    {col.render
-                      ? col.render((row as Record<string, unknown>)[col.key], row)
-                      : ((row as Record<string, unknown>)[col.key] as ReactNode)}
-                  </td>
-                ))}
+                {columns.map((col) => {
+                  const value = (row as Record<string, unknown>)[col.key]
+                  return (
+                    <td
+                      key={col.key}
+                      className={clsx(
+                        'text-gray-300 font-mono',
+                        compact ? 'px-3 py-2' : 'px-4 py-3',
+                        col.align === 'right' && 'text-right',
+                        col.align === 'center' && 'text-center',
+                        col.className,
+                      )}
+                    >
+                      {col.render ? col.render(value, row) : String(value ?? '')}
+                    </td>
+                  )
+                })}
               </tr>
             ))
           )}

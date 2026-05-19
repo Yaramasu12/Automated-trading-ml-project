@@ -1,32 +1,18 @@
 import type {
   AccountStatus,
-  AICouncilDecision,
-  AICouncilStatus,
   BacktestResult,
   DBSummary,
   DailyPnl,
-  DecisionTrace,
   EquityCurvePoint,
-  GoalGovernorStatus,
   HealthResponse,
-  HighEndScanResult,
   BrokerCapabilityStatus,
-  MarlAdvisoryResult,
-  MarlStatus,
   ModelCatalogEntry,
   EventBusSummary,
   ManualApprovalStatus,
-  LiveCanaryReadiness,
-  NeuralPredictionBundle,
-  NeuralStatus,
-  PolicyInfo,
-  QuantumOptimizationResult,
-  QuantumStatus,
   RuntimeState,
   SignalScanResult,
   StrategyEvaluationResult,
   TargetProgress,
-  TraceReplayResponse,
   Trade,
   VolatilityForecast,
   WalkForwardResult,
@@ -55,7 +41,6 @@ export const getHealth = () => get<HealthResponse>('/health')
 export const getState = () => get<{ execution_mode: string; live_armed: boolean; kill_switch_active: boolean }>('/state')
 export const setExecutionMode = (mode: string) => post<RuntimeState>('/execution-mode', { mode })
 export const armLive = (armed: boolean) => post<RuntimeState>('/live/arm', { armed })
-export const getLiveCanaryReadiness = () => get<LiveCanaryReadiness>('/live/canary-readiness')
 export const setKillSwitch = (active: boolean) => post<RuntimeState>('/kill-switch', { active })
 
 // ─── Instruments ─────────────────────────────────────────────────────────────
@@ -210,45 +195,39 @@ export const getGovernanceDashboard = () => get<Record<string, unknown>>('/gover
 // ─── Exit plans ──────────────────────────────────────────────────────────────
 export const getActiveExitPlans = () => get<Record<string, unknown>>('/execution/exit-plans')
 
-// ─── Phase 7: High-end scan ───────────────────────────────────────────────────
-export const runHighEndScan = (payload: Record<string, unknown>) =>
-  post<HighEndScanResult>('/high-end/scan', payload)
+// ─── AI Council ───────────────────────────────────────────────────────────────
+export const getAICouncilStatus = () => get<import('./types').AICouncilStatus>('/ai-council/status')
+export const getAICouncilDecisions = (limit = 20) => get<{ decisions: import('./types').AICouncilDecision[] }>(`/ai-council/decisions?limit=${limit}`)
+export const runAICouncilPreview = (payload: Record<string, unknown>) => post<import('./types').AICouncilDecision>('/ai-council/preview', payload)
 
-// ─── Phase 1: Decision traces ─────────────────────────────────────────────────
-export const listTraces = (limit = 50) => get<{ traces: DecisionTrace[] }>(`/traces?limit=${limit}`)
-export const getTrace = (traceId: string) => get<DecisionTrace>(`/traces/${traceId}`)
-export const getTraceReplay = (traceId: string) => get<TraceReplayResponse>(`/traces/${traceId}/replay`)
+// ─── Neural Lab ───────────────────────────────────────────────────────────────
+export const getNeuralStatus = () => get<import('./types').NeuralStatus>('/neural/status')
+export const runNeuralPredictPreview = (payload: Record<string, unknown>) => post<import('./types').NeuralBundle>('/neural/predict-preview', payload)
 
-// ─── Phase 2: AI Council ──────────────────────────────────────────────────────
-export const getAICouncilStatus = () => get<AICouncilStatus>('/ai-council/status')
-export const getAICouncilDecisions = (limit = 20) =>
-  get<{ decisions: AICouncilDecision[] }>(`/ai-council/decisions?limit=${limit}`)
-export const runAICouncilPreview = (payload: Record<string, unknown>) =>
-  post<AICouncilDecision>('/ai-council/preview', payload)
+// ─── Quantum Lab ──────────────────────────────────────────────────────────────
+export const getQuantumStatus = () => get<import('./types').QuantumStatus>('/quantum/status')
+export const runQuantumOptimizePreview = (payload: Record<string, unknown>) => post<import('./types').QuantumOptimizationResult>('/quantum/optimize-preview', payload)
+export const getQuantumResults = (limit = 20) => get<{ results: import('./types').QuantumOptimizationResult[] }>(`/quantum/results?limit=${limit}`)
 
-// ─── Phase 3: Neural Lab ──────────────────────────────────────────────────────
-export const getNeuralStatus = () => get<NeuralStatus>('/neural/status')
-export const runNeuralPredictPreview = (payload: Record<string, unknown>) =>
-  post<NeuralPredictionBundle>('/neural/predict-preview', payload)
+// ─── MARL ─────────────────────────────────────────────────────────────────────
+export const runMarlAdvisoryPreview = (payload: Record<string, unknown>) => post<import('./types').MarlAdvisoryResult>('/marl/advisory-preview', payload)
 
-// ─── Phase 4: Quantum Lab ─────────────────────────────────────────────────────
-export const getQuantumStatus = () => get<QuantumStatus>('/quantum/status')
-export const runQuantumOptimizePreview = (payload: Record<string, unknown>) =>
-  post<QuantumOptimizationResult>('/quantum/optimize-preview', payload)
-export const getQuantumResults = (limit = 20) =>
-  get<{ results: QuantumOptimizationResult[] }>(`/quantum/results?limit=${limit}`)
+// ─── Goal Governor ────────────────────────────────────────────────────────────
+export const getGoalGovernorStatus = () => get<import('./types').GoalGovernorStatus>('/goal-governor/status')
 
-// ─── Phase 6: Goal Governor ───────────────────────────────────────────────────
-export const getGoalGovernorStatus = () => get<GoalGovernorStatus>('/goal-governor/status')
+// ─── Traces ───────────────────────────────────────────────────────────────────
+export const listTraces = (limit = 20) => get<{ traces: import('./types').DecisionTrace[] }>(`/traces?limit=${limit}`)
 
-// ─── Phase 5/9: Policies ─────────────────────────────────────────────────────
-export const listPolicies = () => get<{ policies: PolicyInfo[] }>('/policies')
-export const promotePolicy = (policy_id: string, status: string) =>
-  post<{ policy_id: string; new_status?: string; status?: string; ok: boolean }>('/policies/promote', { policy_id, status })
-export const rollbackPolicy = (policy_id: string) =>
-  post<{ policy_id: string; status: string; ok: boolean }>('/policies/rollback', { policy_id })
+// ─── High-End Scan ────────────────────────────────────────────────────────────
+export const runHighEndScan = (payload: Record<string, unknown>) => post<import('./types').HighEndScanResult>('/high-end/scan', payload)
 
-// ─── Phase 5: MARL Lab ───────────────────────────────────────────────────────
-export const getMarlStatus = () => get<MarlStatus>('/marl/status')
-export const runMarlAdvisoryPreview = (payload: Record<string, unknown>) =>
-  post<MarlAdvisoryResult>('/marl/advisory-preview', payload)
+// ─── Policies ────────────────────────────────────────────────────────────────
+export const listPolicies = () => get<{ policies: import('./types').PolicyInfo[] }>('/policies')
+export const promotePolicy = (policyId: string, target_status: string) =>
+  post<Record<string, unknown>>('/policies/promote', { policy_id: policyId, target_status })
+export const rollbackPolicy = (policyId: string) =>
+  post<Record<string, unknown>>('/policies/rollback', { policy_id: policyId })
+
+// ─── Trace Replay ─────────────────────────────────────────────────────────────
+export const getTraceReplay = (traceId: string) =>
+  get<import('./types').TraceReplayResponse>(`/traces/${traceId}/replay`)

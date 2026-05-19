@@ -213,8 +213,8 @@ export function AICouncil() {
                   columns="grid-cols-2"
                   items={[
                     { label: 'Risk Veto', value: activeDecision.risk_critique?.veto ? 'YES' : 'NO', accent: activeDecision.risk_critique?.veto ? 'red' : 'green' },
-                    { label: 'Risk Score', value: activeDecision.risk_critique ? activeDecision.risk_critique.risk_score.toFixed(2) : '--', accent: 'red' },
-                    { label: 'Max Heat', value: activeDecision.portfolio_proposal ? pct(activeDecision.portfolio_proposal.max_heat * 100, 1) : '--', accent: 'orange' },
+                    { label: 'Risk Score', value: activeDecision.risk_critique ? (activeDecision.risk_critique.risk_score ?? 0).toFixed(2) : '--', accent: 'red' },
+                    { label: 'Max Heat', value: activeDecision.portfolio_proposal ? pct((activeDecision.portfolio_proposal.max_heat ?? 0) * 100, 1) : '--', accent: 'orange' },
                     { label: 'Order Type', value: activeDecision.execution_advice?.preferred_order_type ?? '--', accent: 'cyan' },
                   ]}
                 />
