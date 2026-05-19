@@ -353,6 +353,28 @@ class TradingRuntime:
         # Canonical scan/orchestration path: baseline first, advisory systems second.
         self._decision_orchestrator = DecisionCycleOrchestrator(self)
 
+        # ── Master Orchestrator (LangGraph-style profit-first pipeline) ───────
+        from trading_platform.orchestrator.master_orchestrator import MasterOrchestrator
+        self.master_orchestrator = MasterOrchestrator(self)
+
+    # ── Orchestrator-facing property shortcuts ────────────────────────────────
+
+    @property
+    def neural_service(self):
+        return self._neural_service
+
+    @property
+    def quantum_service(self):
+        return self._quantum_service
+
+    @property
+    def goal_governor(self):
+        return self._goal_governor
+
+    @property
+    def event_risk_guard(self):
+        return self.event_risk
+
     # ── Gap 3: Live-feed tick → TICK_RAW ─────────────────────────────────────
 
     def _on_tick(self, tick) -> None:

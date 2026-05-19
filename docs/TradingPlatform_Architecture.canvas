@@ -1,0 +1,690 @@
+{
+  "nodes": [
+    {
+      "id": "title",
+      "type": "text",
+      "text": "# 🚀 Automated Trading Platform — Complete Architecture\n**Stack:** FastAPI (Python 3.11) · React 18 + TypeScript · SQLite · Docker · Angel One Broker\n**Markets:** NSE / BSE / MCX India &nbsp;|&nbsp; **Modes:** BACKTEST → PAPER → SHADOW_LIVE → LIVE_AUTO_LIMITED → LIVE",
+      "x": -1100,
+      "y": -3700,
+      "width": 2200,
+      "height": 130,
+      "color": "4"
+    },
+    {
+      "id": "e2e_flow",
+      "type": "text",
+      "text": "## ⚡ End-to-End Data Flow\n\n```\n[Browser :3100] ──HTTPS──► [Nginx Proxy] ──► [FastAPI :8000] ──► [TradingRuntime]\n      │                                             │                      │\n      │◄──── WebSocket /ws/dashboard push ◄─────────┘              [Agent Loop]\n      │                (every 5s)                                  every 300s\n [Zustand Store]                                         [Decision Pipeline]\n   (19 views)                               regime → strategy → signal → risk → order\n                                                               │\n                                                    [Execution Router]\n                                              paper / backtest / live broker\n                                                               │\n                                              [Angel One API]  [SQLite DB]\n```\n\n**Auth:** Bearer token on all mutating endpoints · WebSocket auth via payload\n**Ports:** Frontend 3100 → 3000 · API 8100 → 8000 (Docker mapped)",
+      "x": -1400,
+      "y": -3510,
+      "width": 2800,
+      "height": 280,
+      "color": "5"
+    },
+
+    {
+      "id": "fe_header",
+      "type": "text",
+      "text": "## 🖥️ FRONTEND — React 18 + TypeScript + Vite + Tailwind CSS",
+      "x": -4100,
+      "y": -3100,
+      "width": 1500,
+      "height": 60,
+      "color": "4"
+    },
+    {
+      "id": "fe_views",
+      "type": "text",
+      "text": "## 📄 Views (19 Pages)\n\n| View | Path | Purpose |\n|------|------|---------|\n| **Dashboard** | `/` | Real-time P&L, positions, agent status, WS feed |\n| **Engine** | `/engine` | Scheduler stats, rate limiter, OMS events |\n| **Signals** | `/signals` | Signal scan trigger, candidate table, regime |\n| **Strategies** | `/strategies` | Strategy catalog, evaluation leaderboard |\n| **Backtest** | `/backtest` | Backtest runner, walk-forward validation |\n| **Models** | `/models` | Volatility forecast, regime classify, meta-rank |\n| **Risk** | `/risk` | Risk rejections, compliance, event-risk guard |\n| **Execution** | `/execution` | Order queue, manual approvals, multi-leg orders |\n| **Account** | `/account` | Positions, cash, equity, target progress |\n| **AI Council** | `/ai-council` | Agent votes, debate, risk critic, proposals |\n| **Neural Lab** | `/neural` | Forecast bundle, tail risk, correlation, charts |\n| **Quantum Lab** | `/quantum` | Portfolio optimization, backend status |\n| **MARL Lab** | `/marl` | Multi-agent RL advisory preview |\n| **Goal Governor** | `/goal` | Annual profit target tracking, scaling |\n| **Policies** | `/policies` | RL policy registry, promote/rollback |\n| **Intelligence** | `/intelligence` | News sentiment, economic calendar, regime |\n| **Trace Replay** | `/traces` | Decision trace store, timeline replay |\n| **Tournament** | `/tournament` | Strategy tournament validation |\n| **AI Lab** | `/ai-lab` | High-end scan: Council + Neural + Quantum |",
+      "x": -4100,
+      "y": -2980,
+      "width": 1500,
+      "height": 700,
+      "color": "4"
+    },
+    {
+      "id": "fe_state",
+      "type": "text",
+      "text": "## 🗃️ Zustand Store (store.ts)\n\n**Navigation**\n- `activeView: NavView`\n\n**Live WS State**\n- `runtimeState: RuntimeState`\n- `monitoring: MonitoringMetrics`\n- `liveFeed: LiveFeedSnapshot`\n- `dbSummary: DBSummary`\n- `livePortfolio: LivePortfolioSnapshot`\n- `applyWsSnapshot()` — merges snapshot\n\n**Analytics**\n- `equityCurve`, `dailyPnl`, `recentTrades`\n- `targetProgress`\n\n**AI Labs**\n- `aiCouncilStatus`, `aiCouncilDecisions[]`\n- `neuralStatus`, `latestNeuralBundle`\n- `quantumStatus`, `latestQuantumResult`\n- `goalGovernorStatus`\n- `latestHighEndScan`\n\n**Other**\n- `signalResult`, `strategyResult`\n- `backtestResult`, `walkForwardResult`\n- `modelCatalog[]`, `policies[]`\n- `recentTraces[]`\n- `loading: LoadingState`\n- `error: string | null`",
+      "x": -4100,
+      "y": -2210,
+      "width": 720,
+      "height": 660,
+      "color": "4"
+    },
+    {
+      "id": "fe_apiclient",
+      "type": "text",
+      "text": "## 🔌 API Client (api.ts + ws.ts)\n\n**HTTP Client** (api.ts)\n- Base URL: `http://localhost:8100`\n- Auth header: `Authorization: Bearer <token>`\n- `get<T>(path)` / `post<T>(path, body)`\n\n**Key API Functions**\n```typescript\ngetHealth()           → HealthResponse\ngetRuntimeState()     → RuntimeState\nrunSignalScan()       → SignalScanResult\nrunStrategyEval()     → StrategyEvaluationResult\nrunBacktest()         → BacktestResult\nrunHighEndScan()      → HighEndScanResult\ngetAICouncilStatus()  → AICouncilStatus\nrunAICouncilPreview() → AICouncilDecision\nrunNeuralPreview()    → NeuralBundle\nrunQuantumPreview()   → QuantumOptimizationResult\nrunMarlAdvisory()     → MarlAdvisoryResult\ngetGoalGovernor()     → GoalGovernorStatus\nlistTraces()          → { traces[] }\ngetTraceReplay()      → TraceReplayResponse\nlistPolicies()        → { policies[] }\npromotePolicy()       → void\n```\n\n**WebSocket** (ws.ts)\n- `ws://localhost:8100/ws/dashboard`\n- Auth via first message payload\n- Pushes `WsDashboardMessage` every 5s\n- Reconnect with exponential backoff",
+      "x": -3330,
+      "y": -2210,
+      "width": 730,
+      "height": 660,
+      "color": "4"
+    },
+    {
+      "id": "fe_components",
+      "type": "text",
+      "text": "## 🧩 Shared Components\n\n**Layout**\n- `Layout.tsx` — Sidebar + header wrapper\n- `Header.tsx` — WS status, mode badge, kill switch\n- `Sidebar.tsx` — 19-view navigation\n\n**Shared UI** (`components/shared/`)\n- `Card` / `CardHeader` / `CardBody`\n- `Table<T>` — typed columns (label, render, align)\n- `Badge` / `Tag` — colored status chips\n- `StatTile` — metric tile (value, accent, sub)\n- `KeyValueGrid` — labeled k/v pairs\n- `ProgressBar` — linear progress with accent\n- `JsonPanel` — syntax-highlighted JSON\n- `PageHeader` — title + subtitle + action slot\n\n**Types** (types.ts)\n- 45+ TypeScript interfaces\n- All use `[key: string]: unknown` index sig\n- Covers: Agent, Neural, Quantum, MARL, Risk,\n  Portfolio, Broker, Events, Policies, Traces",
+      "x": -4100,
+      "y": -1480,
+      "width": 960,
+      "height": 480,
+      "color": "4"
+    },
+
+    {
+      "id": "api_header",
+      "type": "text",
+      "text": "## 🌐 API GATEWAY — FastAPI (trading_platform/api/app.py) — 118 Endpoints",
+      "x": -2490,
+      "y": -3100,
+      "width": 1200,
+      "height": 60,
+      "color": "5"
+    },
+    {
+      "id": "api_public",
+      "type": "text",
+      "text": "## 🔓 Public Endpoints (No Auth)\n\n```\nGET  /health              → liveness probe\nGET  /state               → RuntimeState snapshot\nGET  /live/readiness      → 7-gate checklist\nGET  /universe            → tradeable instruments\nGET  /strategies/catalog  → strategy list\nGET  /models/catalog      → model list\nGET  /monitoring/metrics  → real-time metrics\nGET  /monitoring/events   → event stream\nGET  /governance          → governance dashboard\nGET  /account/status      → broker profile/funds\nGET  /feed/snapshot       → latest tick prices\nGET  /feed/tick/{symbol}  → single symbol tick\nGET  /regime/current      → market regime\nGET  /ai-council/status   → AI council health\nGET  /quantum/status      → quantum kernel\nGET  /neural/status       → neural service\nGET  /goal-governor/status→ goal tracking\nGET  /derivatives/expiries/{u}    → expiry dates\nGET  /derivatives/option-chain/{u}→ Greeks/chain\nWS   /ws/dashboard        → real-time push\n```",
+      "x": -2490,
+      "y": -2980,
+      "width": 1200,
+      "height": 540,
+      "color": "5"
+    },
+    {
+      "id": "api_auth",
+      "type": "text",
+      "text": "## 🔐 Authenticated Endpoints (Bearer Token)\n\n**Control**\n```\nPOST /live/arm              → arm/disarm live\nPOST /execution-mode        → switch mode\nPOST /kill-switch           → emergency halt\nPOST /agent/start|stop      → agent lifecycle\nPOST /agent/interval        → set scan interval\n```\n**Trading**\n```\nPOST /signals/scan          → scan signals\nPOST /strategies/evaluate   → run evaluation\nPOST /backtests/run         → run backtest\nPOST /backtests/walk-forward→ walk-forward\nPOST /orders/paper          → simulate order\nPOST /execution/enqueue     → enqueue order\nPOST /execution/multi-leg   → complex options\nPOST /execution/square-off  → close all\n```\n**AI/ML**\n```\nPOST /high-end/scan         → full AI scan\nPOST /ai-council/preview    → council advisory\nPOST /neural/predict-preview→ neural bundle\nPOST /quantum/optimize-preview → portfolio opt\nPOST /marl/advisory-preview → MARL advisory\nGET  /ai-council/decisions  → history\nGET  /quantum/results       → opt results\nGET  /neural/meta-labeler   → labeler status\nGET  /paper/learning-journal→ learning events\n```\n**Data & DB**\n```\nPOST /data/instruments/refresh → master fetch\nPOST /data/candles          → OHLCV history\nGET  /db/trades|equity-curve|daily-pnl\nGET  /portfolio/positions\nGET  /risk/rejections|compliance\nGET  /traces                → decision traces\nGET  /traces/{id}/replay    → trace replay\nGET  /policies              → RL policies\nPOST /policies/promote|rollback\n```",
+      "x": -2490,
+      "y": -2380,
+      "width": 1200,
+      "height": 820,
+      "color": "5"
+    },
+    {
+      "id": "api_auth_layer",
+      "type": "text",
+      "text": "## 🔑 Auth Middleware\n\n```python\n# trading_platform/api/app.py\nasync def verify_token(credentials):\n    if not settings.api_auth_required:\n        return  # CI / dev bypass\n    if credentials.credentials != settings.api_auth_token:\n        raise HTTPException(401)\n```\n\n**Config flags**\n- `API_AUTH_REQUIRED=false` (dev/CI)\n- `API_AUTH_TOKEN=<secret>` (prod)\n- CORS: localhost:3100, localhost:5173",
+      "x": -2490,
+      "y": -1500,
+      "width": 580,
+      "height": 350,
+      "color": "5"
+    },
+    {
+      "id": "api_runtime",
+      "type": "text",
+      "text": "## ⚙️ TradingRuntime (api/runtime.py)\n\nSingleton orchestrator holding all services:\n\n```python\nclass TradingRuntime:\n    settings: Settings\n    broker: BrokerAdapter          # paper/live\n    persistence: PersistenceLayer  # SQLite\n    risk_engine: RiskEngine\n    execution_router: ExecutionRouter\n    oms: OrderManagementSystem\n    portfolio: PortfolioLedger\n    event_bus: EventBus\n    live_feed: LiveFeedService\n    neural_service: NeuralServingService\n    quantum_service: QuantumService\n    ai_council: AICouncilService\n    marl_service: MARLService\n    goal_governor: GoalGovernorService\n    trace_store: TraceStore\n    policy_registry: PolicyRegistry\n```\n\n**Lifecycle**\n1. `startup()` → init all services\n2. Optionally auto-start agent & live feed\n3. `shutdown()` → graceful close",
+      "x": -1860,
+      "y": -1500,
+      "width": 570,
+      "height": 480,
+      "color": "5"
+    },
+
+    {
+      "id": "backend_header",
+      "type": "text",
+      "text": "## ⚙️ CORE BACKEND — Agent Loop · Decision Pipeline · Execution",
+      "x": -1180,
+      "y": -3100,
+      "width": 1100,
+      "height": 60,
+      "color": "2"
+    },
+    {
+      "id": "agent_loop",
+      "type": "text",
+      "text": "## 🤖 Agent Loop (agent/trading_agent.py)\n\n**Cycle every 300s (configurable):**\n```\n1. market_hours.check() → skip if closed\n2. live_feed.sync_prices() → update marks\n3. exit_manager.check_exits() → SL/TP triggers\n4. for underlying in SCAN_UNDERLYINGS:\n     decision_pipeline.scan(underlying)\n       → DecisionCandidate[]\n     for candidate in approved:\n       execution_router.enqueue(candidate)\n5. publish AgentCycleResult → event_bus\n```\n\n**Scheduled Events (IST)**\n- `09:00` Pre-market: refresh instruments, start feed\n- `09:15` Market open: begin scan loop\n- `15:25` EOD: square-off all open positions\n- `15:30` Market close: stop feed, publish EOD report\n\n**MCX Extended:** continues until 23:30 for commodities",
+      "x": -1180,
+      "y": -2980,
+      "width": 1100,
+      "height": 420,
+      "color": "2"
+    },
+    {
+      "id": "decision_pipe",
+      "type": "text",
+      "text": "## 🧠 Decision Pipeline (decision/pipeline.py)\n\n```\nDecisionPipeline.scan(underlying):\n  │\n  ├─ 1. RegimeClassifier.classify()\n  │      → BULLISH / BEARISH / VOLATILE /\n  │        NEUTRAL / TRENDING / EVENT_RISK\n  │\n  ├─ 2. StrategyFactory.select(regime)\n  │      → equity: momentum, mean-reversion\n  │        derivatives: covered_call, iron_condor\n  │        synthetic: pairs, spread\n  │\n  ├─ 3. Signal.compute(bars, features)\n  │      → side: BUY/SELL, confidence, price\n  │\n  ├─ 4. PositionSizer.compute()\n  │      → regime-aware + target-scaled qty\n  │\n  ├─ 5. RiskEngine.evaluate(candidate)\n  │      → approved: bool, risk_score, reason\n  │\n  └─ 6. DecisionTrace.record()\n         → SQLite trace_store\n```\n\n**Decision Fusion** (decision_fusion/)\n- Ensemble: merge AI Council + Neural + Quantum\n- GoalGovernor: scale positions per profit target",
+      "x": -1180,
+      "y": -2500,
+      "width": 1100,
+      "height": 560,
+      "color": "2"
+    },
+    {
+      "id": "exec_layer",
+      "type": "text",
+      "text": "## 📋 Execution Layer (execution/)\n\n**Components:**\n- `OrderManagementSystem` — order lifecycle events\n- `ExecutionRouter` — broker selection per mode\n- `ExecutionScheduler` — rate limiter (orders/min)\n- `FillProcessor` — slippage + charge calc\n- `MultiLegManager` — complex options strategies\n- `ManualApprovalGate` — human review for large orders\n- `ExitManager` — SL/TP/trailing-stop tracking\n- `ReconciliationService` — broker position sync\n- `EmergencySquareOff` — kill-switch close all\n\n**Order Flow:**\n```\nenqueue(OrderIntent)\n  → validate (mode, symbol, qty, risk)\n  → market_hours check\n  → ManualApprovalGate (if notional > threshold)\n  → ExecutionScheduler.rate_check()\n  → broker.submit_order()\n  → FillProcessor.apply(slippage, charges)\n  → portfolio.update()\n  → persist trade → SQLite\n  → event_bus.publish(ORDER_FILLED)\n  → WebSocket push → dashboard\n```",
+      "x": -1180,
+      "y": -1880,
+      "width": 1100,
+      "height": 540,
+      "color": "2"
+    },
+    {
+      "id": "risk_engine",
+      "type": "text",
+      "text": "## 🛡️ Risk Engine (risk/)\n\n**Limits (configurable in config.py):**\n- `max_drawdown: 10%` of peak equity\n- `max_daily_loss: 2%` of capital\n- `max_position_pct: 5%` per symbol\n- `max_margin_utilization: 60%`\n- `max_orders_per_day: 50`\n- `block_naked_option_selling: True`\n\n**Risk Checks:**\n```\nRiskEngine.evaluate(candidate):\n  1. drawdown guard → reject if breached\n  2. daily loss circuit breaker\n  3. position concentration check\n  4. margin utilization check\n  5. compliance.check() (SEBI rules)\n  6. event_risk.check() (earnings, RBI, budget)\n  7. return RiskDecision(approved, score, reason)\n```\n\n**Governance (7-gate live readiness):**\n1. Auth token configured\n2. Instruments loaded\n3. Angel One credentials set\n4. Risk health OK\n5. Kill switch NOT active\n6. Market data NOT stale\n7. Live confirmation phrase set",
+      "x": -1180,
+      "y": -1280,
+      "width": 1100,
+      "height": 520,
+      "color": "2"
+    },
+
+    {
+      "id": "aiml_header",
+      "type": "text",
+      "text": "## 🧪 AI / ML LAYER — Council · Neural · Quantum · MARL · Goal Governor",
+      "x": 120,
+      "y": -3100,
+      "width": 1100,
+      "height": 60,
+      "color": "6"
+    },
+    {
+      "id": "ai_council",
+      "type": "text",
+      "text": "## 🏛️ AI Council (agents/specialists.py)\n\n**Architecture:** Local LLM multi-agent debate\n\n**Agents:**\n- `TrendFollowingAgent` — momentum signals\n- `MeanReversionAgent` — statistical reversion\n- `VolatilityAgent` — regime + IV analysis\n- `RiskCriticAgent` — veto authority\n- `CoordinatorAgent` — debate orchestration\n\n**Decision Flow:**\n```\n1. Each agent votes: action + confidence\n2. If consensus < 0.65 → trigger debate\n3. RiskCritic evaluates → veto if score > 0.8\n4. PortfolioAgent → max_heat sizing\n5. ExecutionAgent → order_type advice\n6. Return AICouncilDecision:\n   { action, consensus_score, votes[],\n     risk_critique, strategy_proposals[] }\n```\n\n**LLM Backends** (Model Gateway):\n- `stub` — deterministic fallback (no LLM)\n- `ollama` — local Ollama server\n- `llama_cpp` — llama.cpp HTTP server\n- `vllm` — vLLM OpenAI-compatible server",
+      "x": 120,
+      "y": -2980,
+      "width": 1100,
+      "height": 520,
+      "color": "6"
+    },
+    {
+      "id": "neural_lab",
+      "type": "text",
+      "text": "## 🧬 Neural Lab (neural/)\n\n**Models:**\n- `DirectionForecaster` — P(up) per symbol\n- `VolatilityForecaster` — GARCH + LSTM\n- `SentimentAnalyzer` — news/text scoring\n- `GraphCorrelationModel` — pairwise correlation\n- `TailRiskEstimator` — extreme move probability\n\n**NeuralBundle output:**\n```python\n{\n  should_trade: bool,       # uncertainty gate\n  overall_uncertainty: float,\n  forecasts: [\n    { symbol, direction_probability,\n      expected_return, model_uncertainty }\n  ],\n  tail_risks: [\n    { symbol, extreme_move_probability,\n      expected_max_drawdown }\n  ],\n  correlation_risk: {\n    max_pairwise_correlation,\n    contagion_risk_score\n  }\n}\n```\n\n**Meta-Labeler:**\n- Labels decisions with outcomes post-trade\n- Feeds learning journal for RL training\n- Updates meta-model weights online",
+      "x": 120,
+      "y": -2400,
+      "width": 1100,
+      "height": 540,
+      "color": "6"
+    },
+    {
+      "id": "quantum_lab",
+      "type": "text",
+      "text": "## ⚛️ Quantum Lab (quantum/)\n\n**Purpose:** Portfolio subset selection via QUBO\n\n**Backends:**\n- `classical` — brute-force / greedy solver\n- `qiskit` — QAOA / VQE simulation\n- `dwave` — D-Wave Leap annealing (cloud)\n\n**QUBO Formulation:**\n```\nminimize: -Σ edge_i·x_i + λ·Σ_ij corr_ij·x_i·x_j\nsubject to: Σ x_i = K  (cardinality gate)\n            x_i ∈ {0,1}\n```\n\n**Output: QuantumOptimizationResult**\n```python\n{\n  selected_symbols: str[],\n  backend_used: str,\n  objective_value: float,\n  classical_baseline_objective: float,\n  improvement_over_classical: float,\n  beats_baseline: bool,\n  constraints_satisfied: bool\n}\n```\n\n**Gate:** Only use if `improvement > min_threshold`",
+      "x": 120,
+      "y": -1800,
+      "width": 1100,
+      "height": 520,
+      "color": "6"
+    },
+    {
+      "id": "marl_lab",
+      "type": "text",
+      "text": "## 🤝 MARL Lab (rl/ + agents/)\n\n**Multi-Agent Reinforcement Learning**\n\n**Agents:** Independent Q-learners per strategy\n**Environment:** Market simulation (rl/env.py)\n- State: OHLCV + technical features\n- Action: BUY / SELL / HOLD\n- Reward: risk-adjusted P&L\n\n**Policy Registry (policies/):**\n```\nresearch → shadow → paper → live_canary\n         → live_approved → disabled\n```\nPromote via `/policies/promote`\nRollback via `/policies/rollback`\n\n**Advisory output:**\n```python\nMarlAdvisoryResult {\n  action: str, confidence: float,\n  majority_action_label: str,\n  majority_confidence: float\n}\n```",
+      "x": 120,
+      "y": -1220,
+      "width": 1100,
+      "height": 440,
+      "color": "6"
+    },
+    {
+      "id": "goal_governor",
+      "type": "text",
+      "text": "## 🎯 Goal Governor (goal/ + decision_fusion/)\n\n**Annual Target:** ₹5 crore (configurable)\n\n**Tracks:**\n- `realized_pnl` vs `required_daily_run_rate`\n- `current_equity`, `days_elapsed`\n- `drawdown_budget_remaining`\n\n**Scaling Logic:**\n- Ahead of target → reduce position size\n- Behind target → increase sizing (capped)\n- At max drawdown → enter preservation mode\n\n**Output:**\n```python\nGoalGovernorStatus {\n  on_track: bool,\n  recommendation: str,  # SCALE_UP / MAINTAIN / REDUCE\n  allocation_bias: str,\n  max_scaling_multiplier: float\n}\n```",
+      "x": 120,
+      "y": -720,
+      "width": 1100,
+      "height": 380,
+      "color": "6"
+    },
+
+    {
+      "id": "strategies_header",
+      "type": "text",
+      "text": "## 📈 STRATEGIES & BACKTESTING",
+      "x": 1380,
+      "y": -3100,
+      "width": 960,
+      "height": 60,
+      "color": "3"
+    },
+    {
+      "id": "strategies",
+      "type": "text",
+      "text": "## 📊 Strategy Catalog (strategies/)\n\n**Equity Strategies:**\n- `MomentumStrategy` — 20-day breakout\n- `MeanReversionStrategy` — Bollinger bands\n- `TrendFollowingStrategy` — EMA crossover\n\n**Derivatives Strategies:**\n- `CoveredCallStrategy` — yield enhancement\n- `IronCondorStrategy` — range-bound premium\n- `BullCallSpreadStrategy` — directional options\n- `BearPutSpreadStrategy` — directional puts\n- `StrangleStrategy` — volatility play\n\n**Selection:**\n- Regime-based: BULLISH→momentum, VOLATILE→condor\n- Meta-model ranks strategies by recent performance\n- Walk-forward validation gates promotion\n\n**Options Engine (derivatives/):**\n- Greeks: Delta, Gamma, Theta, Vega, Rho\n- IV surface builder (Newton-Raphson)\n- Expiry calendar (weekly/monthly NSE)\n- Multi-leg order builder + rollover planner",
+      "x": 1380,
+      "y": -2980,
+      "width": 960,
+      "height": 620,
+      "color": "3"
+    },
+    {
+      "id": "backtesting",
+      "type": "text",
+      "text": "## 🔁 Backtesting Engine (backtesting/)\n\n**Deterministic simulation (no lookahead):**\n```\nfor each bar t in [start, end]:\n  signal = strategy.compute(bars[0:t-1])\n  if signal and risk.approve():\n    exec at bar[t].open\n    slippage = bid_ask_halfspread\n               + sqrt_impact * sqrt(qty/ADV)\n    charges = brokerage + STT + stamp\n            + SEBI + exchange_fee\n    portfolio.fill(price + slippage + charges)\n\nmetrics:\n  Sharpe-like ratio, max_drawdown,\n  win_rate, profit_factor, return_pct\n```\n\n**Walk-Forward Validation:**\n- Train window → test window (rolling)\n- Degradation detection: test_sharpe < train*0.7\n- `mean_test_return`, `mean_test_sharpe`\n\n**Charges (Indian Markets):**\n- Brokerage: 0.03% / ₹20 cap\n- STT: 0.1% on equity delivery\n- Exchange: 0.00345% NSE\n- SEBI: ₹10 per crore\n- GST: 18% on brokerage",
+      "x": 1380,
+      "y": -2300,
+      "width": 960,
+      "height": 620,
+      "color": "3"
+    },
+    {
+      "id": "portfolio",
+      "type": "text",
+      "text": "## 💰 Portfolio & Analytics\n\n**Portfolio Ledger (portfolio/ledger.py):**\n- Cash / equity / realized P&L / unrealized P&L\n- Peak equity / drawdown tracking\n- Open positions with FIFO cost basis\n- Position scaling via GoalGovernor\n\n**Performance Metrics:**\n```python\nPortfolioSnapshot {\n  cash, equity, realized_pnl,\n  unrealized_pnl, drawdown, peak_equity\n}\n\nTargetProgress {\n  annual_target, start_capital,\n  current_equity, realized_pnl,\n  elapsed_days, required_run_rate,\n  current_gap, allocation_bias\n}\n```\n\n**Validation (validation/):**\n- `MonteCarloValidator` — 1000 path simulation\n- `TournamentEvaluator` — strategy head-to-head\n- `PostMortemAnalyzer` — trade attribution",
+      "x": 1380,
+      "y": -1620,
+      "width": 960,
+      "height": 500,
+      "color": "3"
+    },
+
+    {
+      "id": "data_header",
+      "type": "text",
+      "text": "## 📡 DATA LAYER — Angel One · Live Feed · Instruments · Synthetic",
+      "x": -4100,
+      "y": -880,
+      "width": 2300,
+      "height": 60,
+      "color": "2"
+    },
+    {
+      "id": "broker_adapter",
+      "type": "text",
+      "text": "## 🏦 Broker Adapters (broker/)\n\n**Angel One (Live)**\n```python\nAngelOneBroker:\n  login()          → TOTP auth\n  get_profile()    → account info\n  get_funds()      → margin/cash\n  place_order()    → NSE/BSE order\n  get_positions()  → open positions\n  get_holdings()   → delivery holdings\n  cancel_order()   → order cancel\n```\n- SmartAPI REST client\n- TOTP-based session refresh\n- Rate limiting: 3 req/sec\n\n**SimulatedBroker (Paper/Backtest)**\n- In-memory order book\n- Market order fill at last tick\n- Slippage + charges applied\n- No external API calls\n\n**Capability Registry:**\n- Runtime broker feature detection\n- Graceful fallback to simulated",
+      "x": -4100,
+      "y": -760,
+      "width": 740,
+      "height": 580,
+      "color": "2"
+    },
+    {
+      "id": "live_feed",
+      "type": "text",
+      "text": "## 📶 Live Feed (data/live_feed.py)\n\n**Angel One WebSocket feed:**\n- Subscribe up to 80 symbols\n- Receives: LTP, volume, OI ticks\n- Updates in-memory tick store\n- Publishes TICK events → event_bus\n\n**Symbols:**\n```python\ndefault = [\n  'NIFTY', 'BANKNIFTY', 'FINNIFTY',\n  'RELIANCE', 'TCS', 'INFY', 'HDFC',\n  'ICICIBANK', 'AXISBANK', 'SBIN', ...\n]\n```\n\n**Status:**\n```python\nLiveFeedSnapshot {\n  running: bool,\n  subscribed_symbols: str[],\n  tick_count: int\n}\n```\n\n**Historical Data:**\n- `angel_one_history.py` → OHLCV candles\n- Timeframes: 1m, 5m, 15m, 1d\n- Cached to `data/` directory\n- Synthetic fallback for backtests",
+      "x": -3300,
+      "y": -760,
+      "width": 740,
+      "height": 580,
+      "color": "2"
+    },
+    {
+      "id": "instruments",
+      "type": "text",
+      "text": "## 📋 Instrument Master (data/)\n\n**Angel One Instrument Cache:**\n- Downloads full NSE/BSE/MCX master\n- ~50k+ instruments (equity + F&O)\n- Cached to `data/instruments.json`\n- Refreshed daily at pre-market\n\n**Token Lookup:**\n```python\nInstrumentMaster.lookup(symbol)\n  → { token, exchange, segment,\n      lot_size, tick_size, expiry }\n```\n\n**Universe (domain/models.py):**\n```python\nInstrument {\n  symbol: str\n  exchange: Exchange  # NSE/BSE/MCX\n  segment: Segment    # EQ/FO/CD/MCX\n  type: str          # EQ/CE/PE/FUT\n  lot_size: int\n  expiry: date | None\n}\n```\n\n**Feature Store (ai/feature_store.py):**\n- RSI, MACD, BB, ATR, OBV, VWAP\n- Normalised technical indicators\n- Symbol-keyed feature vectors\n- Persisted for meta-labeling",
+      "x": -2500,
+      "y": -760,
+      "width": 740,
+      "height": 580,
+      "color": "2"
+    },
+    {
+      "id": "event_bus",
+      "type": "text",
+      "text": "## 🚌 Event Bus (event_bus.py)\n\n**In-memory pub/sub backbone:**\n\n**Streams:**\n- `TICKS` — live price updates\n- `ORDERS` — order lifecycle events\n- `FILLS` — trade fills\n- `RISK` — risk decisions\n- `AGENT` — agent cycle results\n- `LABELS` — outcome labels\n- `LEARNING` — meta-model updates\n\n**Usage:**\n```python\nevent_bus.publish('ORDERS', payload)\nevent_bus.subscribe('FILLS', handler)\n```\n\n**Dashboard push:**\n- WS handler subscribes to all streams\n- Aggregates into `WsDashboardMessage`\n- Pushes to all connected browsers\n\n**EventBusSummary:**\n```python\n{ event_count, streams: dict,\n  latest_event, backend: 'memory' }\n```",
+      "x": -1700,
+      "y": -760,
+      "width": 740,
+      "height": 580,
+      "color": "2"
+    },
+    {
+      "id": "trace_store",
+      "type": "text",
+      "text": "## 🔍 Trace Store (trace/store.py)\n\n**DecisionTrace — per-scan record:**\n```python\nDecisionTrace {\n  trace_id: str          # UUID\n  execution_mode: str\n  created_at: datetime\n  symbol_universe: str[]\n  quantum_result_id: str?\n  order_intent_ids: str[]\n  risk_decisions: dict[]\n  neural_model_versions: dict\n}\n```\n\n**TraceReplay — joined view:**\n```python\nTraceReplayResponse {\n  trace_id, trace,\n  summary: { status, lifecycle_complete,\n    order_count, fill_count,\n    journal_event_count, slippage_count,\n    label_count, learning_update_count },\n  timeline: event[],    # chronological\n  risk_decisions: []\n}\n```\n\n**Learning Journal (paper mode):**\n- Links decisions to outcomes\n- Computes outcome labels (win/loss/neutral)\n- Feeds meta-labeler for online learning",
+      "x": -900,
+      "y": -760,
+      "width": 740,
+      "height": 580,
+      "color": "2"
+    },
+
+    {
+      "id": "db_header",
+      "type": "text",
+      "text": "## 🗄️ DATABASE — SQLite (data/trading.db)",
+      "x": 120,
+      "y": -880,
+      "width": 1100,
+      "height": 60,
+      "color": "3"
+    },
+    {
+      "id": "database",
+      "type": "text",
+      "text": "## 📊 SQLite Schema (data/persistence.py)\n\n**7 Core Tables:**\n\n```sql\ntrades\n  trade_id, order_id, symbol, side,\n  quantity, price, charges, timestamp,\n  strategy_name, execution_mode, is_test\n\nportfolio_snapshots\n  recorded_at, cash, equity,\n  realized_pnl, unrealized_pnl,\n  drawdown, execution_mode\n\ndaily_pnl\n  trade_date, realized_pnl, unrealized_pnl,\n  total_trades, winning_trades, ending_equity\n\nmodel_runs\n  run_at, model_name, symbol,\n  regime, signal, confidence, metadata\n\nrisk_events\n  occurred_at, event_type, symbol,\n  reason, risk_score, approved\n\nopen_positions\n  symbol, quantity, entry_price,\n  current_price, unrealized_pnl, mode\n\nfeature_history\n  symbol, timestamp, feature_vector (JSON)\n```\n\n**Thread safety:** `threading.RLock`\n**Location:** `/app/data/trading.db` (Docker volume)\n**Backup:** Mounted volume persists across restarts",
+      "x": 120,
+      "y": -760,
+      "width": 1100,
+      "height": 620,
+      "color": "3"
+    },
+    {
+      "id": "config",
+      "type": "text",
+      "text": "## ⚙️ Configuration (config.py)\n\n**70+ settings via env vars:**\n\n```python\n# Execution\nEXECUTION_MODE=PAPER          # BACKTEST|PAPER|LIVE\nBROKER=ANGEL_ONE\nINITIAL_CAPITAL=1000000       # ₹10 lakh\n\n# Risk Limits\nMAX_DRAWDOWN=0.10\nMAX_DAILY_LOSS=0.02\nMAX_POSITION_PCT=0.05\nMAX_MARGIN_UTILIZATION=0.60\nMAX_ORDERS_PER_DAY=50\n\n# Angel One Credentials\nANGEL_ONE_API_KEY=...\nANGEL_ONE_CLIENT_CODE=...\nANGEL_ONE_TOTP_SECRET=...\n\n# API Auth\nAPI_AUTH_REQUIRED=false        # true in prod\nAPI_AUTH_TOKEN=<secret>\n\n# Feature Flags\nENABLE_AI_COUNCIL=true\nENABLE_NEURAL_LAB=true\nENABLE_QUANTUM_LAB=true\nENABLE_MARL_LAB=true\nENABLE_GOAL_GOVERNOR=true\n\n# LLM Gateway\nLLM_GATEWAY_MODE=stub          # ollama|llama_cpp|vllm\nLLM_BASE_URL=http://localhost:11434\n\n# Quantum\nQUANTUM_BACKEND=classical      # qiskit|dwave\nQUANTUM_CARDINALITY_K=5\n\n# Goals\nYEARLY_PROFIT_TARGET=5000000  # ₹50 lakh\n```",
+      "x": 1380,
+      "y": -1060,
+      "width": 960,
+      "height": 720,
+      "color": "3"
+    },
+
+    {
+      "id": "docker_header",
+      "type": "text",
+      "text": "## 🐳 DOCKER INFRASTRUCTURE",
+      "x": -4100,
+      "y": 220,
+      "width": 1100,
+      "height": 60,
+      "color": "1"
+    },
+    {
+      "id": "docker",
+      "type": "text",
+      "text": "## 🐳 Docker Compose (3 Services)\n\n**trading-api** (FastAPI)\n```yaml\nimage: automated-trading-ml-project-trading-api\nports: 127.0.0.1:8100:8000\nvolumes:\n  - ./data:/app/data\n  - ./backtest_results:/app/backtest_results\n  - ./models:/app/models\nhealthcheck:\n  test: curl -f http://localhost:8000/health\n  interval: 30s\n  start_period: 60s\n```\n\n**trading-scheduler** (Daily jobs)\n```yaml\ncommand: python scripts/daily_scheduler.py\ndepends_on:\n  trading-api: { condition: service_healthy }\nhealthcheck: checks API connectivity\n```\n\n**trading-frontend** (Nginx + React)\n```yaml\nbuild: hft_frontend/\nports: 127.0.0.1:3100:3000\ndepends_on:\n  trading-api: { condition: service_healthy }\n# Nginx proxies /api → trading-api:8000\n# and          /ws  → trading-api:8000/ws\n```\n\n**Network:** `trading-network` bridge\n**Build:** `docker compose build`\n**Start:** `docker compose up -d`\n**Logs:** `docker compose logs -f trading-api`",
+      "x": -4100,
+      "y": 340,
+      "width": 1100,
+      "height": 680,
+      "color": "1"
+    },
+    {
+      "id": "ci_cd",
+      "type": "text",
+      "text": "## 🔄 CI/CD (GitHub Actions)\n\n**Workflow:** `.github/workflows/ci.yml`\n\n**Triggers:** push to any branch\n\n**Test step env vars:**\n```yaml\nenv:\n  API_AUTH_REQUIRED: \"false\"\n  AUTO_START_AGENT: \"false\"\n  AUTO_START_LIVE_FEED: \"false\"\n  ENABLE_AI_COUNCIL: \"false\"\n  ENABLE_NEURAL_LAB: \"false\"\n  ENABLE_QUANTUM_LAB: \"false\"\n  ENABLE_MARL_LAB: \"false\"\n  ENABLE_GOAL_GOVERNOR: \"false\"\n```\n\n**Command:**\n```bash\npython -m unittest discover -s tests -v\n```\n\n**Docker build workflow:**\n- Triggers on push to `main`\n- Builds and pushes to GHCR\n- Image tags: `latest` + commit SHA\n\n**Branches:**\n- `develop` — active development\n- `main` — production / Docker build",
+      "x": -2900,
+      "y": 340,
+      "width": 900,
+      "height": 680,
+      "color": "1"
+    },
+    {
+      "id": "testing",
+      "type": "text",
+      "text": "## 🧪 Test Suite (tests/ — 45+ files)\n\n**Core Integration:**\n- `test_architecture_wiring.py` — all components compose\n- `test_runtime.py` — TradingRuntime init + endpoints\n- `test_phase1.py` — full pipeline: backtest → agent → trades\n- `test_config.py` — settings validation\n\n**Execution & Risk:**\n- `test_backtesting.py` · `test_risk_engine.py`\n- `test_execution_router.py` · `test_decision_pipeline.py`\n- `test_derivatives_engine.py` · `test_strategy_catalog.py`\n\n**Broker & Data:**\n- `test_angel_one_broker.py` · `test_angel_one_data.py`\n- `test_instrument_master.py` · `test_decision_fusion.py`\n\n**AI/ML:**\n- `test_ai_agents.py` · `test_ai_models.py`\n- `test_neural_lab.py` · `test_neural_serving_v2.py`\n- `test_quantum_service.py` · `test_quantum_qubo.py`\n- `test_rl_lab.py` · `test_meta_labeler.py`\n- `test_local_model_gateway.py`\n\n**Advanced:**\n- `test_high_end_integration.py` — Council + Neural + Quantum\n- `test_agent_council.py` · `test_trace_store.py`\n- `test_vector_memory.py` · `test_streaming_topics.py`\n- `test_validator_*.py` — walk-forward, Monte Carlo, tournament\n- `test_label_factory.py` · `test_monitoring.py`",
+      "x": -1700,
+      "y": 340,
+      "width": 1200,
+      "height": 680,
+      "color": "1"
+    },
+    {
+      "id": "news_intel",
+      "type": "text",
+      "text": "## 📰 Intelligence Layer (news/ + ai/)\n\n**News Sentiment (news/):**\n- `SentimentAnalyzer` — VADER + neural model\n- `EconomicCalendar` — RBI, budget, earnings dates\n- `NewsIntelligence` — scrape + analyze\n- `EventRiskGuard` — blocks orders during high-risk events\n\n**Regime Detection (ai/agents.py):**\n```python\nRegimeClassifier.classify(symbol, bars):\n  features = [\n    volatility_regime,   # ATR zscore\n    trend_strength,      # ADX\n    momentum_score,      # ROC 20d\n    volume_anomaly,      # volume zscore\n    options_skew,        # put-call ratio\n  ]\n  → BULLISH | BEARISH | VOLATILE |\n    NEUTRAL | TRENDING_UP | TRENDING_DOWN |\n    EVENT_RISK\n```\n\n**Vector Memory (agents/vector_memory.py):**\n- Semantic search over historical decisions\n- Embeddings stored in-memory (FAISS-style)\n- Used by AI Council for context retrieval",
+      "x": -400,
+      "y": 340,
+      "width": 1000,
+      "height": 680,
+      "color": "1"
+    },
+    {
+      "id": "logging_safety",
+      "type": "text",
+      "text": "## 🔒 Security & Logging\n\n**logging_safety.py:**\n- Redacts API keys, TOTPs, tokens from logs\n- Pattern-based secret scrubbing\n- Safe for production log aggregation\n\n**Execution Modes (domain/enums.py):**\n```python\nclass ExecMode(str, Enum):\n  BACKTEST = 'BACKTEST'\n  PAPER = 'PAPER'\n  SHADOW_LIVE = 'SHADOW_LIVE'\n  LIVE = 'LIVE'\n  LIVE_MANUAL_APPROVAL = 'LIVE_MANUAL_APPROVAL'\n  LIVE_AUTO_LIMITED = 'LIVE_AUTO_LIMITED'\n```\n\n**Kill Switch:**\n- `POST /kill-switch { reason: str }`\n- Immediately stops all new orders\n- Triggers emergency square-off\n- Requires manual re-arm to resume\n\n**Live Confirmation:**\n- Must set phrase: `I_ACCEPT_REAL_MONEY_LIVE_ORDERS`\n- Required before any live order executes\n- Separate from API auth token",
+      "x": 720,
+      "y": 340,
+      "width": 900,
+      "height": 680,
+      "color": "1"
+    }
+  ],
+  "edges": [
+    {
+      "id": "e_browser_fe",
+      "fromNode": "e2e_flow",
+      "toNode": "fe_views",
+      "label": "renders",
+      "fromSide": "left",
+      "toSide": "right"
+    },
+    {
+      "id": "e_fe_api",
+      "fromNode": "fe_apiclient",
+      "toNode": "api_public",
+      "label": "HTTP GET",
+      "fromSide": "right",
+      "toSide": "left"
+    },
+    {
+      "id": "e_fe_api_auth",
+      "fromNode": "fe_apiclient",
+      "toNode": "api_auth",
+      "label": "HTTP POST + Bearer",
+      "fromSide": "right",
+      "toSide": "left"
+    },
+    {
+      "id": "e_fe_state",
+      "fromNode": "fe_views",
+      "toNode": "fe_state",
+      "label": "useStore()",
+      "fromSide": "bottom",
+      "toSide": "top"
+    },
+    {
+      "id": "e_ws_state",
+      "fromNode": "fe_apiclient",
+      "toNode": "fe_state",
+      "label": "applyWsSnapshot()",
+      "fromSide": "left",
+      "toSide": "right"
+    },
+    {
+      "id": "e_api_runtime",
+      "fromNode": "api_auth",
+      "toNode": "api_runtime",
+      "label": "delegates to",
+      "fromSide": "bottom",
+      "toSide": "top"
+    },
+    {
+      "id": "e_runtime_agent",
+      "fromNode": "api_runtime",
+      "toNode": "agent_loop",
+      "label": "start/stop",
+      "fromSide": "right",
+      "toSide": "left"
+    },
+    {
+      "id": "e_agent_decision",
+      "fromNode": "agent_loop",
+      "toNode": "decision_pipe",
+      "label": "scan(underlying)",
+      "fromSide": "bottom",
+      "toSide": "top"
+    },
+    {
+      "id": "e_decision_exec",
+      "fromNode": "decision_pipe",
+      "toNode": "exec_layer",
+      "label": "approved candidates",
+      "fromSide": "bottom",
+      "toSide": "top"
+    },
+    {
+      "id": "e_decision_risk",
+      "fromNode": "decision_pipe",
+      "toNode": "risk_engine",
+      "label": "evaluate()",
+      "fromSide": "right",
+      "toSide": "left"
+    },
+    {
+      "id": "e_exec_broker",
+      "fromNode": "exec_layer",
+      "toNode": "broker_adapter",
+      "label": "submit_order()",
+      "fromSide": "bottom",
+      "toSide": "top"
+    },
+    {
+      "id": "e_exec_db",
+      "fromNode": "exec_layer",
+      "toNode": "database",
+      "label": "persist trade",
+      "fromSide": "bottom",
+      "toSide": "top"
+    },
+    {
+      "id": "e_exec_events",
+      "fromNode": "exec_layer",
+      "toNode": "event_bus",
+      "label": "publish ORDER_FILLED",
+      "fromSide": "bottom",
+      "toSide": "top"
+    },
+    {
+      "id": "e_agent_council",
+      "fromNode": "decision_pipe",
+      "toNode": "ai_council",
+      "label": "advisory()",
+      "fromSide": "right",
+      "toSide": "left"
+    },
+    {
+      "id": "e_agent_neural",
+      "fromNode": "decision_pipe",
+      "toNode": "neural_lab",
+      "label": "predict()",
+      "fromSide": "right",
+      "toSide": "left"
+    },
+    {
+      "id": "e_agent_quantum",
+      "fromNode": "decision_pipe",
+      "toNode": "quantum_lab",
+      "label": "optimize()",
+      "fromSide": "right",
+      "toSide": "left"
+    },
+    {
+      "id": "e_agent_marl",
+      "fromNode": "decision_pipe",
+      "toNode": "marl_lab",
+      "label": "advisory()",
+      "fromSide": "right",
+      "toSide": "left"
+    },
+    {
+      "id": "e_decision_goal",
+      "fromNode": "decision_pipe",
+      "toNode": "goal_governor",
+      "label": "scale_factor()",
+      "fromSide": "right",
+      "toSide": "left"
+    },
+    {
+      "id": "e_strategy_decision",
+      "fromNode": "strategies",
+      "toNode": "decision_pipe",
+      "label": "compute signal",
+      "fromSide": "left",
+      "toSide": "right"
+    },
+    {
+      "id": "e_backtest_db",
+      "fromNode": "backtesting",
+      "toNode": "database",
+      "label": "store results",
+      "fromSide": "bottom",
+      "toSide": "right"
+    },
+    {
+      "id": "e_feed_decision",
+      "fromNode": "live_feed",
+      "toNode": "decision_pipe",
+      "label": "tick prices",
+      "fromSide": "top",
+      "toSide": "bottom"
+    },
+    {
+      "id": "e_instruments_decision",
+      "fromNode": "instruments",
+      "toNode": "decision_pipe",
+      "label": "token lookup",
+      "fromSide": "top",
+      "toSide": "bottom"
+    },
+    {
+      "id": "e_trace_decision",
+      "fromNode": "decision_pipe",
+      "toNode": "trace_store",
+      "label": "record trace",
+      "fromSide": "bottom",
+      "toSide": "top"
+    },
+    {
+      "id": "e_neural_trace",
+      "fromNode": "neural_lab",
+      "toNode": "trace_store",
+      "label": "outcome labels",
+      "fromSide": "bottom",
+      "toSide": "top"
+    },
+    {
+      "id": "e_event_ws",
+      "fromNode": "event_bus",
+      "toNode": "api_runtime",
+      "label": "WS push",
+      "fromSide": "top",
+      "toSide": "bottom"
+    },
+    {
+      "id": "e_docker_api",
+      "fromNode": "docker",
+      "toNode": "api_runtime",
+      "label": "runs trading-api",
+      "fromSide": "right",
+      "toSide": "bottom"
+    },
+    {
+      "id": "e_ci_test",
+      "fromNode": "ci_cd",
+      "toNode": "testing",
+      "label": "python -m unittest",
+      "fromSide": "right",
+      "toSide": "left"
+    },
+    {
+      "id": "e_news_decision",
+      "fromNode": "news_intel",
+      "toNode": "risk_engine",
+      "label": "event risk check",
+      "fromSide": "top",
+      "toSide": "bottom"
+    },
+    {
+      "id": "e_portfolio_goal",
+      "fromNode": "portfolio",
+      "toNode": "goal_governor",
+      "label": "equity / pnl",
+      "fromSide": "bottom",
+      "toSide": "right"
+    },
+    {
+      "id": "e_portfolio_risk",
+      "fromNode": "portfolio",
+      "toNode": "risk_engine",
+      "label": "drawdown / exposure",
+      "fromSide": "left",
+      "toSide": "right"
+    },
+    {
+      "id": "e_broker_feed",
+      "fromNode": "broker_adapter",
+      "toNode": "live_feed",
+      "label": "WS tick stream",
+      "fromSide": "right",
+      "toSide": "left"
+    },
+    {
+      "id": "e_config_runtime",
+      "fromNode": "config",
+      "toNode": "api_runtime",
+      "label": "Settings inject",
+      "fromSide": "top",
+      "toSide": "bottom"
+    }
+  ]
+}
