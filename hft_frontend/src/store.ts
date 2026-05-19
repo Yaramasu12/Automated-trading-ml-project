@@ -38,6 +38,14 @@ export type NavView =
   | 'execution'
   | 'intelligence'
   | 'account'
+  | 'ai-council'
+  | 'neural'
+  | 'quantum'
+  | 'goal-governor'
+  | 'policies'
+  | 'traces'
+  | 'ai-lab'
+  | 'tournament'
 
 interface LoadingState {
   signals: boolean

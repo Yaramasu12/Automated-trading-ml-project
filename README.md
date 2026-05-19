@@ -97,12 +97,8 @@ python -m pip freeze > constraints.lock
 ### Run the API
 
 ```bash
-uvicorn trading_platform.api.app:app --reload --reload-dir trading_platform
+uvicorn trading_platform.api.app:app --reload
 ```
-
-Scoping reload to `trading_platform` keeps uvicorn from watching `.venv`,
-`node_modules`, and generated frontend files, which otherwise can cause reload
-storms during local development.
 
 ### Run the dashboard
 

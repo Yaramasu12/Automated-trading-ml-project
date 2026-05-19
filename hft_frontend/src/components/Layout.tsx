@@ -19,6 +19,13 @@ import {
   Menu,
   X,
   MoreHorizontal,
+  Waypoints,
+  AtomIcon,
+  Target,
+  ScrollText,
+  Trophy,
+  Sparkles,
+  Users,
 } from 'lucide-react'
 import { useState, type ReactNode } from 'react'
 import { useStore } from '../store'
@@ -31,23 +38,73 @@ interface NavItem {
   label: string
   icon: ReactNode
   shortLabel?: string
+  group?: string
 }
 
 const NAV: NavItem[] = [
-  { id: 'dashboard',    label: 'Dashboard',   shortLabel: 'Home',      icon: <LayoutDashboard size={16} /> },
-  { id: 'engine',       label: 'Engine',      shortLabel: 'Agent',     icon: <Bot size={16} /> },
-  { id: 'signals',      label: 'Signals',     shortLabel: 'Signals',   icon: <Zap size={16} /> },
-  { id: 'strategies',   label: 'Strategies',  shortLabel: 'Strategy',  icon: <BarChart2 size={16} /> },
-  { id: 'backtest',     label: 'Backtest',    shortLabel: 'Backtest',  icon: <BookOpen size={16} /> },
-  { id: 'models',       label: 'Models',      shortLabel: 'Models',    icon: <Brain size={16} /> },
-  { id: 'risk',         label: 'Risk',        shortLabel: 'Risk',      icon: <Shield size={16} /> },
-  { id: 'execution',    label: 'Execution',   shortLabel: 'Orders',    icon: <GitBranch size={16} /> },
-  { id: 'intelligence', label: 'Intel',       shortLabel: 'Intel',     icon: <Newspaper size={16} /> },
-  { id: 'account',      label: 'Account',     shortLabel: 'Account',   icon: <Cpu size={16} /> },
+  // ── Core ──────────────────────────────────────────────────────────────────
+  { id: 'dashboard',    label: 'Dashboard',    shortLabel: 'Home',     icon: <LayoutDashboard size={16} />, group: 'Core' },
+  { id: 'engine',       label: 'Engine',       shortLabel: 'Agent',    icon: <Bot size={16} />,             group: 'Core' },
+  { id: 'execution',    label: 'Execution',    shortLabel: 'Orders',   icon: <GitBranch size={16} />,       group: 'Core' },
+  { id: 'account',      label: 'Account',      shortLabel: 'Account',  icon: <Cpu size={16} />,             group: 'Core' },
+  // ── Trading ───────────────────────────────────────────────────────────────
+  { id: 'signals',      label: 'Signals',      shortLabel: 'Signals',  icon: <Zap size={16} />,             group: 'Trading' },
+  { id: 'strategies',   label: 'Strategies',   shortLabel: 'Strategy', icon: <BarChart2 size={16} />,       group: 'Trading' },
+  { id: 'backtest',     label: 'Backtest',     shortLabel: 'Backtest', icon: <BookOpen size={16} />,        group: 'Trading' },
+  { id: 'risk',         label: 'Risk',         shortLabel: 'Risk',     icon: <Shield size={16} />,          group: 'Trading' },
+  { id: 'models',       label: 'Models',       shortLabel: 'Models',   icon: <Brain size={16} />,           group: 'Trading' },
+  // ── AI Labs ───────────────────────────────────────────────────────────────
+  { id: 'ai-lab',       label: 'AI Lab',       shortLabel: 'AI Lab',   icon: <Sparkles size={16} />,        group: 'AI Labs' },
+  { id: 'ai-council',   label: 'AI Council',   shortLabel: 'Council',  icon: <Users size={16} />,           group: 'AI Labs' },
+  { id: 'neural',       label: 'Neural Lab',   shortLabel: 'Neural',   icon: <Brain size={16} />,           group: 'AI Labs' },
+  { id: 'quantum',      label: 'Quantum Lab',  shortLabel: 'Quantum',  icon: <AtomIcon size={16} />,        group: 'AI Labs' },
+  // ── Governance ────────────────────────────────────────────────────────────
+  { id: 'goal-governor',label: 'Goal Gov.',    shortLabel: 'Goal',     icon: <Target size={16} />,          group: 'Governance' },
+  { id: 'policies',     label: 'Policies',     shortLabel: 'Policies', icon: <ScrollText size={16} />,      group: 'Governance' },
+  { id: 'traces',       label: 'Trace Replay', shortLabel: 'Traces',   icon: <Waypoints size={16} />,       group: 'Governance' },
+  { id: 'tournament',   label: 'Tournament',   shortLabel: 'Contest',  icon: <Trophy size={16} />,          group: 'Governance' },
+  { id: 'intelligence', label: 'Intel',        shortLabel: 'Intel',    icon: <Newspaper size={16} />,       group: 'Governance' },
 ]
 
-// Bottom tab bar shows 4 primary tabs + a "More" button on mobile
-const BOTTOM_TABS: NavItem[] = NAV.slice(0, 4)
+// Bottom tab bar: 4 most-used + More
+const BOTTOM_TABS: NavItem[] = [
+  NAV.find(n => n.id === 'dashboard')!,
+  NAV.find(n => n.id === 'engine')!,
+  NAV.find(n => n.id === 'signals')!,
+  NAV.find(n => n.id === 'ai-lab')!,
+]
+
+// Group labels for sidebar sections
+const GROUPS = ['Core', 'Trading', 'AI Labs', 'Governance']
+
+function SidebarNavGroup({ group, items, activeView, navigate }: {
+  group: string
+  items: NavItem[]
+  activeView: NavView
+  navigate: (id: NavView) => void
+}) {
+  return (
+    <div className="mb-1">
+      <div className="px-3 pb-1 pt-2 text-[9px] font-semibold uppercase tracking-widest text-gray-600">{group}</div>
+      {items.map((item) => (
+        <button
+          key={item.id}
+          onClick={() => navigate(item.id)}
+          className={clsx(
+            'w-full flex items-center gap-2.5 px-3 py-1.5 rounded-md text-xs transition-colors',
+            activeView === item.id
+              ? 'bg-brand-blue/15 text-brand-blue'
+              : 'text-gray-400 hover:text-gray-200 hover:bg-surface-elevated',
+          )}
+        >
+          {item.icon}
+          <span className="font-medium">{item.label}</span>
+          {activeView === item.id && <ChevronRight size={11} className="ml-auto" />}
+        </button>
+      ))}
+    </div>
+  )
+}
 
 export function Layout({ children }: { children: ReactNode }) {
   const { send } = useDashboardWs()
@@ -59,7 +116,7 @@ export function Layout({ children }: { children: ReactNode }) {
   const runtimeState  = useStore((s) => s.runtimeState)
   const monitoring    = useStore((s) => s.monitoring)
 
-  const mode      = runtimeState?.execution_mode ?? '...'
+  const mode       = runtimeState?.execution_mode ?? '...'
   const killActive = runtimeState?.kill_switch_active ?? false
 
   function toggleKillSwitch() {
@@ -74,10 +131,10 @@ export function Layout({ children }: { children: ReactNode }) {
   return (
     <div className="flex h-screen bg-surface overflow-hidden">
 
-      {/* ── DESKTOP SIDEBAR ── (hidden on mobile) ─────────────────────────── */}
-      <aside className="hidden md:flex w-56 flex-shrink-0 flex-col border-r border-surface-border bg-surface-card">
+      {/* ── DESKTOP SIDEBAR ──────────────────────────────────────────────────── */}
+      <aside className="hidden md:flex w-52 flex-shrink-0 flex-col border-r border-surface-border bg-surface-card">
         {/* Logo */}
-        <div className="px-4 py-4 border-b border-surface-border">
+        <div className="px-4 py-3 border-b border-surface-border">
           <div className="flex items-center gap-2">
             <div className="w-7 h-7 rounded-md bg-brand-blue/20 flex items-center justify-center">
               <Activity size={14} className="text-brand-blue" />
@@ -89,30 +146,23 @@ export function Layout({ children }: { children: ReactNode }) {
           </div>
         </div>
 
-        {/* Nav items */}
-        <nav className="flex-1 px-2 py-3 space-y-0.5 overflow-y-auto">
-          {NAV.map((item) => (
-            <button
-              key={item.id}
-              onClick={() => navigate(item.id)}
-              className={clsx(
-                'w-full flex items-center gap-2.5 px-3 py-2 rounded-md text-sm transition-colors',
-                activeView === item.id
-                  ? 'bg-brand-blue/15 text-brand-blue'
-                  : 'text-gray-400 hover:text-gray-200 hover:bg-surface-elevated',
-              )}
-            >
-              {item.icon}
-              <span className="font-medium">{item.label}</span>
-              {activeView === item.id && <ChevronRight size={12} className="ml-auto" />}
-            </button>
+        {/* Nav — grouped, scrollable */}
+        <nav className="flex-1 px-1.5 py-2 overflow-y-auto">
+          {GROUPS.map((group) => (
+            <SidebarNavGroup
+              key={group}
+              group={group}
+              items={NAV.filter(n => n.group === group)}
+              activeView={activeView}
+              navigate={navigate}
+            />
           ))}
         </nav>
 
         {/* Status footer */}
         <div className="px-3 py-3 border-t border-surface-border space-y-2">
           <div className="flex items-center justify-between">
-            <span className="text-[10px] text-gray-500 uppercase tracking-wider">Connection</span>
+            <span className="text-[10px] text-gray-500 uppercase tracking-wider">WS</span>
             <div className="flex items-center gap-1">
               {wsConnected
                 ? <Wifi size={11} className="text-brand-green" />
@@ -135,7 +185,7 @@ export function Layout({ children }: { children: ReactNode }) {
         </div>
       </aside>
 
-      {/* ── MOBILE DRAWER OVERLAY ─────────────────────────────────────────── */}
+      {/* ── MOBILE DRAWER OVERLAY ────────────────────────────────────────────── */}
       {drawerOpen && (
         <div
           className="md:hidden fixed inset-0 z-40 bg-black/60 backdrop-blur-sm"
@@ -150,7 +200,6 @@ export function Layout({ children }: { children: ReactNode }) {
           drawerOpen ? 'translate-x-0' : '-translate-x-full',
         )}
       >
-        {/* Drawer header */}
         <div className="px-4 py-4 border-b border-surface-border flex items-center justify-between">
           <div className="flex items-center gap-2">
             <div className="w-7 h-7 rounded-md bg-brand-blue/20 flex items-center justify-center">
@@ -169,27 +218,18 @@ export function Layout({ children }: { children: ReactNode }) {
           </button>
         </div>
 
-        {/* Drawer nav */}
-        <nav className="flex-1 px-2 py-3 space-y-0.5 overflow-y-auto">
-          {NAV.map((item) => (
-            <button
-              key={item.id}
-              onClick={() => navigate(item.id)}
-              className={clsx(
-                'w-full flex items-center gap-3 px-3 py-3 rounded-md text-sm transition-colors',
-                activeView === item.id
-                  ? 'bg-brand-blue/15 text-brand-blue'
-                  : 'text-gray-400 hover:text-gray-200 hover:bg-surface-elevated',
-              )}
-            >
-              {item.icon}
-              <span className="font-medium">{item.label}</span>
-              {activeView === item.id && <ChevronRight size={12} className="ml-auto" />}
-            </button>
+        <nav className="flex-1 px-1.5 py-2 overflow-y-auto">
+          {GROUPS.map((group) => (
+            <SidebarNavGroup
+              key={group}
+              group={group}
+              items={NAV.filter(n => n.group === group)}
+              activeView={activeView}
+              navigate={navigate}
+            />
           ))}
         </nav>
 
-        {/* Drawer status */}
         <div className="px-4 py-4 border-t border-surface-border space-y-3">
           <div className="flex items-center justify-between">
             <span className="text-xs text-gray-500">Connection</span>
@@ -206,7 +246,6 @@ export function Layout({ children }: { children: ReactNode }) {
             <span className="text-xs text-gray-500">Mode</span>
             {execModeBadge(mode)}
           </div>
-          {/* Kill switch inside drawer too */}
           <button
             onClick={() => { toggleKillSwitch(); setDrawerOpen(false) }}
             className={clsx(
@@ -222,13 +261,11 @@ export function Layout({ children }: { children: ReactNode }) {
         </div>
       </aside>
 
-      {/* ── MAIN CONTENT AREA ─────────────────────────────────────────────── */}
+      {/* ── MAIN CONTENT AREA ────────────────────────────────────────────────── */}
       <div className="flex-1 flex flex-col min-w-0">
-
         {/* Top bar */}
         <header className="h-12 flex-shrink-0 flex items-center justify-between px-4 border-b border-surface-border bg-surface-card">
           <div className="flex items-center gap-3">
-            {/* Hamburger — mobile only */}
             <button
               className="md:hidden p-1 rounded-md text-gray-400 hover:text-gray-200 active:bg-surface-elevated"
               onClick={() => setDrawerOpen(true)}
@@ -236,7 +273,6 @@ export function Layout({ children }: { children: ReactNode }) {
             >
               <Menu size={18} />
             </button>
-
             <CircleDot
               size={14}
               className={clsx(
@@ -253,14 +289,11 @@ export function Layout({ children }: { children: ReactNode }) {
           </div>
 
           <div className="flex items-center gap-2">
-            {/* WS indicator — mobile */}
             <div className="md:hidden flex items-center gap-1">
               {wsConnected
                 ? <Wifi size={12} className="text-brand-green" />
                 : <WifiOff size={12} className="text-brand-red" />}
             </div>
-
-            {/* Kill switch */}
             <button
               onClick={toggleKillSwitch}
               className={clsx(
@@ -276,13 +309,13 @@ export function Layout({ children }: { children: ReactNode }) {
           </div>
         </header>
 
-        {/* Page content — extra bottom padding on mobile for tab bar */}
+        {/* Page content */}
         <main className="flex-1 overflow-y-auto p-4 md:p-5 pb-20 md:pb-5 animate-fade-in">
           {children}
         </main>
       </div>
 
-      {/* ── MOBILE BOTTOM TAB BAR ─────────────────────────────────────────── */}
+      {/* ── MOBILE BOTTOM TAB BAR ────────────────────────────────────────────── */}
       <nav className="md:hidden fixed bottom-0 left-0 right-0 z-30 bg-surface-card border-t border-surface-border">
         <div className="flex items-center justify-around px-1 py-1 safe-area-bottom">
           {BOTTOM_TABS.map((item) => (
@@ -300,8 +333,6 @@ export function Layout({ children }: { children: ReactNode }) {
               <span className="text-[9px] font-medium truncate">{item.shortLabel ?? item.label}</span>
             </button>
           ))}
-
-          {/* "More" opens the drawer */}
           <button
             onClick={() => setDrawerOpen(true)}
             className={clsx(
