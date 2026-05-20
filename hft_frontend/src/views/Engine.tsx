@@ -552,17 +552,17 @@ export function Engine() {
             <MetricCard label="Status" value={agentRunning ? 'RUNNING' : 'STOPPED'} color={agentRunning ? 'green' : 'gray'} />
             <MetricCard
               label="Scan Interval"
-              value={`${Number(agentStatus?.scan_interval_seconds ?? scanInterval)}s`}
+              value={`${Number(agentStatus?.scan_interval ?? scanInterval)}s`}
               color="blue"
             />
             <MetricCard
               label="Total Scans"
-              value={String(agentStatus?.total_scans ?? 0)}
+              value={String(agentStatus?.scan_count ?? 0)}
               color="cyan"
             />
             <MetricCard
-              label="Total Fills"
-              value={String(agentStatus?.total_fills ?? 0)}
+              label="Enqueued"
+              value={String(agentStatus?.enqueued_total ?? 0)}
               color="green"
             />
           </div>
@@ -658,7 +658,7 @@ export function Engine() {
               <MetricCard label="Cash"        value={inr(livePortfolio.portfolio.cash)}             color="cyan"   />
               <MetricCard label="Unrealized"  value={inr(livePortfolio.portfolio.unrealized_pnl)}  color={livePortfolio.portfolio.unrealized_pnl >= 0 ? 'green' : 'red'} />
               <MetricCard label="Realized"    value={inr(livePortfolio.portfolio.realized_pnl)}    color={livePortfolio.portfolio.realized_pnl >= 0 ? 'green' : 'red'} />
-              <MetricCard label="Drawdown"    value={pct(livePortfolio.portfolio.drawdown)}         color="yellow" />
+              <MetricCard label="Drawdown"    value={pct(livePortfolio.portfolio.drawdown * 100)}   color="yellow" />
             </div>
           )}
 

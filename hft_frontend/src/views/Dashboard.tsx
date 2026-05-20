@@ -166,9 +166,11 @@ export function Dashboard() {
 
   // ── Derived metrics ──────────────────────────────────────────────────────────
   const latestEquity    = livePortfolio?.portfolio.equity ?? equityCurve[equityCurve.length - 1]?.equity ?? 0
-  const latestDrawdown  = livePortfolio?.portfolio.drawdown != null
-    ? livePortfolio.portfolio.drawdown / 100
-    : equityCurve[equityCurve.length - 1]?.drawdown ?? 0
+  // WS portfolio.drawdown is a fraction (e.g. 0.0028 = 0.28%); equity curve
+  // drawdown is stored the same way. Multiply by 100 only at display time.
+  const latestDrawdown  = livePortfolio?.portfolio.drawdown
+    ?? equityCurve[equityCurve.length - 1]?.drawdown
+    ?? 0
   const unrealizedPnl   = livePortfolio?.portfolio.unrealized_pnl ?? 0
   const realizedPnl     = livePortfolio?.portfolio.realized_pnl ?? 0
   const totalPnl        = dailyPnl.reduce((s, d) => s + d.realized_pnl, 0)

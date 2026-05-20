@@ -244,6 +244,18 @@ class TradingAgent:
         if mcx_open:
             active_underlyings.extend(COMMODITY_UNDERLYINGS)
 
+        # Ensure all scan underlyings are subscribed to the live feed.
+        # The pre-market routine expands subscriptions at 09:00 IST, but if
+        # the agent started after market open that expansion was skipped.
+        try:
+            subscribed = set(self._runtime.live_feed.subscribed_symbols())
+            missing = [s for s in active_underlyings if s not in subscribed]
+            if missing:
+                self._runtime.live_feed.add_subscriptions(missing)
+                self._log_activity(f"Live feed expanded: +{len(missing)} symbols subscribed")
+        except Exception as _expand_err:
+            logger.warning("Live feed expansion error: %s", _expand_err)
+
         active_underlyings = self._filter_stale_underlyings(active_underlyings)
         if not active_underlyings:
             self._log_activity("No fresh live ticks available for active session — scan skipped", level="error")
@@ -602,7 +614,12 @@ class TradingAgent:
         fresh: list[str] = []
         stale: list[str] = []
         for symbol in underlyings:
-            if feed.staleness_tracker.is_stale(symbol):
+            # age_seconds() returns None when the symbol has NEVER received a tick,
+            # which happens for symbols not yet in the live feed subscription list.
+            # Never-subscribed ≠ stale: only filter symbols that WERE receiving ticks
+            # but have since gone silent (genuine feed disruption).
+            age = feed.staleness_tracker.age_seconds(symbol)
+            if age is not None and age > feed.staleness_tracker.hard_seconds:
                 stale.append(symbol)
             else:
                 fresh.append(symbol)
