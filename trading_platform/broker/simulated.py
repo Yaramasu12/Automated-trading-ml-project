@@ -30,6 +30,14 @@ from trading_platform.domain.models import OrderIntent
 
 
 class SimulatedBrokerClient(BrokerClient):
+    """Simulated broker that fills at live Angel One tick prices when available.
+
+    When a live feed is wired in via set_live_feed(), every fill uses the
+    current real market price as the reference — so P&L and slippage are
+    computed against actual Angel One prices, not stale signal prices.
+    No orders are ever sent to Angel One.
+    """
+
     name = "SIMULATED"
 
     def __init__(
@@ -48,6 +56,23 @@ class SimulatedBrokerClient(BrokerClient):
         self.noise_bps = noise_bps
         self.submitted: list[OrderIntent] = []
         self._rng = random.Random(seed)
+        self._live_feed = None   # set via set_live_feed() after runtime init
+
+    def set_live_feed(self, live_feed) -> None:
+        """Wire in the Angel One live tick feed for real-time fill prices."""
+        self._live_feed = live_feed
+
+    def _live_price(self, symbol: str) -> float | None:
+        """Return the latest Angel One live tick price for a symbol, or None."""
+        if self._live_feed is None:
+            return None
+        try:
+            tick = self._live_feed.latest_tick(symbol)
+            if tick and getattr(tick, "last_price", 0) > 0:
+                return float(tick.last_price)
+        except Exception:
+            pass
+        return None
 
     def is_ready(self) -> bool:
         return True
@@ -56,7 +81,10 @@ class SimulatedBrokerClient(BrokerClient):
         submitted_at = datetime.now(timezone.utc)
         acknowledged_at = submitted_at + timedelta(milliseconds=self.latency_ms)
         self.submitted.append(intent)
-        reference_price = intent.limit_price or intent.signal.price
+
+        # Prefer live Angel One price; fall back to signal price
+        live_px = self._live_price(intent.instrument.symbol)
+        reference_price = live_px or intent.limit_price or intent.signal.price
         fill_price, slippage_pct = self._apply_slippage(intent, reference_price)
         return BrokerResult(
             status=OrderStatus.FILLED,
@@ -66,8 +94,10 @@ class SimulatedBrokerClient(BrokerClient):
             acknowledged_at=acknowledged_at,
             message="simulated_fill",
             raw={
-                "mode": "simulated",
+                "mode": "paper_sim",
                 "reference_price": reference_price,
+                "live_price_used": live_px is not None,
+                "signal_price": intent.signal.price,
                 "slippage_pct": slippage_pct,
                 "side": intent.signal.side.value,
             },
