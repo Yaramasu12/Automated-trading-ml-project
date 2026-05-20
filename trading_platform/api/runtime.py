@@ -375,6 +375,14 @@ class TradingRuntime:
     def event_risk_guard(self):
         return self.event_risk
 
+    @property
+    def agent_council(self):
+        return self._agent_council
+
+    @property
+    def policy_registry(self):
+        return self._policy_registry
+
     # ── Gap 3: Live-feed tick → TICK_RAW ─────────────────────────────────────
 
     def _on_tick(self, tick) -> None:

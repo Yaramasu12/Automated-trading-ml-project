@@ -79,7 +79,7 @@ class OrchestratorState:
     # ── Node 3: Neural Forecast ───────────────────────────────────────────────
     neural_direction_prob: float = 0.5  # P(up)
     neural_expected_return: float = 0.0
-    neural_uncertainty: float = 1.0
+    neural_uncertainty: float = 0.5    # neutral default — 1.0 would veto every cycle
     neural_tail_risk: float = 0.0
     neural_correlation_risk: float = 0.0
     neural_model_versions: dict[str, str] = field(default_factory=dict)

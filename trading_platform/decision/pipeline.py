@@ -246,6 +246,26 @@ class DecisionPipeline:
             candidates=candidates,
         )
 
+    def get_regime(self, underlying: str) -> dict:
+        """Return the current market regime for an underlying as a dict.
+
+        Uses ML classifier if trained, else falls back to rule-based agent.
+        Returns {'regime': str, 'confidence': float}.
+        """
+        try:
+            bars = self._fetch_bars(underlying, now_ist().date(), 30)
+            features = self.feature_engine.compute(bars)
+            if self.regime_classifier is not None and self.regime_classifier.is_trained:
+                regime = self.regime_classifier.predict(features)
+                confidence = 0.75
+            else:
+                regime = self.regime_agent.classify(features)
+                confidence = 0.60
+            return {"regime": regime, "confidence": confidence}
+        except Exception as exc:
+            logger.debug("get_regime failed for %s: %s", underlying, exc)
+            return {"regime": "unknown", "confidence": 0.5}
+
     def _fetch_bars(self, underlying: str, start: date, days: int) -> list[MarketBar]:
         """Fetch historical bars from Angel One; fall back to synthetic if unavailable."""
         min_bars = max(days, 22)

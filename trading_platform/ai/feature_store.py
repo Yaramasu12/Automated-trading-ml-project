@@ -158,6 +158,32 @@ class FeatureStore:
         for p in self.store_dir.glob("*.jsonl"):
             p.unlink()
 
+    def get_features(self, symbol: str) -> dict:
+        """Return the most recent feature snapshot for a symbol as a plain dict.
+
+        Returns empty dict if no data is available.
+        """
+        records = self.load(symbol, limit=1)
+        return records[-1] if records else {}
+
+    def get_bars(self, symbol: str, limit: int = 60) -> list[dict]:
+        """Return the most recent records formatted as OHLCV bars for neural/ML models.
+
+        Each bar dict contains: open, high, low, close, volume, date.
+        """
+        records = self.load(symbol, limit=limit)
+        bars: list[dict] = []
+        for r in records:
+            bars.append({
+                "open":   r.get("open",   r.get("close", 0.0)),
+                "high":   r.get("high",   r.get("close", 0.0)),
+                "low":    r.get("low",    r.get("close", 0.0)),
+                "close":  r.get("close",  r.get("last_close", 0.0)),
+                "volume": r.get("volume", r.get("volume_ratio", 0.0) * 1e6),
+                "date":   r.get("date", ""),
+            })
+        return bars
+
     def feature_drift_score(self, symbol: str, window: int = 20) -> float:
         """Compute population drift via normalised mean shift.
 

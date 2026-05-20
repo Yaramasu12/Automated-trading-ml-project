@@ -295,15 +295,44 @@ class MasterOrchestrator:
     # ── Node 2: Specialist Crew (CrewAI) ──────────────────────────────────────
 
     def _node_specialist_crew(self, state: OrchestratorState) -> NodeResult:
+        # Deterministic rule-based crew always runs (no LLM needed)
         result = self._specialist_crew.deliberate(state)
-
-        # If crew halted, propagate
         if result.halt:
             return result
 
-        # If crew says HOLD with low consensus, skip (not a hard halt)
         crew_action = result.updates.get("crew_action", "HOLD")
         crew_consensus = result.updates.get("crew_consensus", 0.0)
+        crew_confidence = result.updates.get("crew_confidence", 0.0)
+
+        # When AI council is enabled, blend LLM agent votes into the crew result
+        try:
+            council = self._runtime.agent_council
+            if council is not None:
+                ctx = {
+                    "underlying": state.underlying,
+                    "regime": state.regime,
+                    "regime_confidence": state.regime_confidence,
+                    "news_sentiment": state.news_sentiment,
+                    "market_features": state.market_features,
+                    "rag_win_rate": state.rag_win_rate,
+                }
+                council_result = council.run(ctx)
+                if isinstance(council_result, dict):
+                    c_action = council_result.get("action", crew_action)
+                    c_conf = float(council_result.get("confidence", crew_confidence) or 0.0)
+                    # Blend: 60% specialist crew + 40% AI council
+                    if c_action == crew_action:
+                        crew_confidence = 0.60 * crew_confidence + 0.40 * c_conf
+                        crew_consensus = min(crew_consensus * 1.10, 1.0)
+                    elif c_conf > crew_confidence:
+                        crew_action = c_action
+                        crew_confidence = 0.40 * c_conf + 0.30 * crew_confidence
+                result.updates["crew_action"] = crew_action
+                result.updates["crew_confidence"] = round(crew_confidence, 4)
+                result.updates["crew_consensus"] = round(crew_consensus, 4)
+        except Exception as e:
+            logger.debug("AI council blend failed (non-critical): %s", e)
+
         if crew_action == "HOLD" or crew_consensus < CREW_CONSENSUS_MIN:
             return NodeResult(
                 updates=result.updates,
@@ -316,13 +345,38 @@ class MasterOrchestrator:
     # ── Node 3: Neural Forecast ────────────────────────────────────────────────
 
     def _node_neural_forecast(self, state: OrchestratorState) -> NodeResult:
-        updates: dict[str, Any] = {"neural_passed": False}
+        updates: dict[str, Any] = {
+            "neural_passed": False,
+            "neural_uncertainty": 0.5,       # neutral default — no veto when service absent
+            "neural_direction_prob": 0.5,
+            "neural_expected_return": 0.0,
+            "neural_tail_risk": 0.0,
+            "neural_correlation_risk": 0.0,
+        }
+
+        neural_service = self._runtime.neural_service
+        if neural_service is None:
+            # Neural lab disabled — proceed with neutral defaults (no veto)
+            return NodeResult(updates=updates)
+
         try:
-            bundle = self._runtime.neural_service.predict(
-                symbols=state.symbol_universe or [state.underlying]
+            # Build bars_map from feature store for each symbol
+            symbols = state.symbol_universe or [state.underlying]
+            bars_map: dict[str, list[dict]] = {}
+            try:
+                for sym in symbols:
+                    bars = self._runtime.feature_store.get_bars(sym, limit=60)
+                    if bars:
+                        bars_map[sym] = bars
+            except Exception:
+                pass
+
+            bundle = neural_service.predict(
+                trace_id=state.trace_id,
+                symbols=symbols,
+                bars_map=bars_map,
             )
             if bundle:
-                # Aggregate across symbols
                 forecasts = getattr(bundle, "forecasts", []) or []
                 direction_probs = [f.direction_probability for f in forecasts if hasattr(f, "direction_probability")]
                 expected_returns = [f.expected_return for f in forecasts if hasattr(f, "expected_return")]
@@ -334,7 +388,10 @@ class MasterOrchestrator:
                 updates["neural_expected_return"] = (
                     sum(expected_returns) / len(expected_returns) if expected_returns else 0.0
                 )
-                updates["neural_uncertainty"] = getattr(bundle, "overall_uncertainty", 1.0)
+                raw_uncertainty = getattr(bundle, "overall_uncertainty", 0.5)
+                # Cap uncertainty: when no bars available the service returns 1.0 but that
+                # should not veto — treat it as high-but-not-vetoing (0.70)
+                updates["neural_uncertainty"] = min(raw_uncertainty, 0.70) if not bars_map else raw_uncertainty
                 updates["neural_tail_risk"] = (
                     max(getattr(tr, "extreme_move_probability", 0.0) or 0.0 for tr in tail_risks)
                     if tail_risks else 0.0
@@ -346,10 +403,10 @@ class MasterOrchestrator:
                 updates["neural_model_versions"] = dict(getattr(bundle, "model_versions", {}) or {})
                 updates["neural_passed"] = True
         except Exception as e:
-            logger.debug("Neural forecast failed: %s", e)
-            # Keep defaults — uncertainty stays at 1.0 which will gate below
+            logger.warning("Neural forecast error: %s", e)
+            # Keep neutral defaults already set above — do not veto
 
-        uncertainty = updates.get("neural_uncertainty", state.neural_uncertainty)
+        uncertainty = updates.get("neural_uncertainty", 0.5)
         if uncertainty > NEURAL_UNCERTAINTY_VETO:
             return NodeResult(
                 updates=updates,
@@ -457,7 +514,15 @@ class MasterOrchestrator:
     # ── Node 7: Consensus Fusion (AutoGen debate pattern) ─────────────────────
 
     def _node_consensus_fusion(self, state: OrchestratorState) -> NodeResult:
-        """Weighted ensemble of all upstream signals → final score + action."""
+        """Weighted ensemble of all upstream signals → final score + action.
+
+        Blends: SpecialistCrew votes + Neural direction + RAG win rate + RL policy votes.
+        """
+        from trading_platform.rl.env import (
+            ACTION_NOOP, ACTION_PROPOSE_ENTRY, ACTION_PROPOSE_EXIT,
+            ACTION_SIZE_UP, ACTION_SIZE_DOWN, EnvObservation,
+        )
+
         weights = state.agent_weights or {}
 
         # ── Signal scores (all mapped to [-1, 1]) ──────────────────────────
@@ -465,21 +530,77 @@ class MasterOrchestrator:
         neural_score = state.neural_direction_prob * 2 - 1
         rag_score = state.rag_win_rate * 2 - 1
 
-        # Penalty terms
+        # ── RL/MARL policy votes ───────────────────────────────────────────
+        rl_score = 0.0
+        rl_vote_count = 0
+        try:
+            policy_registry = self._runtime.policy_registry
+            ps = {}
+            try:
+                portfolio = self._runtime.portfolio
+                snap = portfolio.snapshot() if hasattr(portfolio, "snapshot") else {}
+                ps = snap if isinstance(snap, dict) else {}
+            except Exception:
+                pass
+
+            obs = EnvObservation(
+                features=[
+                    state.neural_direction_prob,
+                    state.rag_win_rate,
+                    state.neural_uncertainty,
+                    state.neural_tail_risk,
+                    state.regime_confidence,
+                    state.news_sentiment,
+                ],
+                portfolio_pnl=float(ps.get("realized_pnl", 0.0)),
+                open_positions=int(ps.get("open_positions", 0)),
+                volatility=state.market_features.get("realized_volatility", 0.20),
+                liquidity=1.0,
+                step=state.cycle_id % 100,
+            )
+
+            _action_to_score = {
+                ACTION_PROPOSE_ENTRY:  1.0,   # strong bullish
+                ACTION_SIZE_UP:        0.5,   # mild bullish
+                ACTION_NOOP:           0.0,   # neutral
+                ACTION_SIZE_DOWN:     -0.5,   # mild bearish
+                ACTION_PROPOSE_EXIT:  -1.0,   # exit / bearish
+            }
+
+            for record in (policy_registry.list_all() or []):
+                if record.get("status") not in ("paper", "shadow", "live_canary", "live_approved"):
+                    continue
+                policy = policy_registry.get(record["policy_id"])
+                if policy is None:
+                    continue
+                try:
+                    action = policy.act(obs)
+                    rl_score += _action_to_score.get(action, 0.0)
+                    rl_vote_count += 1
+                except Exception:
+                    pass
+        except Exception as e:
+            logger.debug("RL vote collection failed (non-critical): %s", e)
+
+        rl_avg = (rl_score / rl_vote_count) if rl_vote_count > 0 else 0.0
+        w_rl = 0.6 if rl_vote_count > 0 else 0.0  # only weight RL if policies actually voted
+
+        # ── Penalty terms ────────────────────────────────────────────────
         uncertainty_penalty = max(0.0, state.neural_uncertainty - 0.5) * 0.5
         tail_risk_penalty = state.neural_tail_risk * 0.3
         correlation_penalty = state.neural_correlation_risk * 0.2
 
-        # Ensemble weights (adaptive — sum from agent weights or default)
+        # ── Ensemble weights (adaptive) ──────────────────────────────────
         w_crew = sum(weights.get(n, 1.0) for n in ["TrendAnalyst", "MeanReversionSpecialist", "QuantitativeStrategist"]) / 3
-        w_neural = 1.2   # neural always gets full weight
-        w_rag = 0.8      # RAG is historical, slightly less weight
-        w_total = w_crew + w_neural + w_rag + 1e-9
+        w_neural = 1.2
+        w_rag = 0.8
+        w_total = w_crew + w_neural + w_rag + w_rl + 1e-9
 
         fusion_raw = (
             w_crew * crew_score
             + w_neural * neural_score
             + w_rag * rag_score
+            + w_rl * rl_avg
         ) / w_total
 
         # Apply penalties
@@ -493,11 +614,11 @@ class MasterOrchestrator:
             f"crew={crew_score:.3f}(w={w_crew:.2f})",
             f"neural={neural_score:.3f}",
             f"rag={rag_score:.3f}",
+            f"rl={rl_avg:.3f}(n={rl_vote_count})",
             f"penalties={uncertainty_penalty + tail_risk_penalty + correlation_penalty:.3f}",
             f"fusion={fusion_score:.3f}",
         ]
 
-        # Determine final action from fusion score + crew direction
         if fusion_score < FUSION_PROCEED_THRESHOLD:
             return NodeResult(
                 updates={
@@ -522,6 +643,17 @@ class MasterOrchestrator:
 
     # ── Node 8: Goal Governor ──────────────────────────────────────────────────
 
+    # Map GoalGovernor recommendation strings to orchestrator sizing directives
+    _GOAL_REC_MAP = {
+        "normal": "MAINTAIN",
+        "increase_research": "SCALE_UP",
+        "reduce_risk": "REDUCE",
+        "MAINTAIN": "MAINTAIN",
+        "SCALE_UP": "SCALE_UP",
+        "REDUCE": "REDUCE",
+        "PRESERVATION": "PRESERVATION",
+    }
+
     def _node_goal_governor(self, state: OrchestratorState) -> NodeResult:
         multiplier = 1.0
         recommendation = "MAINTAIN"
@@ -529,10 +661,18 @@ class MasterOrchestrator:
 
         try:
             gg = self._runtime.goal_governor
-            gs = gg.compute_state() if hasattr(gg, "compute_state") else {}
-            if isinstance(gs, dict):
-                recommendation = gs.get("recommendation", "MAINTAIN")
-                on_track = bool(gs.get("on_track", True))
+            if hasattr(gg, "compute_state"):
+                gs = gg.compute_state()
+                # GoalGovernor.compute_state() returns a GoalState dataclass
+                if hasattr(gs, "recommendation"):
+                    raw_rec = gs.recommendation
+                    recommendation = self._GOAL_REC_MAP.get(raw_rec, "MAINTAIN")
+                    on_track = bool(getattr(gs, "on_track", True))
+                elif isinstance(gs, dict):
+                    raw_rec = gs.get("recommendation", "normal")
+                    recommendation = self._GOAL_REC_MAP.get(raw_rec, "MAINTAIN")
+                    on_track = bool(gs.get("on_track", True))
+
                 if recommendation == "SCALE_UP":
                     multiplier = min(1.5, 1.0 + (1.0 - state.neural_uncertainty) * 0.5)
                 elif recommendation == "REDUCE":
