@@ -61,6 +61,7 @@ Key difference from the original pipeline:
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from dataclasses import replace
@@ -148,6 +149,9 @@ class MasterOrchestrator:
             ("execution_plan",      self._node_execution_plan),
         ]
 
+        # CPU-heavy nodes run in a thread pool so they don't block the event loop.
+        _HEAVY_NODES = frozenset({"specialist_crew", "neural_forecast", "quantum_portfolio"})
+
         for node_name, node_fn in pipeline:
             if state.halted:
                 break
@@ -155,7 +159,10 @@ class MasterOrchestrator:
             t0 = time.perf_counter()
             state = _update_node(state, "current_node", node_name)
             try:
-                result: NodeResult = node_fn(state)
+                if node_name in _HEAVY_NODES:
+                    result: NodeResult = await asyncio.to_thread(node_fn, state)
+                else:
+                    result: NodeResult = node_fn(state)
             except Exception as exc:
                 logger.error("Orchestrator node %s failed: %s", node_name, exc, exc_info=True)
                 result = NodeResult(error=str(exc), halt=True, halt_reason=f"{node_name}: {exc}")

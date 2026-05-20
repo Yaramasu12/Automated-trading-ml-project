@@ -540,15 +540,16 @@ class TradingRuntime:
         # ── Persist fill to DB + update monitor (both entry and exit) ──────
         exec_mode = self.execution_mode.value
         try:
-            self.db.save_trade(trade, execution_mode=exec_mode)
+            import asyncio as _aio
+            _aio.ensure_future(_aio.to_thread(self.db.save_trade, trade, execution_mode=exec_mode))
             mark_prices: dict[str, float] = {}
             for sym in list(self.portfolio.positions.keys()):
                 tick = self.live_feed.latest_tick(sym)
                 if tick and tick.last_price > 0:
                     mark_prices[sym] = tick.last_price
             snap = self.portfolio.mark_to_market(datetime.now(timezone.utc), mark_prices)
-            self.db.save_snapshot(snap, execution_mode=exec_mode)
-            self.db.save_positions(self.portfolio.positions, execution_mode=exec_mode)
+            _aio.ensure_future(_aio.to_thread(self.db.save_snapshot, snap, execution_mode=exec_mode))
+            _aio.ensure_future(_aio.to_thread(self.db.save_positions, dict(self.portfolio.positions), execution_mode=exec_mode))
             self.monitor.record_order({"status": "FILLED"})
         except Exception as _persist_err:
             logger.warning("_on_fill DB persist error: %s", _persist_err)
