@@ -149,6 +149,9 @@ class TradingRuntime:
         self._risk_rejection_log: collections.deque[dict] = collections.deque(maxlen=500)
         self._agent_trade_log: collections.deque[dict] = collections.deque(maxlen=500)
         self._entry_fill_context: dict[str, dict] = {}  # symbol -> {strategy, regime, entry_price}
+        # Stores the last OrchestratorState per symbol so post-trade reflection can update
+        # SpecialistCrew agent weights, MarketRAG win rates, and ProfitGuard rolling stats.
+        self._orchestrator_trade_states: dict[str, Any] = {}
         self.walk_forward_evaluator = WalkForwardEvaluator(self.backtest_engine)
         self.synthetic_data = SyntheticDataProvider()
         self.charges_model = ChargesModel()
@@ -660,6 +663,26 @@ class TradingRuntime:
                     "forward_bucket": outcome_label.forward_bucket if outcome_label else None,
                     "meta_label_score": outcome_label.meta_label_score if outcome_label else None,
                 })
+
+                # ── Orchestrator reflection: update SpecialistCrew weights +
+                #    MarketRAG win rates + ProfitGuard rolling window ─────────
+                orch_state = (
+                    self._orchestrator_trade_states.pop(symbol, None)
+                    or self._orchestrator_trade_states.pop(underlying if 'underlying' in dir() else "", None)
+                )
+                if orch_state is not None and hasattr(self, "master_orchestrator"):
+                    import asyncio as _asyncio
+                    _action_taken = ctx.get("side", "BUY")
+                    try:
+                        _asyncio.ensure_future(
+                            self.master_orchestrator.reflect_on_outcome(
+                                state=orch_state,
+                                pnl_pct=pnl_pct,
+                                action_taken=_action_taken,
+                            )
+                        )
+                    except Exception as _ref_err:
+                        logger.debug("orchestrator reflection failed (non-critical): %s", _ref_err)
             else:
                 self._agent_trade_log.append({
                     "ts": now_ts, "type": "EXIT", "symbol": symbol,

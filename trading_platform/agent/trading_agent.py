@@ -707,6 +707,12 @@ class TradingAgent:
                         cycle.enqueued += 1
                         open_positions.add(symbol)
                         self._state.enqueued_total += 1
+                        # Save orchestrator state so post-trade reflection can update
+                        # SpecialistCrew weights, MarketRAG win rates, ProfitGuard rolling stats
+                        try:
+                            self._runtime._orchestrator_trade_states[symbol] = state
+                        except Exception:
+                            pass
                         meta = candidate.get("orchestrator_metadata", {})
                         cycle.signals.append({
                             "underlying": underlying,
