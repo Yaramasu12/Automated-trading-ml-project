@@ -249,8 +249,8 @@ class TradingAgent:
             self._log_activity("No fresh live ticks available for active session — scan skipped", level="error")
             return
 
-        # Main trading cycle
-        await self._scan_and_execute(active_underlyings)
+        # Main trading cycle — orchestrated (profit-first) path
+        await self._orchestrated_scan_and_execute(active_underlyings)
 
     # ──────────────────────────────────────────────────────────────── routines
 
@@ -610,6 +610,132 @@ class TradingAgent:
             logger.warning("Agent skipped stale symbols: %s", ",".join(stale[:20]))
             self._log_activity(f"Skipped {len(stale)} stale symbol(s)", level="error")
         return fresh
+
+    async def _orchestrated_scan_and_execute(self, active_underlyings: list[str]) -> None:
+        """Orchestrator-driven scan: replaces _scan_and_execute when master_orchestrator is available.
+
+        Runs the full LangGraph-style pipeline (RAG → Crew → Neural → Quantum →
+        Risk → ProfitGuard → Fusion → GoalGovernor → ExecutionPlan) per underlying,
+        then enqueues only the candidates that passed every profit gate.
+        """
+        now = now_ist()
+        start_ms = _now_ms()
+        orchestrator = getattr(self._runtime, "master_orchestrator", None)
+        if orchestrator is None:
+            return await self._scan_and_execute(active_underlyings)
+
+        cycle = AgentCycleResult(
+            ts=now.strftime("%H:%M:%S"),
+            market_status=market_status(now),
+            underlyings_scanned=active_underlyings,
+            total_candidates=0,
+            approved=0,
+            rejected=0,
+            enqueued=0,
+            skipped_existing=0,
+            regimes={},
+            signals=[],
+            errors=[],
+            duration_ms=0,
+        )
+
+        self._sync_marks_to_exit_manager()
+        open_positions = set(self._runtime.portfolio.position_symbols())
+
+        for underlying in active_underlyings:
+            try:
+                # Determine which symbols to pass for this underlying
+                symbol_universe = [underlying]
+                try:
+                    extra = [
+                        s for s in self._runtime.instrument_master.instruments
+                        if s.startswith(underlying[:4])
+                    ][:8]
+                    if extra:
+                        symbol_universe = list(dict.fromkeys([underlying] + extra))
+                except Exception:
+                    pass
+
+                state = await orchestrator.run(
+                    underlying=underlying,
+                    symbol_universe=symbol_universe,
+                    execution_mode=self._runtime.execution_mode.value,
+                )
+
+                cycle.regimes[underlying] = state.regime
+
+                if state.halted:
+                    cycle.rejected += len(symbol_universe)
+                    self._log_activity(
+                        f"ORCHESTRATOR SKIP {underlying}: {state.halt_reason}"
+                    )
+                    continue
+
+                # Enqueue each candidate that made it through all gates
+                for candidate in state.order_candidates:
+                    cycle.total_candidates += 1
+                    symbol = candidate.get("symbol", underlying)
+
+                    if symbol in open_positions or underlying in open_positions:
+                        cycle.skipped_existing += 1
+                        continue
+
+                    cycle.approved += 1
+
+                    # Build signal dict for _enqueue_candidate compatibility
+                    sig = candidate.get("signal", {})
+                    inst_d = {"symbol": symbol, "underlying": underlying, "segment": "EQ", "type": "EQ"}
+                    candidate_compat = {
+                        "signal": {
+                            "side": sig.get("side", state.fusion_action),
+                            "confidence": sig.get("confidence", state.fusion_confidence),
+                            "price": sig.get("price", 0.0),
+                            "reason": sig.get("reason", "orchestrator"),
+                            "metadata": candidate.get("orchestrator_metadata", {}),
+                        },
+                        "instrument": inst_d,
+                        "strategy_name": candidate.get("strategy_name", "orchestrator"),
+                        "quantity": max(1, int(
+                            getattr(self._runtime.settings, "default_quantity", 1)
+                            * state.position_size_multiplier
+                        )),
+                        "reason": f"orchestrator|ev={state.profit_gate.expected_value:.4f}|fusion={state.fusion_score:.3f}" if state.profit_gate else "orchestrator",
+                    }
+
+                    enqueued = await self._enqueue_candidate(candidate_compat, state.regime)
+                    if enqueued:
+                        cycle.enqueued += 1
+                        open_positions.add(symbol)
+                        self._state.enqueued_total += 1
+                        meta = candidate.get("orchestrator_metadata", {})
+                        cycle.signals.append({
+                            "underlying": underlying,
+                            "symbol": symbol,
+                            "strategy": candidate.get("strategy_name", "orchestrator"),
+                            "side": sig.get("side", state.fusion_action),
+                            "confidence": state.fusion_confidence,
+                            "fusion_score": state.fusion_score,
+                            "expected_value": meta.get("expected_value", 0.0),
+                            "kelly_fraction": meta.get("kelly_fraction", 0.0),
+                            "rag_win_rate": meta.get("rag_win_rate", 0.0),
+                            "regime": state.regime,
+                        })
+                        self._log_activity(
+                            f"ORCHESTRATOR ENQUEUE {sig.get('side', '')} {symbol} | "
+                            f"fusion={state.fusion_score:.3f} EV={meta.get('expected_value', 0):.4f} "
+                            f"Kelly={meta.get('kelly_fraction', 0):.4f}"
+                        )
+                    else:
+                        cycle.rejected += 1
+
+            except Exception as exc:
+                cycle.errors.append(f"{underlying}: {exc}")
+                logger.error("Orchestrator scan error for %s: %s", underlying, exc, exc_info=True)
+
+        self._finish_cycle(cycle, start_ms)
+
+        if self._state.scan_count > 0 and self._state.scan_count % 10 == 0:
+            await asyncio.to_thread(self._try_train_regime_classifier)
 
     def _finish_cycle(self, cycle: AgentCycleResult, start_ms: int) -> None:
         cycle.duration_ms = _now_ms() - start_ms

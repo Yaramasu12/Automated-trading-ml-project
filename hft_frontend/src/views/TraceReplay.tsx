@@ -49,7 +49,7 @@ export function TraceReplay() {
     try {
       const nextReplay = await getTraceReplay(traceId)
       setReplay(nextReplay)
-      setSelected(nextReplay.trace)
+      setSelected(nextReplay.trace ?? null)
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Trace not found')
     } finally {
@@ -83,8 +83,8 @@ export function TraceReplay() {
       <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3">
         <StatTile label="Traces Loaded" value={traces.length} accent="yellow" sub="recent store window" />
         <StatTile label="Selected Mode" value={selected?.execution_mode ?? '--'} accent={selected ? modeColor(selected.execution_mode) as 'red' | 'yellow' | 'orange' | 'blue' : 'gray'} sub={selected?.created_at ? fmtDateTime(selected.created_at) : 'select a trace'} />
-        <StatTile label="Replay Status" value={replay?.summary.status ?? '--'} accent={replay?.summary.lifecycle_complete ? 'green' : 'purple'} sub={replay ? `${replay.summary.order_count} order links` : 'timeline'} />
-        <StatTile label="Paper Journal" value={replay?.summary.journal_event_count ?? 0} accent="cyan" sub="fills/slippage/labels" />
+        <StatTile label="Replay Status" value={replay?.summary?.status ?? '--'} accent={replay?.summary?.lifecycle_complete ? 'green' : 'purple'} sub={replay ? `${replay.summary?.order_count ?? 0} order links` : 'timeline'} />
+        <StatTile label="Paper Journal" value={replay?.summary?.journal_event_count ?? 0} accent="cyan" sub="fills/slippage/labels" />
       </div>
 
       <div className="grid grid-cols-1 xl:grid-cols-[.75fr_1.25fr] gap-5">
@@ -154,11 +154,11 @@ export function TraceReplay() {
                       { label: 'Mode', value: selected.execution_mode, accent: modeColor(selected.execution_mode) as 'red' | 'yellow' | 'orange' | 'blue' },
                       { label: 'Symbols', value: selected.symbol_universe.length, accent: 'blue' },
                       { label: 'Quantum Result', value: selected.quantum_result_id ?? '--', accent: selected.quantum_result_id ? 'cyan' : 'gray' },
-                      { label: 'Orders', value: replay?.summary.order_count ?? selected.order_intent_ids?.length ?? 0, accent: replay?.summary.order_count ? 'green' : 'gray' },
-                      { label: 'Fills', value: replay?.summary.fill_count ?? 0, accent: replay?.summary.fill_count ? 'green' : 'gray' },
-                      { label: 'Slippage', value: replay?.summary.slippage_count ?? 0, accent: replay?.summary.slippage_count ? 'orange' : 'gray' },
-                      { label: 'Labels', value: replay?.summary.label_count ?? 0, accent: replay?.summary.label_count ? 'purple' : 'gray' },
-                      { label: 'Learning', value: replay?.summary.learning_update_count ?? 0, accent: replay?.summary.learning_update_count ? 'cyan' : 'gray' },
+                      { label: 'Orders', value: replay?.summary?.order_count ?? selected.order_intent_ids?.length ?? 0, accent: replay?.summary?.order_count ? 'green' : 'gray' },
+                      { label: 'Fills', value: replay?.summary?.fill_count ?? 0, accent: replay?.summary?.fill_count ? 'green' : 'gray' },
+                      { label: 'Slippage', value: replay?.summary?.slippage_count ?? 0, accent: replay?.summary?.slippage_count ? 'orange' : 'gray' },
+                      { label: 'Labels', value: replay?.summary?.label_count ?? 0, accent: replay?.summary?.label_count ? 'purple' : 'gray' },
+                      { label: 'Learning', value: replay?.summary?.learning_update_count ?? 0, accent: replay?.summary?.learning_update_count ? 'cyan' : 'gray' },
                     ]}
                   />
                   <div className="flex flex-wrap gap-2">
@@ -184,12 +184,12 @@ export function TraceReplay() {
                     </div>
                     <div className="min-w-0 pb-3">
                       <div className="flex items-center gap-2 flex-wrap">
-                        <span className="text-xs font-semibold text-gray-200">{event.event_type}</span>
-                        <Tag label={event.component ?? event.source} color={event.source === 'oms' ? 'blue' : event.source === 'label' ? 'green' : 'yellow'} />
-                        {event.order_id && <Tag label={event.order_id.slice(0, 8)} color="gray" />}
+                        <span className="text-xs font-semibold text-gray-200">{String(event.event_type ?? '')}</span>
+                        <Tag label={String(event.component ?? event.source ?? '')} color={event.source === 'oms' ? 'blue' : event.source === 'label' ? 'green' : 'yellow'} />
+                        {!!event.order_id && <Tag label={String(event.order_id).slice(0, 8)} color="gray" />}
                       </div>
-                      <div className="mt-1 text-[10px] text-gray-600 font-mono">{event.ts ? fmtDateTime(event.ts) : '--'}</div>
-                      {event.reason && <div className="mt-1 text-xs text-gray-500">{event.reason}</div>}
+                      <div className="mt-1 text-[10px] text-gray-600 font-mono">{event.ts ? fmtDateTime(String(event.ts)) : '--'}</div>
+                      {!!event.reason && <div className="mt-1 text-xs text-gray-500">{String(event.reason)}</div>}
                     </div>
                   </div>
                 ))}

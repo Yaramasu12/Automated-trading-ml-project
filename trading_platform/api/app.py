@@ -974,3 +974,84 @@ def marl_status():
 @app.post("/marl/advisory-preview", dependencies=[_AuthDep])
 def marl_advisory_preview(payload: dict):
     return runtime.marl_advisory_preview(payload)
+
+
+# ── Master Orchestrator endpoints ─────────────────────────────────────────────
+
+@app.get("/orchestrator/stats")
+def orchestrator_stats():
+    """Overall orchestrator performance: RAG patterns, profit guard, reflection."""
+    orch = getattr(runtime, "master_orchestrator", None)
+    if orch is None:
+        return {"error": "orchestrator_not_initialised"}
+    return orch.stats()
+
+
+@app.get("/orchestrator/profit-guard")
+def orchestrator_profit_guard(underlying: str | None = None):
+    """Rolling win rate and consecutive loss counts per underlying."""
+    orch = getattr(runtime, "master_orchestrator", None)
+    if orch is None:
+        return {"error": "orchestrator_not_initialised"}
+    return orch.profit_guard_stats(underlying)
+
+
+@app.get("/orchestrator/reflections", dependencies=[_AuthDep])
+def orchestrator_reflections(limit: int = 20):
+    """Most recent post-trade reflection records with agent weight deltas."""
+    orch = getattr(runtime, "master_orchestrator", None)
+    if orch is None:
+        return {"reflections": []}
+    return {"reflections": orch.recent_reflections(limit)}
+
+
+@app.post("/orchestrator/preview", dependencies=[_AuthDep])
+async def orchestrator_preview(payload: dict):
+    """Run the full orchestrator pipeline for one underlying (preview only — no order submission)."""
+    orch = getattr(runtime, "master_orchestrator", None)
+    if orch is None:
+        raise HTTPException(status_code=503, detail="orchestrator_not_initialised")
+    underlying = payload.get("underlying", "NIFTY")
+    symbol_universe = payload.get("symbol_universe", [underlying])
+    execution_mode = payload.get("execution_mode", runtime.execution_mode.value)
+    state = await orch.run(
+        underlying=underlying,
+        symbol_universe=symbol_universe,
+        execution_mode=execution_mode,
+    )
+    return state.to_summary()
+
+
+@app.post("/orchestrator/reflect", dependencies=[_AuthDep])
+async def orchestrator_reflect(payload: dict):
+    """Feed a trade outcome into the reflection engine to update agent weights."""
+    orch = getattr(runtime, "master_orchestrator", None)
+    if orch is None:
+        raise HTTPException(status_code=503, detail="orchestrator_not_initialised")
+    from trading_platform.orchestrator.state import OrchestratorState, AgentVoteSummary
+    # Reconstruct a minimal state for reflection
+    crew_votes_raw = payload.get("crew_votes", [])
+    crew_votes = [
+        AgentVoteSummary(
+            agent_name=v.get("agent_name", "unknown"),
+            action=v.get("action", "HOLD"),
+            confidence=float(v.get("confidence", 0.5)),
+            reasoning=v.get("reasoning", ""),
+            weight=float(v.get("weight", 1.0)),
+        )
+        for v in crew_votes_raw
+    ]
+    state = OrchestratorState(
+        trace_id=payload.get("trace_id", "manual"),
+        underlying=payload.get("underlying", ""),
+        crew_votes=crew_votes,
+        crew_consensus=float(payload.get("crew_consensus", 0.5)),
+        regime=payload.get("regime", "unknown"),
+        market_features=payload.get("market_features", {}),
+    )
+    reflection = await orch.reflect_on_outcome(
+        state=state,
+        pnl_pct=float(payload.get("pnl_pct", 0.0)),
+        action_taken=payload.get("action_taken", "HOLD"),
+    )
+    return reflection

@@ -96,7 +96,7 @@ export function NeuralLab() {
 
       <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3">
         <StatTile label="Lab State" value={status?.enabled ? 'ENABLED' : 'DISABLED'} accent={status?.enabled ? 'green' : 'gray'} sub="advisory until validated" />
-        <StatTile label="Uncertainty" value={latest ? pct(uncertainty * 100, 1) : '--'} accent={uncertainty < 0.45 ? 'green' : uncertainty < 0.7 ? 'yellow' : 'red'} sub={latest?.trace_id.slice(0, 18) ?? 'no prediction yet'} />
+        <StatTile label="Uncertainty" value={latest ? pct(uncertainty * 100, 1) : '--'} accent={uncertainty < 0.45 ? 'green' : uncertainty < 0.7 ? 'yellow' : 'red'} sub={latest?.trace_id?.slice(0, 18) ?? 'no prediction yet'} />
         <StatTile label="Trade Gate" value={latest ? (shouldTrade ? 'PASS' : 'SKIP') : '--'} accent={latest ? (shouldTrade ? 'green' : 'red') : 'gray'} sub="uncertainty-aware" />
         <StatTile label="Forecasts" value={latest?.forecasts?.length ?? 0} accent="cyan" sub="symbols in bundle" />
       </div>
@@ -198,9 +198,9 @@ export function NeuralLab() {
                   <ProgressBar
                     key={risk.symbol}
                     label={risk.symbol}
-                    value={risk.extreme_move_probability * 100}
-                    accent={risk.extreme_move_probability > 0.35 ? 'red' : 'yellow'}
-                    right={pct(risk.expected_max_drawdown * 100, 1)}
+                    value={(risk.extreme_move_probability ?? 0) * 100}
+                    accent={(risk.extreme_move_probability ?? 0) > 0.35 ? 'red' : 'yellow'}
+                    right={pct((risk.expected_max_drawdown ?? 0) * 100, 1)}
                   />
                 ))}
               </div>

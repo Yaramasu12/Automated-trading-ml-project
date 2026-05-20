@@ -13,7 +13,7 @@ import type {
   LivePortfolioSnapshot,
   ModelCatalogEntry,
   MonitoringMetrics,
-  NeuralPredictionBundle,
+  NeuralBundle,
   NeuralStatus,
   PolicyInfo,
   QuantumOptimizationResult,
@@ -37,15 +37,15 @@ export type NavView =
   | 'risk'
   | 'execution'
   | 'intelligence'
-  | 'ai-lab'
-  | 'ai-council'
-  | 'neural-lab'
-  | 'quantum-lab'
-  | 'tournament'
-  | 'goal-governor'
-  | 'traces'
-  | 'policies'
   | 'account'
+  | 'ai-council'
+  | 'neural'
+  | 'quantum'
+  | 'goal-governor'
+  | 'policies'
+  | 'traces'
+  | 'ai-lab'
+  | 'tournament'
 
 interface LoadingState {
   signals: boolean
@@ -54,9 +54,6 @@ interface LoadingState {
   walkForward: boolean
   models: boolean
   account: boolean
-  aiCouncil: boolean
-  neural: boolean
-  quantum: boolean
   highEndScan: boolean
 }
 
@@ -107,27 +104,37 @@ interface Store {
   modelCatalog: ModelCatalogEntry[]
   setModelCatalog: (m: ModelCatalogEntry[]) => void
 
-  // ── AI Lab (Phase 2-6) ────────────────────────────────────────────────────
+  // ── AI Council ────────────────────────────────────────────────────────────
   aiCouncilStatus: AICouncilStatus | null
-  aiCouncilDecisions: AICouncilDecision[]
-  neuralStatus: NeuralStatus | null
-  latestNeuralBundle: NeuralPredictionBundle | null
-  quantumStatus: QuantumStatus | null
-  latestQuantumResult: QuantumOptimizationResult | null
-  goalGovernorStatus: GoalGovernorStatus | null
-  latestHighEndScan: HighEndScanResult | null
-  recentTraces: DecisionTrace[]
   setAICouncilStatus: (s: AICouncilStatus) => void
+  aiCouncilDecisions: AICouncilDecision[]
   setAICouncilDecisions: (d: AICouncilDecision[]) => void
+
+  // ── Neural Lab ────────────────────────────────────────────────────────────
+  neuralStatus: NeuralStatus | null
   setNeuralStatus: (s: NeuralStatus) => void
-  setLatestNeuralBundle: (b: NeuralPredictionBundle) => void
+  latestNeuralBundle: NeuralBundle | null
+  setLatestNeuralBundle: (b: NeuralBundle) => void
+
+  // ── Quantum Lab ───────────────────────────────────────────────────────────
+  quantumStatus: QuantumStatus | null
   setQuantumStatus: (s: QuantumStatus) => void
+  latestQuantumResult: QuantumOptimizationResult | null
   setLatestQuantumResult: (r: QuantumOptimizationResult) => void
+
+  // ── Goal Governor ─────────────────────────────────────────────────────────
+  goalGovernorStatus: GoalGovernorStatus | null
   setGoalGovernorStatus: (s: GoalGovernorStatus) => void
+
+  // ── High-End Scan ─────────────────────────────────────────────────────────
+  latestHighEndScan: HighEndScanResult | null
   setLatestHighEndScan: (r: HighEndScanResult) => void
+
+  // ── Traces ────────────────────────────────────────────────────────────────
+  recentTraces: DecisionTrace[]
   setRecentTraces: (t: DecisionTrace[]) => void
 
-  // ── Policies (Phase 5/9) ──────────────────────────────────────────────────
+  // ── Policies ──────────────────────────────────────────────────────────────
   policies: PolicyInfo[]
   setPolicies: (p: PolicyInfo[]) => void
 
@@ -184,32 +191,33 @@ export const useStore = create<Store>((set) => ({
   setModelCatalog: (m) => set({ modelCatalog: m }),
 
   aiCouncilStatus: null,
-  aiCouncilDecisions: [],
-  neuralStatus: null,
-  latestNeuralBundle: null,
-  quantumStatus: null,
-  latestQuantumResult: null,
-  goalGovernorStatus: null,
-  latestHighEndScan: null,
-  recentTraces: [],
   setAICouncilStatus: (s) => set({ aiCouncilStatus: s }),
+  aiCouncilDecisions: [],
   setAICouncilDecisions: (d) => set({ aiCouncilDecisions: d }),
+
+  neuralStatus: null,
   setNeuralStatus: (s) => set({ neuralStatus: s }),
+  latestNeuralBundle: null,
   setLatestNeuralBundle: (b) => set({ latestNeuralBundle: b }),
+
+  quantumStatus: null,
   setQuantumStatus: (s) => set({ quantumStatus: s }),
+  latestQuantumResult: null,
   setLatestQuantumResult: (r) => set({ latestQuantumResult: r }),
+
+  goalGovernorStatus: null,
   setGoalGovernorStatus: (s) => set({ goalGovernorStatus: s }),
+
+  latestHighEndScan: null,
   setLatestHighEndScan: (r) => set({ latestHighEndScan: r }),
+
+  recentTraces: [],
   setRecentTraces: (t) => set({ recentTraces: t }),
 
   policies: [],
   setPolicies: (p) => set({ policies: p }),
 
-  loading: {
-    signals: false, strategies: false, backtest: false, walkForward: false,
-    models: false, account: false, aiCouncil: false, neural: false,
-    quantum: false, highEndScan: false,
-  },
+  loading: { signals: false, strategies: false, backtest: false, walkForward: false, models: false, account: false, highEndScan: false },
   setLoading: (key, v) => set((s) => ({ loading: { ...s.loading, [key]: v } })),
   error: null,
   setError: (msg) => set({ error: msg }),
