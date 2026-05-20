@@ -155,6 +155,8 @@ class TradingRuntime:
         self.monitor = OperationalMonitor()
         self.db = TradingDatabase()
         self.live_feed = LiveTickFeed(self.settings)
+        # Wire live Angel One prices into the paper broker so fills use real market prices
+        self.paper_broker.set_live_feed(self.live_feed)
         self.event_bus = InMemoryEventBus()
         self.news_intelligence = NewsIntelligence()
         # Live-readiness scaffolding: freshness tracker tells the gate
