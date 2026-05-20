@@ -241,25 +241,23 @@ class MasterOrchestrator:
         except Exception:
             pass
 
-        # News sentiment
+        # News sentiment — NewsIntelligence.analyze(payload) returns NewsAnalysis.sentiment_score
         news_sentiment = 0.0
         try:
-            news_result = rt.news_intelligence.get_sentiment(state.underlying)
-            if isinstance(news_result, dict):
-                news_sentiment = float(news_result.get("score", news_result.get("sentiment", 0.0)))
-            elif isinstance(news_result, (int, float)):
-                news_sentiment = float(news_result)
+            news_result = rt.news_intelligence.analyze(
+                {"text": state.underlying, "symbol": state.underlying, "source": "orchestrator"}
+            )
+            news_sentiment = float(getattr(news_result, "sentiment_score", 0.0))
         except Exception:
             pass
 
-        # Event risk check
+        # Event risk check — EventRiskGuard.check(as_of: date|None) takes a date, not a symbol
         event_risk_active = False
         event_risk_reason = ""
         try:
-            er = rt.event_risk_guard.check(state.underlying)
-            if isinstance(er, dict):
-                event_risk_active = bool(er.get("active", er.get("risk_active", False)))
-                event_risk_reason = str(er.get("reason", ""))
+            er = rt.event_risk_guard.check()          # no arg → uses today's date
+            event_risk_active = bool(getattr(er, "blocked", False))
+            event_risk_reason = str(getattr(er, "reason", ""))
         except Exception:
             pass
 
@@ -304,29 +302,47 @@ class MasterOrchestrator:
         crew_consensus = result.updates.get("crew_consensus", 0.0)
         crew_confidence = result.updates.get("crew_confidence", 0.0)
 
-        # When AI council is enabled, blend LLM agent votes into the crew result
+        # When AI council is enabled, blend LLM/rule votes into crew result BEFORE the HOLD gate
+        # so council can rescue a marginal crew decision.
+        # AgentCouncilSupervisor.run(AgentInputContext) → AgentCouncilDecision
+        # AgentCouncilDecision.action ∈ {"PROCEED", "REDUCE", "HALT", "NO_TRADE"}
         try:
             council = self._runtime.agent_council
             if council is not None:
-                ctx = {
-                    "underlying": state.underlying,
-                    "regime": state.regime,
-                    "regime_confidence": state.regime_confidence,
-                    "news_sentiment": state.news_sentiment,
-                    "market_features": state.market_features,
-                    "rag_win_rate": state.rag_win_rate,
-                }
-                council_result = council.run(ctx)
-                if isinstance(council_result, dict):
-                    c_action = council_result.get("action", crew_action)
-                    c_conf = float(council_result.get("confidence", crew_confidence) or 0.0)
-                    # Blend: 60% specialist crew + 40% AI council
-                    if c_action == crew_action:
-                        crew_confidence = 0.60 * crew_confidence + 0.40 * c_conf
-                        crew_consensus = min(crew_consensus * 1.10, 1.0)
-                    elif c_conf > crew_confidence:
-                        crew_action = c_action
-                        crew_confidence = 0.40 * c_conf + 0.30 * crew_confidence
+                from trading_platform.agents.schemas import AgentInputContext
+                ps: dict[str, Any] = {}
+                try:
+                    snap = self._runtime.portfolio.mark_to_market(datetime.now(timezone.utc), {})
+                    ps = {
+                        "equity": snap.equity,
+                        "drawdown": snap.drawdown,
+                        "open_positions": snap.open_positions,
+                    }
+                except Exception:
+                    pass
+                council_ctx = AgentInputContext(
+                    trace_id=state.trace_id,
+                    symbols=state.symbol_universe or [state.underlying],
+                    execution_mode=state.execution_mode,
+                    portfolio_state=ps,
+                    market_regime=state.regime,
+                )
+                council_result = council.run(council_ctx)
+                # Extract action and confidence from AgentCouncilDecision dataclass
+                c_action_raw = getattr(council_result, "action", "NO_TRADE")
+                c_conf = float(getattr(council_result, "confidence", crew_confidence) or 0.0)
+                if c_action_raw == "PROCEED":
+                    # Council aligns → boost crew confidence and consensus
+                    crew_confidence = 0.60 * crew_confidence + 0.40 * c_conf
+                    crew_consensus = min(crew_consensus * 1.10, 1.0)
+                    # If crew said HOLD but council says PROCEED with decent confidence, flip to BUY
+                    if crew_action == "HOLD" and c_conf >= 0.55:
+                        crew_action = "BUY"
+                elif c_action_raw in ("HALT", "REDUCE"):
+                    # Council is more conservative → pull crew back
+                    crew_confidence *= 0.60
+                    crew_consensus *= 0.70
+                # NO_TRADE → leave crew unchanged
                 result.updates["crew_action"] = crew_action
                 result.updates["crew_confidence"] = round(crew_confidence, 4)
                 result.updates["crew_consensus"] = round(crew_consensus, 4)
@@ -426,12 +442,31 @@ class MasterOrchestrator:
             "quantum_improvement": 0.0,
         }
         try:
-            result = self._runtime.quantum_service.optimize(
-                symbols=state.symbol_universe,
-                regime=state.regime,
+            from trading_platform.quantum.schemas import PortfolioOptimizationRequest, QuantumCandidate
+            # QuantumOptimizationService.optimize(req: PortfolioOptimizationRequest) — not keyword args
+            fusion_side = state.fusion_action if state.fusion_action in ("BUY", "SELL") else "BUY"
+            q_candidates = [
+                QuantumCandidate(
+                    symbol=sym,
+                    side=fusion_side,
+                    expected_edge=max(0.001, state.neural_expected_return),
+                    risk_estimate=max(0.01, state.neural_uncertainty * 0.5),
+                    liquidity_score=1.0,
+                )
+                for sym in (state.symbol_universe or [state.underlying])[:10]
+            ]
+            req = PortfolioOptimizationRequest(
+                trace_id=state.trace_id,
+                candidates=q_candidates,
+                cardinality_limit=getattr(
+                    self._runtime.settings, "quantum_cardinality_limit", 5
+                ),
             )
+            result = self._runtime.quantum_service.optimize(req)
             if result:
-                updates["quantum_selected_symbols"] = list(getattr(result, "selected_symbols", state.symbol_universe))
+                updates["quantum_selected_symbols"] = list(
+                    getattr(result, "selected_symbols", state.symbol_universe)
+                )
                 updates["quantum_backend"] = getattr(result, "backend_used", "classical")
                 updates["quantum_beats_baseline"] = bool(getattr(result, "beats_baseline", False))
                 improvement = getattr(result, "improvement_over_classical", None)
@@ -479,23 +514,11 @@ class MasterOrchestrator:
                     halt_reason=f"risk: daily loss limit ({daily_loss_pct:.1%})",
                 )
 
-            # Delegate to existing risk engine for strategy-level check
-            try:
-                rd = self._runtime.risk_engine.pre_check(
-                    symbols=state.symbol_universe,
-                    regime=state.regime,
-                )
-                if hasattr(rd, "approved"):
-                    if not rd.approved:
-                        return NodeResult(
-                            updates={**updates, "risk_reason": getattr(rd, "reason", "risk_engine_blocked")},
-                            halt=True,
-                            halt_reason=f"risk_engine: {getattr(rd, 'reason', 'blocked')}",
-                        )
-                    updates["risk_score"] = float(getattr(rd, "risk_score", 0.0))
-            except Exception:
-                pass   # risk engine pre-check is best-effort
-
+            # Full per-order risk evaluation (RiskEngine.evaluate) requires an OrderIntent
+            # which doesn't exist yet at this planning stage — that check runs inside the
+            # ExecutionScheduler at submit time. Record a composite risk score from the
+            # already-computed drawdown and daily-loss so Node 7 can weight it.
+            updates["risk_score"] = max(drawdown, daily_loss_pct)
             updates["risk_approved"] = True
             updates["risk_reason"] = "all_checks_passed"
 
