@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, useCallback } from 'react'
 import { clsx } from 'clsx'
 import {
   Atom, Brain, Cpu, Loader2, RefreshCw, Target, Zap, GitMerge, Database,
-  ChevronDown, ChevronRight as ChevronRightIcon,
+  ChevronDown, ChevronRight as ChevronRightIcon, TrendingUp, ShieldCheck, Layers,
 } from 'lucide-react'
 import { RadialBarChart, RadialBar, ResponsiveContainer, Tooltip } from 'recharts'
 import { Card, CardBody, CardHeader } from '../components/shared/Card'
@@ -16,16 +16,19 @@ import {
   getGoalGovernorStatus,
   listTraces, runHighEndScan,
   runMarlAdvisoryPreview,
+  getOrchestratorStats, getOrchestratorProfitGuard, getOrchestratorReflections,
+  getDBReflectionsHistory,
 } from '../api'
 import { pct, fmtDateTime } from '../utils'
 import type { AgentVote, ForecastPrediction, MarlAdvisoryResult } from '../types'
 
 const TABS = [
-  { id: 'overview',  label: 'Overview',   icon: <Atom size={13} /> },
-  { id: 'council',   label: 'AI Council', icon: <Brain size={13} /> },
-  { id: 'neural',    label: 'Neural Lab', icon: <Zap size={13} /> },
-  { id: 'quantum',   label: 'Quantum',    icon: <Cpu size={13} /> },
-  { id: 'marl',      label: 'MARL',       icon: <GitMerge size={13} /> },
+  { id: 'overview',      label: 'Overview',     icon: <Atom size={13} /> },
+  { id: 'council',       label: 'AI Council',   icon: <Brain size={13} /> },
+  { id: 'neural',        label: 'Neural Lab',   icon: <Zap size={13} /> },
+  { id: 'quantum',       label: 'Quantum',      icon: <Cpu size={13} /> },
+  { id: 'marl',          label: 'MARL',         icon: <GitMerge size={13} /> },
+  { id: 'orchestrator',  label: 'Orchestrator', icon: <Database size={13} /> },
 ]
 
 const TOOLTIP_STYLE = {
@@ -89,6 +92,32 @@ export function AILab() {
   const [scanLoading, setScanLoading] = useState(false)
   const [scanExpanded, setScanExpanded] = useState<string | null>(null)
 
+  // Orchestrator tab state
+  const [orchStats, setOrchStats]           = useState<Record<string, unknown> | null>(null)
+  const [orchPG, setOrchPG]                 = useState<Record<string, unknown> | null>(null)
+  const [orchReflections, setOrchReflections] = useState<Record<string, unknown>[]>([])
+  const [orchDBReflections, setOrchDBReflections] = useState<Record<string, unknown>[]>([])
+  const [orchLoading, setOrchLoading]       = useState(false)
+  const [orchUnderlying, setOrchUnderlying] = useState('NIFTY')
+
+  const loadOrchestrator = useCallback(async () => {
+    setOrchLoading(true)
+    try {
+      const [stats, pg, refl, dbRefl] = await Promise.allSettled([
+        getOrchestratorStats(),
+        getOrchestratorProfitGuard(),
+        getOrchestratorReflections(20),
+        getDBReflectionsHistory(20),
+      ])
+      if (stats.status === 'fulfilled') setOrchStats(stats.value)
+      if (pg.status === 'fulfilled')    setOrchPG(pg.value)
+      if (refl.status === 'fulfilled')  setOrchReflections(refl.value.reflections ?? [])
+      if (dbRefl.status === 'fulfilled') setOrchDBReflections(dbRefl.value.reflections ?? [])
+    } finally {
+      setOrchLoading(false)
+    }
+  }, [])
+
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
   const loadAll = useCallback(async () => {
@@ -119,7 +148,10 @@ export function AILab() {
     if (tab === 'quantum') {
       getQuantumResults(10).then(r => setQuantumHistory(r.results as unknown as Record<string, unknown>[])).catch(() => {})
     }
-  }, [tab])
+    if (tab === 'orchestrator') {
+      loadOrchestrator()
+    }
+  }, [tab, loadOrchestrator])
 
   const handleCouncilPreview = async () => {
     setCouncilLoading(true)
@@ -751,6 +783,298 @@ export function AILab() {
               />
             </Card>
           )}
+        </div>
+      )}
+
+      {/* Tab: Orchestrator (pgvector Learning State) */}
+      {tab === 'orchestrator' && (
+        <div className="space-y-4">
+
+          {/* Header row */}
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <Database size={14} className="text-brand-purple" />
+              <span className="text-sm font-medium text-gray-200">pgvector Learning State</span>
+              {orchStats && (
+                <span className="text-[10px] px-2 py-0.5 rounded-full bg-green-500/10 border border-green-500/30 text-green-400 font-mono">
+                  pgvector LIVE
+                </span>
+              )}
+            </div>
+            <button
+              onClick={loadOrchestrator}
+              disabled={orchLoading}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-surface-elevated border border-surface-border text-xs text-gray-400 hover:text-gray-200 transition-colors"
+            >
+              {orchLoading ? <Loader2 size={12} className="animate-spin" /> : <RefreshCw size={12} />}
+              Refresh
+            </button>
+          </div>
+
+          {/* Top stat pills */}
+          {orchStats && (
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+              <div className="bg-surface-elevated rounded-lg p-3 border border-surface-border">
+                <div className="text-[10px] text-gray-500 uppercase mb-1">Pipeline Cycles</div>
+                <div className="text-lg font-mono text-gray-100">
+                  {String((orchStats as Record<string, unknown>).cycle_count ?? 0)}
+                </div>
+              </div>
+              <div className="bg-surface-elevated rounded-lg p-3 border border-surface-border">
+                <div className="text-[10px] text-gray-500 uppercase mb-1">RAG Patterns</div>
+                <div className="text-lg font-mono text-gray-100">
+                  {String(((orchStats.market_rag as Record<string, unknown>)?.pattern_count ?? 0))}
+                </div>
+              </div>
+              <div className="bg-surface-elevated rounded-lg p-3 border border-surface-border">
+                <div className="text-[10px] text-gray-500 uppercase mb-1">RAG Avg Win Rate</div>
+                <div className="text-lg font-mono text-brand-green">
+                  {(Number(((orchStats.market_rag as Record<string, unknown>)?.avg_win_rate ?? 0)) * 100).toFixed(1)}%
+                </div>
+              </div>
+              <div className="bg-surface-elevated rounded-lg p-3 border border-surface-border">
+                <div className="text-[10px] text-gray-500 uppercase mb-1">Total Reflections</div>
+                <div className="text-lg font-mono text-gray-100">
+                  {String(((orchStats.reflection as Record<string, unknown>)?.total_reflections ?? 0))}
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* MarketRAG Card */}
+          <Card>
+            <CardHeader
+              title="MarketRAG — Corrective RAG Pattern Store"
+              icon={<Layers size={14} className="text-brand-purple" />}
+            />
+            <CardBody className="space-y-3">
+              {orchStats ? (
+                <>
+                  <div className="flex flex-wrap gap-3 text-xs text-gray-400">
+                    <span>Queries: <span className="font-mono text-gray-200">
+                      {String((orchStats.market_rag as Record<string, unknown>)?.query_count ?? 0)}
+                    </span></span>
+                    <span>Seeded: <span className="font-mono text-gray-200">
+                      {String((orchStats.market_rag as Record<string, unknown>)?.seeded ?? false)}
+                    </span></span>
+                  </div>
+                  <div className="text-xs text-brand-purple bg-brand-purple/5 border border-brand-purple/20 rounded p-2">
+                    Pattern retrieval uses pgvector IVFFlat cosine index — sub-millisecond at any scale.
+                    Patterns persist across restarts; learned win rates compound over every trade.
+                  </div>
+                </>
+              ) : (
+                <div className="text-xs text-gray-500">No data — start the agent to populate patterns.</div>
+              )}
+            </CardBody>
+          </Card>
+
+          {/* ProfitGuard Card */}
+          <Card>
+            <CardHeader
+              title="ProfitGuard — Rolling Win Rate (persisted)"
+              icon={<ShieldCheck size={14} className="text-brand-green" />}
+            />
+            <CardBody className="space-y-3">
+              {/* Global stats */}
+              {orchPG && (
+                <div className="flex flex-wrap gap-4 text-xs">
+                  <div>
+                    <span className="text-gray-500">Global win rate: </span>
+                    <span className="font-mono text-brand-green">
+                      {orchPG.global_win_rate != null
+                        ? `${(Number(orchPG.global_win_rate) * 100).toFixed(1)}%`
+                        : '—'}
+                    </span>
+                  </div>
+                  <div>
+                    <span className="text-gray-500">Total trades: </span>
+                    <span className="font-mono text-gray-200">{String(orchPG.total_trades ?? 0)}</span>
+                  </div>
+                </div>
+              )}
+              {/* Per-underlying lookup */}
+              <div className="flex items-center gap-2">
+                <input
+                  value={orchUnderlying}
+                  onChange={e => setOrchUnderlying(e.target.value.toUpperCase())}
+                  placeholder="Underlying (e.g. NIFTY)"
+                  className="flex-1 bg-surface-elevated border border-surface-border text-xs text-gray-200 rounded px-2 py-1.5 font-mono focus:outline-none focus:border-brand-green"
+                />
+                <button
+                  onClick={() => getOrchestratorProfitGuard(orchUnderlying).then(setOrchPG).catch(() => {})}
+                  className="px-3 py-1.5 rounded bg-brand-green/15 border border-brand-green/30 text-brand-green text-xs font-medium hover:bg-brand-green/25 transition-colors"
+                >
+                  Lookup
+                </button>
+              </div>
+              {/* Per-underlying table from full stats */}
+              {orchPG?.per_underlying && Object.keys(orchPG.per_underlying as Record<string, unknown>).length > 0 ? (
+                <Table
+                  columns={[
+                    { key: 'underlying', label: 'Underlying' },
+                    { key: 'rolling_win_rate', label: 'Rolling Win %', render: (v) =>
+                      v != null ? (
+                        <span className={`font-mono ${Number(v) >= 0.5 ? 'text-brand-green' : 'text-red-400'}`}>
+                          {(Number(v) * 100).toFixed(1)}%
+                        </span>
+                      ) : <span className="text-gray-500">—</span>
+                    },
+                    { key: 'consecutive_losses', label: 'Consec. Losses', render: (v) =>
+                      <span className={`font-mono ${Number(v) >= 3 ? 'text-red-400' : 'text-gray-300'}`}>{String(v)}</span>
+                    },
+                  ]}
+                  rows={Object.entries(orchPG.per_underlying as Record<string, Record<string, unknown>>).map(([k, v]) => ({
+                    underlying: k,
+                    rolling_win_rate: v.rolling_win_rate,
+                    consecutive_losses: v.consecutive_losses ?? 0,
+                  }))}
+                  keyFn={(r) => r.underlying}
+                  emptyMessage="No per-underlying history yet"
+                />
+              ) : orchPG?.underlying ? (
+                <div className="flex flex-wrap gap-4 text-xs border-t border-surface-border pt-3">
+                  <div><span className="text-gray-500">Underlying: </span><span className="font-mono text-gray-200">{String(orchPG.underlying)}</span></div>
+                  <div><span className="text-gray-500">Rolling win rate: </span>
+                    <span className={`font-mono ${orchPG.rolling_win_rate != null && Number(orchPG.rolling_win_rate) >= 0.5 ? 'text-brand-green' : 'text-red-400'}`}>
+                      {orchPG.rolling_win_rate != null ? `${(Number(orchPG.rolling_win_rate) * 100).toFixed(1)}%` : '—'}
+                    </span>
+                  </div>
+                  <div><span className="text-gray-500">Consecutive losses: </span>
+                    <span className={`font-mono ${Number(orchPG.consecutive_losses ?? 0) >= 3 ? 'text-red-400' : 'text-gray-300'}`}>
+                      {String(orchPG.consecutive_losses ?? 0)}
+                    </span>
+                  </div>
+                </div>
+              ) : (
+                <div className="text-xs text-gray-500">No trades recorded yet. Rolling state persists across restarts once trades close.</div>
+              )}
+            </CardBody>
+          </Card>
+
+          {/* ReflectionEngine — Agent Weights */}
+          <Card>
+            <CardHeader
+              title="Reflection Engine — Agent Weights (persisted)"
+              icon={<TrendingUp size={14} className="text-brand-yellow" />}
+            />
+            <CardBody className="space-y-3">
+              {orchStats && (orchStats.reflection as Record<string, unknown>)?.agent_weights &&
+               Object.keys((orchStats.reflection as Record<string, unknown>).agent_weights as Record<string, unknown>).length > 0 ? (
+                <Table
+                  columns={[
+                    { key: 'agent', label: 'Agent' },
+                    { key: 'weight', label: 'Weight', render: (v) => (
+                      <div className="flex items-center gap-2">
+                        <div className="w-20 h-1.5 rounded bg-surface-border overflow-hidden">
+                          <div
+                            className="h-full rounded bg-brand-yellow"
+                            style={{ width: `${Math.min(100, (Number(v) / 2.5) * 100)}%` }}
+                          />
+                        </div>
+                        <span className="font-mono text-gray-200">{Number(v).toFixed(3)}</span>
+                      </div>
+                    )},
+                    { key: 'accuracy', label: 'Accuracy', render: (v) =>
+                      v != null ? (
+                        <span className={`font-mono text-xs ${Number(v) >= 0.5 ? 'text-brand-green' : 'text-red-400'}`}>
+                          {(Number(v) * 100).toFixed(1)}%
+                        </span>
+                      ) : <span className="text-gray-500">—</span>
+                    },
+                  ]}
+                  rows={Object.entries(
+                    (orchStats.reflection as Record<string, unknown>).agent_weights as Record<string, number>
+                  ).map(([agent, weight]) => {
+                    const acc = ((orchStats.reflection as Record<string, unknown>).agent_accuracy as Record<string, Record<string, unknown>>)?.[agent]
+                    return { agent, weight, accuracy: acc?.accuracy }
+                  })}
+                  keyFn={(r) => r.agent}
+                  emptyMessage="No agent weights yet"
+                />
+              ) : (
+                <div className="text-xs text-gray-500">
+                  Weights accumulate as trades close. They persist across restarts via pgvector DB.
+                </div>
+              )}
+
+              {/* Overall win rate */}
+              {orchStats && (
+                <div className="flex flex-wrap gap-4 text-xs border-t border-surface-border pt-3">
+                  <div>
+                    <span className="text-gray-500">Overall win rate: </span>
+                    <span className="font-mono text-brand-green">
+                      {(orchStats.reflection as Record<string, unknown>).overall_win_rate != null
+                        ? `${(Number((orchStats.reflection as Record<string, unknown>).overall_win_rate) * 100).toFixed(1)}%`
+                        : '—'}
+                    </span>
+                  </div>
+                </div>
+              )}
+            </CardBody>
+          </Card>
+
+          {/* Recent Reflections from DB */}
+          <Card>
+            <CardHeader
+              title="Recent Reflections (from DB — survive restarts)"
+              icon={<Database size={14} className="text-brand-blue" />}
+            />
+            <CardBody>
+              {orchDBReflections.length > 0 ? (
+                <Table
+                  columns={[
+                    { key: 'ts', label: 'Time', render: (v) => <span className="font-mono text-[10px] text-gray-400">{String(v).slice(0, 19).replace('T', ' ')}</span> },
+                    { key: 'underlying', label: 'Symbol' },
+                    { key: 'won', label: 'Result', render: (v) => (
+                      <Tag label={v ? 'WIN' : 'LOSS'} color={v ? 'green' : 'red'} />
+                    )},
+                    { key: 'pnl_pct', label: 'P&L %', render: (v) => (
+                      <span className={`font-mono ${Number(v) >= 0 ? 'text-brand-green' : 'text-red-400'}`}>
+                        {(Number(v) * 100).toFixed(2)}%
+                      </span>
+                    )},
+                    { key: 'quality', label: 'Quality', render: (v) => (
+                      <span className="font-mono text-gray-300">{Number(v).toFixed(2)}</span>
+                    )},
+                    { key: 'regime', label: 'Regime', render: (v) => (
+                      <span className="text-[10px] text-gray-400">{String(v ?? '—')}</span>
+                    )},
+                  ]}
+                  rows={orchDBReflections}
+                  keyFn={(_, i) => String(i)}
+                  emptyMessage="No reflections in DB yet"
+                />
+              ) : orchReflections.length > 0 ? (
+                <Table
+                  columns={[
+                    { key: 'ts', label: 'Time', render: (v) => <span className="font-mono text-[10px] text-gray-400">{String(v).slice(0, 19).replace('T', ' ')}</span> },
+                    { key: 'underlying', label: 'Symbol' },
+                    { key: 'won', label: 'Result', render: (v) => (
+                      <Tag label={v ? 'WIN' : 'LOSS'} color={v ? 'green' : 'red'} />
+                    )},
+                    { key: 'pnl_pct', label: 'P&L %', render: (v) => (
+                      <span className={`font-mono ${Number(v) >= 0 ? 'text-brand-green' : 'text-red-400'}`}>
+                        {(Number(v) * 100).toFixed(2)}%
+                      </span>
+                    )},
+                    { key: 'quality_score', label: 'Quality', render: (v) => (
+                      <span className="font-mono text-gray-300">{Number(v).toFixed(2)}</span>
+                    )},
+                    { key: 'regime', label: 'Regime', render: (v) => (
+                      <span className="text-[10px] text-gray-400">{String(v ?? '—')}</span>
+                    )},
+                  ]}
+                  rows={orchReflections}
+                  keyFn={(_, i) => String(i)}
+                  emptyMessage="No reflections yet"
+                />
+              ) : (
+                <div className="text-xs text-gray-500">No reflections yet. Reflections are written after each trade closes.</div>
+              )}
+            </CardBody>
+          </Card>
+
         </div>
       )}
 

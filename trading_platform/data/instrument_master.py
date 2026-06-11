@@ -39,16 +39,16 @@ from trading_platform.domain.models import Instrument
 
 INDEX_UNDERLYINGS = {
     # NSE indices — F&O on NFO, weekly expiry on Thursday
-    # Synthetic bases are deliberately stable for local backtests/tests.
-    # Production symbols, tokens, strikes, and expiries are refreshed from the
-    # Angel One instrument master before live or paper-shadow operation.
-    "NIFTY":      {"token": "26000", "lot_size": 50,  "strike_step": 50,  "base": 22500},
-    "BANKNIFTY":  {"token": "26009", "lot_size": 15,  "strike_step": 100, "base": 48500},
-    "FINNIFTY":   {"token": "26037", "lot_size": 40,  "strike_step": 50,  "base": 23000},
-    "MIDCPNIFTY": {"token": "26074", "lot_size": 75,  "strike_step": 25,  "base": 12500},
+    # C6: base prices aligned with SyntheticDataProvider._BASE_PRICES (May 2026 levels)
+    # so select_option() centres strikes at the actual synthetic bar price and
+    # avoids selecting deeply ITM/OTM options by mistake.
+    "NIFTY":      {"token": "26000", "lot_size": 50,  "strike_step": 50,  "base": 23900},
+    "BANKNIFTY":  {"token": "26009", "lot_size": 15,  "strike_step": 100, "base": 54400},
+    "FINNIFTY":   {"token": "26037", "lot_size": 40,  "strike_step": 50,  "base": 25600},
+    "MIDCPNIFTY": {"token": "26074", "lot_size": 75,  "strike_step": 25,  "base": 13900},
     # BSE indices — F&O on BFO; SENSEX weekly expires Friday, BANKEX weekly expires Monday
-    "SENSEX": {"token": "1",  "exchange": "BSE", "expiry_day": "friday",  "lot_size": 10, "strike_step": 100, "base": 80000},
-    "BANKEX": {"token": "12", "exchange": "BSE", "expiry_day": "monday",  "lot_size": 15, "strike_step": 100, "base": 58000},
+    "SENSEX": {"token": "1",  "exchange": "BSE", "expiry_day": "friday",  "lot_size": 10, "strike_step": 100, "base": 76700},
+    "BANKEX": {"token": "12", "exchange": "BSE", "expiry_day": "monday",  "lot_size": 15, "strike_step": 100, "base": 61300},
 }
 
 # Tokens sourced from Angel One NSE instrument master (NSE Cash Market)
@@ -348,11 +348,11 @@ def _add_derivatives(universe: dict[str, Instrument], as_of: date, underlyings: 
             else:
                 weekly_anchor = _next_thursday(as_of)
                 monthly_fn = _monthly_expiry
-            weekly_expiries = {weekly_anchor + timedelta(days=7 * i) for i in range(9)}
-            monthly_expiries = {monthly_fn(_add_months(as_of, i)) for i in range(3)}
+            weekly_expiries = {weekly_anchor + timedelta(days=7 * i) for i in range(20)}
+            monthly_expiries = {monthly_fn(_add_months(as_of, i)) for i in range(7)}
             expiries = sorted(weekly_expiries | monthly_expiries)
         else:
-            expiries = sorted({_monthly_expiry(_add_months(as_of, i)) for i in range(3)})
+            expiries = sorted({_monthly_expiry(_add_months(as_of, i)) for i in range(7)})
 
         base = meta.get("base", 1000)
         step = meta["strike_step"]

@@ -106,6 +106,30 @@ class ReflectionEngine:
         self._reflections: list[TradeReflection] = []
         self._agent_accuracy: dict[str, list[bool]] = {}   # rolling accuracy tracking
 
+        self._db = None   # wired via set_db() in TradingRuntime
+
+    # ── DB wiring ─────────────────────────────────────────────────────────────
+
+    def set_db(self, db) -> None:
+        """Wire a TradingDatabase so agent weights and reflections persist."""
+        self._db = db
+
+    def load_weights_from_db(self) -> int:
+        """Restore agent weights from the database on startup.
+
+        Returns the number of agents restored.
+        """
+        if self._db is None:
+            return 0
+        try:
+            weights = self._db.load_agent_weights()
+        except Exception:
+            return 0
+        if weights:
+            self._weights.update(weights)
+            logger.info("ReflectionEngine: restored weights for %d agents", len(weights))
+        return len(weights)
+
     # ── Main reflection entry point ───────────────────────────────────────────
 
     def reflect(
@@ -194,6 +218,24 @@ class ReflectionEngine:
             market_features=market_features,
         )
         self._reflections.append(reflection)
+
+        # Persist to database so learning survives restarts
+        if self._db is not None:
+            try:
+                self._db.save_reflection(
+                    trace_id=trace_id,
+                    underlying=underlying,
+                    won=won,
+                    pnl_pct=pnl_pct,
+                    quality=quality,
+                    regime=regime,
+                    payload=reflection.to_dict(),
+                    ts=reflection.ts,
+                )
+                if new_weights:
+                    self._db.save_agent_weights(new_weights)
+            except Exception as _e:
+                logger.debug("ReflectionEngine: DB persist error: %s", _e)
 
         log_level = logging.INFO if won else logging.WARNING
         logger.log(

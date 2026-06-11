@@ -84,6 +84,51 @@ class ProfitGuard:
         self._consecutive_losses: dict[str, int] = {}
         self._all_outcomes: list[TradeOutcomeRecord] = []
 
+        self._db = None   # wired via set_db() in TradingRuntime
+
+    # ─────────────────────────────────────────────── DB wiring
+
+    def set_db(self, db) -> None:
+        """Wire a TradingDatabase so rolling outcomes survive restarts."""
+        self._db = db
+
+    def load_from_db(self) -> int:
+        """Restore rolling win-rate state from persisted outcomes.
+
+        Replays the last ROLLING_WINDOW outcomes per underlying so the guard
+        has accurate per-asset history after a restart.  Returns the number of
+        underlyings restored.
+        """
+        if self._db is None:
+            return 0
+        loaded = 0
+        try:
+            underlyings = self._db.load_all_outcome_underlyings()
+        except Exception:
+            return 0
+        for underlying in underlyings:
+            try:
+                rows = self._db.load_recent_outcomes(underlying, limit=ROLLING_WINDOW)
+            except Exception:
+                continue
+            if not rows:
+                continue
+            dq: deque[bool] = deque(maxlen=ROLLING_WINDOW)
+            consec = 0
+            for row in rows:
+                won = bool(row["won"])
+                dq.append(won)
+                if won:
+                    consec = 0
+                else:
+                    consec += 1
+            self._rolling[underlying] = dq
+            self._consecutive_losses[underlying] = consec
+            loaded += 1
+        if loaded:
+            logger.info("ProfitGuard: restored rolling state for %d underlyings", loaded)
+        return loaded
+
     # ─────────────────────────────────────────────── public API
 
     def evaluate(self, state: OrchestratorState) -> NodeResult:
@@ -108,7 +153,9 @@ class ProfitGuard:
         # avg_loss = base intraday stop (0.8%) scaled up by uncertainty (not the full uncertainty
         # value, which ranges 0-1 and represents model confidence, not price move size).
         BASE_STOP = 0.008   # 0.8% typical intraday hard stop
-        avg_profit = max(expected_return, 0.005)
+        # Minimum profit target = 2× stop (2:1 reward/risk is the floor for any viable trade).
+        # Using 0.5% (old floor) with 0.8% stop gave rr=0.625 → Kelly always negative.
+        avg_profit = max(expected_return, BASE_STOP * 2.0)
         avg_loss = max(BASE_STOP * (1.0 + uncertainty * 0.5), 0.005)
         rr = avg_profit / avg_loss
 
@@ -201,6 +248,12 @@ class ProfitGuard:
         self._all_outcomes.append(
             TradeOutcomeRecord(underlying=underlying, won=won, pnl_pct=pnl_pct, ts=ts)
         )
+
+        if self._db is not None:
+            try:
+                self._db.save_outcome(underlying=underlying, won=won, pnl_pct=pnl_pct, ts=ts)
+            except Exception as _e:
+                logger.debug("ProfitGuard: DB persist error: %s", _e)
 
     def stats(self, underlying: str | None = None) -> dict:
         if underlying:

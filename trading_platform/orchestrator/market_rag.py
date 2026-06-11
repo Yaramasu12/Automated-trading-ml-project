@@ -243,6 +243,58 @@ class MarketRAG:
         self._seeded = False
         self._query_count = 0
         self._cache: dict[str, list[PatternMatch]] = {}   # fingerprint → matches
+        self._db = None          # optional TradingDatabase; set via set_db() after init
+        self._use_pgvector = False   # True when DB is PostgreSQL with pgvector
+
+    def set_db(self, db) -> None:
+        """Wire a TradingDatabase so learned patterns persist across restarts."""
+        self._db = db
+        self._use_pgvector = getattr(db, "_mode", None) == "postgres"
+
+    def load_from_db(self) -> int:
+        """Load previously learned patterns from SQLite on startup.
+
+        Called once during TradingRuntime init, before seed().  Patterns loaded
+        from the DB take precedence over the static seed patterns for the same
+        pattern_id (because they carry real trade experience).
+        Returns the count of patterns loaded.
+        """
+        if self._db is None:
+            return 0
+        try:
+            rows = self._db.load_rag_patterns()
+        except Exception:
+            return 0
+        loaded = 0
+        for row in rows:
+            existing = next((p for p in self._patterns if p.pattern_id == row["pattern_id"]), None)
+            if existing is not None:
+                # Replace seed with learned version (it has real sample data)
+                existing.win_rate = row["win_rate"]
+                existing.avg_return = row["avg_return"]
+                existing.sample_size = row["sample_size"]
+                existing.last_updated = row["last_updated"]
+                if row.get("feature_vector"):
+                    existing.feature_vector = row["feature_vector"]
+            else:
+                self._patterns.append(MarketPattern(
+                    pattern_id=row["pattern_id"],
+                    regime=row["regime"],
+                    news_sentiment_bucket=row["news_sentiment_bucket"],
+                    volatility_bucket=row["volatility_bucket"],
+                    momentum_bucket=row["momentum_bucket"],
+                    rsi_bucket=row["rsi_bucket"],
+                    feature_vector=row["feature_vector"],
+                    win_rate=row["win_rate"],
+                    avg_return=row["avg_return"],
+                    sample_size=row["sample_size"],
+                    last_updated=row["last_updated"],
+                ))
+            loaded += 1
+        if loaded:
+            logger.info("MarketRAG: loaded %d learned patterns from DB", loaded)
+            self._cache.clear()
+        return loaded
 
     def seed(self) -> None:
         if self._seeded:
@@ -290,12 +342,42 @@ class MarketRAG:
         )
 
         # ── Step 1: Retrieve top-K ─────────────────────────────────────────
-        scored: list[tuple[float, MarketPattern]] = []
-        for pattern in self._patterns:
-            sim = _cosine_similarity(query_vec, pattern.feature_vector)
-            scored.append((sim, pattern))
+        # When PostgreSQL+pgvector is available, use the IVFFlat index for
+        # sub-millisecond cosine search that scales to millions of patterns.
+        # Falls back to in-memory cosine similarity for SQLite / no DB.
+        if self._use_pgvector and self._db is not None:
+            db_rows = self._db.search_similar_patterns(query_vec, limit=TOP_K * 2, min_sample_size=1)
+            scored: list[tuple[float, MarketPattern]] = []
+            for r in db_rows:
+                sim = float(r.get("similarity", 0.0))
+                pattern = MarketPattern(
+                    pattern_id=r["pattern_id"],
+                    regime=r["regime"],
+                    news_sentiment_bucket=r["news_sentiment_bucket"],
+                    volatility_bucket=r["volatility_bucket"],
+                    momentum_bucket=r["momentum_bucket"],
+                    rsi_bucket=r["rsi_bucket"],
+                    feature_vector=r.get("feature_vector") or [],
+                    win_rate=r["win_rate"],
+                    avg_return=r["avg_return"],
+                    sample_size=r["sample_size"],
+                    last_updated=str(r.get("last_updated", "")),
+                )
+                scored.append((sim, pattern))
+            # Also include in-memory seed patterns not yet in DB (sample_size may be 0)
+            db_ids = {r["pattern_id"] for r in db_rows}
+            for p in self._patterns:
+                if p.pattern_id not in db_ids:
+                    sim = _cosine_similarity(query_vec, p.feature_vector)
+                    scored.append((sim, p))
+            scored.sort(key=lambda x: -x[0])
+        else:
+            scored = []
+            for pattern in self._patterns:
+                sim = _cosine_similarity(query_vec, pattern.feature_vector)
+                scored.append((sim, pattern))
+            scored.sort(key=lambda x: -x[0])
 
-        scored.sort(key=lambda x: -x[0])
         top_k = scored[:TOP_K]
         best_sim = top_k[0][0] if top_k else 0.0
 
@@ -380,8 +462,29 @@ class MarketRAG:
                 last_updated=datetime.now(timezone.utc).isoformat(),
             ))
 
-        # Invalidate cache
+        # Invalidate retrieval cache
         self._cache.clear()
+
+        # Persist to SQLite so learned win rates survive server restarts
+        if self._db is not None:
+            updated = next((p for p in self._patterns if p.pattern_id == pid), None)
+            if updated is not None:
+                try:
+                    self._db.save_rag_pattern(
+                        pattern_id=updated.pattern_id,
+                        regime=updated.regime,
+                        news_sentiment_bucket=updated.news_sentiment_bucket,
+                        volatility_bucket=updated.volatility_bucket,
+                        momentum_bucket=updated.momentum_bucket,
+                        rsi_bucket=updated.rsi_bucket,
+                        feature_vector=updated.feature_vector,
+                        win_rate=updated.win_rate,
+                        avg_return=updated.avg_return,
+                        sample_size=updated.sample_size,
+                        last_updated=updated.last_updated,
+                    )
+                except Exception as _e:
+                    logger.debug("MarketRAG: DB persist error: %s", _e)
 
     def stats(self) -> dict:
         return {
