@@ -70,7 +70,12 @@ class FuturesTrendStrategy(Strategy):
         return StrategyRiskEstimate(max_loss=notional * 0.015, margin_required=notional * 0.12)
 
     def exit_rules(self) -> StrategyExitRules:
-        return StrategyExitRules(stop_loss_pct=0.012, target_pct=0.030, max_holding_days=3, square_off_before_expiry_days=1)
+        # M4: stop raised from 1.2% → 2.5% for daily-bar trading.
+        # 1.2% was tighter than a typical day's ATR (~1.5%) and caused stop-outs
+        # from normal intrabar noise before the trend could develop.
+        # Target raised proportionally to preserve 2.5:1 R:R (2.5% × 2.5 = 6.25%).
+        # max_holding_days raised from 3 → 5 to allow trends to run on daily bars.
+        return StrategyExitRules(stop_loss_pct=0.025, target_pct=0.062, max_holding_days=5, square_off_before_expiry_days=1)
 
 
 class DefinedRiskOptionSpreadStrategy(Strategy):

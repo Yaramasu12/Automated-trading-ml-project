@@ -760,13 +760,17 @@ class MasterOrchestrator:
                 "orchestrator_metadata": {
                     "trace_id": state.trace_id,
                     "regime": state.regime,
+                    "underlying": state.underlying,
                     "crew_action": state.crew_action,
                     "crew_consensus": state.crew_consensus,
                     "neural_direction_prob": state.neural_direction_prob,
+                    # canonical key read by _on_fill for MetaLabeler wiring
+                    "neural_direction_probability": state.neural_direction_prob,
                     "fusion_score": state.fusion_score,
                     "expected_value": state.profit_gate.expected_value if state.profit_gate else 0.0,
                     "kelly_fraction": state.profit_gate.kelly_fraction if state.profit_gate else 0.0,
                     "rag_win_rate": state.rag_win_rate,
+                    "market_features": state.market_features,
                 },
             })
 

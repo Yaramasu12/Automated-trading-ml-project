@@ -156,7 +156,9 @@ class TradingRuntime:
         self.synthetic_data = SyntheticDataProvider()
         self.charges_model = ChargesModel()
         self.monitor = OperationalMonitor()
-        self.db = TradingDatabase()
+        self.db = TradingDatabase(
+            database_url=self.settings.database_url or None
+        )
         self.live_feed = LiveTickFeed(self.settings)
         # Wire live Angel One prices into the paper broker so fills use real market prices
         self.paper_broker.set_live_feed(self.live_feed)
@@ -361,6 +363,13 @@ class TradingRuntime:
         # ── Master Orchestrator (LangGraph-style profit-first pipeline) ───────
         from trading_platform.orchestrator.master_orchestrator import MasterOrchestrator
         self.master_orchestrator = MasterOrchestrator(self)
+        # Wire pgvector DB into all learning components so state survives restarts
+        self.master_orchestrator._market_rag.set_db(self.db)
+        self.master_orchestrator._market_rag.load_from_db()
+        self.master_orchestrator._profit_guard.set_db(self.db)
+        self.master_orchestrator._profit_guard.load_from_db()
+        self.master_orchestrator._reflection_engine.set_db(self.db)
+        self.master_orchestrator._reflection_engine.load_weights_from_db()
 
     # ── Orchestrator-facing property shortcuts ────────────────────────────────
 
@@ -541,7 +550,29 @@ class TradingRuntime:
         exec_mode = self.execution_mode.value
         try:
             import asyncio as _aio
-            _aio.ensure_future(_aio.to_thread(self.db.save_trade, trade, execution_mode=exec_mode))
+            # Compute market feature_vector for pgvector similarity queries (non-fatal)
+            _fv: list | None = None
+            try:
+                _ctx_for_fv = self._entry_fill_context.get(symbol, {})
+                _feats_for_fv = self.feature_store.get_features(
+                    getattr(intent.instrument, "underlying", None) or symbol
+                ) or {}
+                if _feats_for_fv:
+                    from trading_platform.orchestrator.market_rag import _feature_vector as _mkfv
+                    _fv = _mkfv(
+                        regime=_ctx_for_fv.get("regime", "NEUTRAL"),
+                        news_sentiment=_feats_for_fv.get("news_sentiment", 0.0),
+                        volatility=_feats_for_fv.get("realized_volatility",
+                                    _feats_for_fv.get("predicted_volatility", 0.20)),
+                        momentum=_feats_for_fv.get("momentum_20",
+                                  _feats_for_fv.get("momentum_5", 0.0)),
+                        rsi=_feats_for_fv.get("rsi_14", 50.0),
+                        neural_direction_prob=float(_ctx_for_fv.get("neural_direction_probability", 0.5)),
+                        neural_uncertainty=0.5,
+                    )
+            except Exception:
+                pass
+            _aio.ensure_future(_aio.to_thread(self.db.save_trade, trade, execution_mode=exec_mode, feature_vector=_fv))
             mark_prices: dict[str, float] = {}
             for sym in list(self.portfolio.positions.keys()):
                 tick = self.live_feed.latest_tick(sym)
@@ -655,6 +686,34 @@ class TradingRuntime:
                     except Exception:
                         pass
 
+                # Wire MasterOrchestrator reflection: update RAG patterns + ProfitGuard
+                # rolling window so future cycles benefit from this trade's outcome.
+                try:
+                    orch = getattr(self, "master_orchestrator", None)
+                    if orch is not None:
+                        underlying_sym = getattr(intent.instrument, "underlying", None) or symbol
+                        crew_consensus = float(ctx.get("crew_consensus",
+                            intent.signal.metadata.get("crew_consensus", 0.5)))
+                        market_feats: dict = {}
+                        try:
+                            market_feats = self.feature_store.get_features(underlying_sym) or {}
+                        except Exception:
+                            pass
+                        orch._reflection_engine.reflect(
+                            trace_id=ctx.get("trace_id", ""),
+                            underlying=underlying_sym,
+                            action_taken=ctx.get("side", "BUY"),
+                            pnl_pct=pnl_pct,
+                            crew_votes=[],   # vote objects not stored at entry; weight updates skipped
+                            crew_consensus=crew_consensus,
+                            regime=regime,
+                            market_features=market_feats,
+                            market_rag=orch._market_rag,
+                            profit_guard=orch._profit_guard,
+                        )
+                except Exception as _refl_err:
+                    logger.debug("_on_fill: reflection error: %s", _refl_err)
+
                 self._agent_trade_log.append({
                     "ts": now_ts, "type": "EXIT", "symbol": symbol,
                     "strategy": strat, "regime": regime, "side": side,
@@ -723,6 +782,8 @@ class TradingRuntime:
             "side": side,
             "trace_id": trace_id,
             "neural_direction_probability": neural_dir_prob,
+            "crew_consensus": float(intent.signal.metadata.get("crew_consensus", 0.5)),
+            "underlying": intent.signal.metadata.get("underlying", symbol),
         }
 
         # ── Gap 1: register entry in OutcomeFactory for later label computation ──

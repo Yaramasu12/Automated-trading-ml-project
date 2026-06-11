@@ -60,7 +60,7 @@ def ctx(master, expiry):
     return BuilderContext(
         master=master,
         underlying="NIFTY",
-        spot=22500.0,
+        spot=23900.0,
         expiry=expiry,
         oracle=synthetic_oracle(annual_vol=0.18),
     )

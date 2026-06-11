@@ -27,8 +27,8 @@ class DerivativesEngineTests(unittest.TestCase):
 
         self.assertGreater(len(chain.calls), 0)
         self.assertEqual(len(chain.calls), len(chain.puts))
-        self.assertIn(48500.0, chain.strikes)
-        self.assertIn(48500.0, chain.liquid_strikes(48500))
+        self.assertIn(54400.0, chain.strikes)
+        self.assertIn(54400.0, chain.liquid_strikes(54400))
 
     def test_contract_selector_selects_future_and_option(self):
         selector = ContractSelector(self.master)

@@ -231,3 +231,19 @@ export const rollbackPolicy = (policyId: string) =>
 // ─── Trace Replay ─────────────────────────────────────────────────────────────
 export const getTraceReplay = (traceId: string) =>
   get<import('./types').TraceReplayResponse>(`/traces/${traceId}/replay`)
+
+// ─── Master Orchestrator (pgvector learning state) ────────────────────────────
+export const getOrchestratorStats = () =>
+  get<Record<string, unknown>>('/orchestrator/stats')
+export const getOrchestratorProfitGuard = (underlying?: string) =>
+  get<Record<string, unknown>>(`/orchestrator/profit-guard${underlying ? `?underlying=${underlying}` : ''}`)
+export const getOrchestratorReflections = (limit = 20) =>
+  get<{ reflections: Record<string, unknown>[] }>(`/orchestrator/reflections?limit=${limit}`)
+export const runOrchestratorPreview = (payload: Record<string, unknown>) =>
+  post<Record<string, unknown>>('/orchestrator/preview', payload)
+export const getDBOutcomes = (underlying?: string, limit = 50) =>
+  get<{ outcomes: Record<string, unknown>[] }>(`/db/outcomes?limit=${limit}${underlying ? `&underlying=${underlying}` : ''}`)
+export const getDBReflectionsHistory = (limit = 30) =>
+  get<{ reflections: Record<string, unknown>[] }>(`/db/reflections-history?limit=${limit}`)
+export const searchSimilarPatterns = (feature_vector: number[], limit = 8) =>
+  post<{ patterns: Record<string, unknown>[]; count: number; backend: string }>('/db/similar-patterns', { feature_vector, limit })

@@ -66,9 +66,9 @@ class Settings:
     live_feed_default_symbols: tuple[str, ...] = ()
     live_feed_max_symbols: int = 80
 
-    # ── Phase 1–9 feature flags (all disabled by default) ──────────────────────
+    # ── Phase 1–9 feature flags ──────────────────────────────────────────────────
     enable_ai_council: bool = False
-    enable_neural_lab: bool = False
+    enable_neural_lab: bool = True    # MA forecaster is always available; safe to enable by default
     enable_quantum_lab: bool = False
     enable_marl_lab: bool = False
     enable_goal_governor: bool = False
@@ -93,6 +93,9 @@ class Settings:
 
     # Goal governor
     yearly_profit_target: float = 50_000_000.0   # 5 crore INR aspirational target
+
+    # Database  (empty = SQLite fallback; set DATABASE_URL for PostgreSQL)
+    database_url: str = ""
 
     @property
     def angel_one_configured(self) -> bool:
@@ -197,7 +200,7 @@ def load_settings() -> Settings:
         live_feed_max_symbols=max(1, int(os.getenv("LIVE_FEED_MAX_SYMBOLS", "80"))),
         # Phase 1-9 flags
         enable_ai_council=_bool_env("ENABLE_AI_COUNCIL", False),
-        enable_neural_lab=_bool_env("ENABLE_NEURAL_LAB", False),
+        enable_neural_lab=_bool_env("ENABLE_NEURAL_LAB", True),
         enable_quantum_lab=_bool_env("ENABLE_QUANTUM_LAB", False),
         enable_marl_lab=_bool_env("ENABLE_MARL_LAB", False),
         enable_goal_governor=_bool_env("ENABLE_GOAL_GOVERNOR", False),
@@ -216,4 +219,5 @@ def load_settings() -> Settings:
         quantum_cardinality_limit=int(os.getenv("QUANTUM_CARDINALITY_LIMIT", "4")),
         quantum_min_baseline_improvement=float(os.getenv("QUANTUM_MIN_BASELINE_IMPROVEMENT", "0.0")),
         yearly_profit_target=float(os.getenv("YEARLY_PROFIT_TARGET", "50000000")),
+        database_url=os.getenv("DATABASE_URL", ""),
     )

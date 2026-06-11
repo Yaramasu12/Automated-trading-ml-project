@@ -58,8 +58,11 @@ class SyntheticDataProvider:
             if current.weekday() >= 5:
                 current += timedelta(days=1)
                 continue
-            seasonal = math.sin(generated / 3.0) * volatility
-            shock = rng.gauss(drift + seasonal, volatility)
+            # H3: removed `seasonal = math.sin(generated / 3.0) * volatility` —
+            # the 3-bar sinusoidal component created artificial periodicity that
+            # momentum strategies over-fit to in backtests, giving misleadingly
+            # good synthetic results that disappear on real data.
+            shock = rng.gauss(drift, volatility)
             open_price = price
             close = max(1.0, price * (1 + shock))
             high = max(open_price, close) * (1 + abs(rng.gauss(0, volatility / 2)))

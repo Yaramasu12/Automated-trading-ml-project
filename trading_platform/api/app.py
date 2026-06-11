@@ -461,6 +461,45 @@ def db_risk_events(limit: int = 50):
     return runtime.db_risk_events(limit=limit)
 
 
+@app.get("/db/outcomes", dependencies=[_AuthDep])
+def db_outcomes(underlying: str | None = None, limit: int = 50):
+    """Recent ProfitGuard trade outcomes (win/loss per underlying) from pgvector DB."""
+    try:
+        rows = runtime.db.load_recent_outcomes(underlying or "NIFTY", limit=limit) if underlying \
+               else runtime.db.load_recent_outcomes("NIFTY", limit=limit)
+        return {"outcomes": rows}
+    except Exception as e:
+        return {"outcomes": [], "error": str(e)}
+
+
+@app.get("/db/reflections-history", dependencies=[_AuthDep])
+def db_reflections_history(limit: int = 30):
+    """Recent post-trade reflections persisted in pgvector DB (survive restarts)."""
+    try:
+        sql = "SELECT trace_id, underlying, won, pnl_pct, quality, regime, ts FROM reflections ORDER BY id DESC LIMIT ?"
+        if runtime.db._mode == "postgres":
+            sql = sql.replace("?", "%s")
+        with runtime.db._cursor() as cur:
+            cur.execute(sql, (limit,))
+            from trading_platform.data.persistence import _row_to_dict
+            rows = [_row_to_dict(cur, r) for r in cur.fetchall()]
+        return {"reflections": list(reversed(rows))}
+    except Exception as e:
+        return {"reflections": [], "error": str(e)}
+
+
+@app.post("/db/similar-patterns", dependencies=[_AuthDep])
+def db_similar_patterns(payload: dict):
+    """Find market patterns nearest to a query feature vector using pgvector cosine distance."""
+    query_vec = payload.get("feature_vector", [])
+    limit = int(payload.get("limit", 8))
+    try:
+        rows = runtime.db.search_similar_patterns(query_vec, limit=limit)
+        return {"patterns": rows, "count": len(rows), "backend": runtime.db._mode}
+    except Exception as e:
+        return {"patterns": [], "error": str(e)}
+
+
 # ---------------------------------------------------------------------------
 # Live tick feed endpoints
 # ---------------------------------------------------------------------------

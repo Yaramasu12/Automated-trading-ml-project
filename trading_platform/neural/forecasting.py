@@ -26,11 +26,36 @@ class MovingAverageForecaster:
             for i in range(1, len(closes))
         ]
 
-        recent = returns[-20:] if len(returns) >= 20 else returns
-        mean_ret = sum(recent) / len(recent) if recent else 0.0
-        std_ret = math.sqrt(sum((r - mean_ret) ** 2 for r in recent) / max(1, len(recent)))
+        # Medium-term baseline (20 bars)
+        medium = returns[-20:] if len(returns) >= 20 else returns
+        mean_ret = sum(medium) / len(medium) if medium else 0.0
+        std_ret = math.sqrt(sum((r - mean_ret) ** 2 for r in medium) / max(1, len(medium)))
 
-        direction_prob = min(0.9, max(0.1, 0.5 + mean_ret / max(std_ret, 1e-6) * 0.1))
+        # Short-term momentum (5 bars) — more responsive to recent price action
+        short = returns[-5:] if len(returns) >= 5 else returns
+        short_mean = sum(short) / len(short) if short else mean_ret
+
+        # Trend consistency: fraction of short bars agreeing with short_mean direction
+        if short and short_mean != 0:
+            agree = sum(1 for r in short if (r > 0) == (short_mean > 0))
+            consistency_bonus = (agree / len(short) - 0.5) * 0.15
+        else:
+            consistency_bonus = 0.0
+
+        # Momentum alignment: short-term and medium-term point same direction
+        alignment_bonus = 0.05 if (short_mean * mean_ret > 0) else -0.03
+
+        # Sharpe-like signal using short-term mean vs medium-term volatility
+        # Scale by 0.3 (vs old 0.1) for a more responsive but bounded signal
+        sharpe_signal = short_mean / max(std_ret, 1e-6)
+        direction_prob = min(0.9, max(0.1,
+            0.5 + sharpe_signal * 0.3 + consistency_bonus + alignment_bonus
+        ))
+
+        # Expected return: project 5-bar forward return from short-term momentum
+        # This gives ProfitGuard a more realistic expected gain than raw bar mean_ret
+        expected_return = short_mean * 5
+
         q10 = mean_ret - 1.28 * std_ret
         q90 = mean_ret + 1.28 * std_ret
         uncertainty = min(1.0, std_ret * 10)
@@ -38,7 +63,7 @@ class MovingAverageForecaster:
         return ForecastPrediction(
             symbol=symbol,
             direction_probability=direction_prob,
-            expected_return=mean_ret,
+            expected_return=expected_return,
             return_quantile_10=q10,
             return_quantile_90=q90,
             model_id="baseline_ma",

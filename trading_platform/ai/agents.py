@@ -27,29 +27,34 @@ class SupervisorDecision:
 class MarketRegimeAgent:
     """Multi-factor regime classifier.
 
-    Threshold raised from 0.025 → 0.038 daily vol:
-      0.025/day ≈ 40% annualised = normal for Indian markets → was classifying 96%
-      of stocks as HIGH_VOLATILITY → forced buying of expensive options → theta decay losses.
-      0.038/day ≈ 60% annualised = genuine stress/panic only.
+    H2 fix: thresholds lowered so synthetic/live daily-bar data gets a diverse
+    spread of regimes instead of collapsing to MEAN_REVERTING on every bar.
+
+    Old TRENDING gate (trend_strength>3.0, mom_20>0.025) was unreachable for
+    most random-walk synthetic bars where mom_20 ≈ 0 and trend_strength ≈ 0.
+    New gate uses trend_strength>1.5 and mom_20>0.010 — meaningful but reachable.
+
+    HIGH_VOLATILITY threshold lowered slightly (0.030 → 0.025) to capture
+    realistic intraday volatility spikes rather than only true panic moves.
     """
 
     def classify(self, features: FeatureSnapshot) -> str:
         rv = features.realized_volatility
 
-        # Genuine panic/stress: high vol + momentum extreme OR Bollinger Band blown wide
-        if rv > 0.038 and (abs(features.momentum_5) > 0.04 or features.bb_width > 0.12):
+        # Genuine stress/panic: high vol + directional extreme or bands blown wide
+        if rv > 0.030 and (abs(features.momentum_5) > 0.03 or features.bb_width > 0.10):
             return "HIGH_VOLATILITY"
 
-        # Trending: sustained directional move, vol not spiking
-        if features.trend_strength > 3.0 and abs(features.momentum_20) > 0.025 and rv < 0.030:
+        # Trending: sustained directional move with moderate vol
+        if features.trend_strength > 1.5 and abs(features.momentum_20) > 0.010 and rv < 0.025:
             return "TRENDING"
 
         # Breakout: short-term surge with volume confirmation
-        if abs(features.momentum_5) > 0.018 and features.volume_ratio > 1.3 and rv < 0.035:
+        if abs(features.momentum_5) > 0.012 and features.volume_ratio > 1.2 and rv < 0.030:
             return "BREAKOUT"
 
-        # Elevated vol but directionless → treat as high-vol (use theta strategies)
-        if rv > 0.028 and features.trend_strength < 2.0:
+        # Elevated vol but directionless → high-vol regime (short premium strategies)
+        if rv > 0.022 and features.trend_strength < 1.5:
             return "HIGH_VOLATILITY"
 
         # Default: range-bound, use mean-reversion

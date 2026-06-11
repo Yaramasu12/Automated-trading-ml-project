@@ -326,8 +326,8 @@ class IVSurfaceTests(unittest.TestCase):
         from trading_platform.derivatives.engine import ExpiryCalendar
         expiry = ExpiryCalendar(self.master).nearest(self.underlying, self.as_of)
         self.chain = self.chain_builder.build(self.underlying, expiry)
-        # Use a spot close to the synthetic universe's ATM strike (~22500)
-        self.spot = 22500.0
+        # Use a spot close to the synthetic universe's ATM strike (~23900, updated C6)
+        self.spot = 23900.0
 
     def _make_prices(self, vol: float = 0.20) -> dict[str, float]:
         from trading_platform.derivatives.engine import GreeksCalculator

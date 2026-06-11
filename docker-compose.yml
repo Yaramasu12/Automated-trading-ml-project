@@ -1,5 +1,27 @@
 services:
 
+  # ── PostgreSQL 16 + TimescaleDB + pgvector ───────────────────────────────
+  # timescale/timescaledb-ha ships TimescaleDB and pgvector in one image.
+  # Data lives in a named volume so it survives container restarts.
+  timescaledb:
+    image: timescale/timescaledb-ha:pg16
+    container_name: trading-timescaledb
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB:       ${POSTGRES_DB:-trading}
+      POSTGRES_USER:     ${POSTGRES_USER:-trading}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-trading_secret}
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - timescaledb_data:/home/postgres/pgdata/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-trading} -d ${POSTGRES_DB:-trading}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
   # ── FastAPI trading backend ──────────────────────────────────────────────
   trading-api:
     build:
@@ -52,6 +74,8 @@ services:
       - ENABLE_QUANTUM_LAB=${ENABLE_QUANTUM_LAB:-false}
       - ENABLE_MARL_LAB=${ENABLE_MARL_LAB:-false}
       - ENABLE_GOAL_GOVERNOR=${ENABLE_GOAL_GOVERNOR:-false}
+      # PostgreSQL connection — auto-activates the PostgreSQL backend in TradingDatabase
+      - DATABASE_URL=${DATABASE_URL:-postgresql://trading:trading_secret@timescaledb:5432/trading}
       - LOCAL_LLM_GATEWAY=${LOCAL_LLM_GATEWAY:-disabled}
       - LOCAL_LLM_RUNTIME=${LOCAL_LLM_RUNTIME:-stub}
       - LOCAL_LLM_BASE_URL=${LOCAL_LLM_BASE_URL:-http://localhost:11434}
@@ -60,6 +84,9 @@ services:
       - YEARLY_PROFIT_TARGET=${YEARLY_PROFIT_TARGET:-50000000}
       - AWS_REGION=${AWS_REGION:-ap-south-1}
       - TRADING_API_BASE_URL=${TRADING_API_BASE_URL:-http://trading-api:8000}
+    depends_on:
+      timescaledb:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
       interval: 30s
@@ -119,6 +146,10 @@ services:
     depends_on:
       trading-api:
         condition: service_healthy
+
+volumes:
+  timescaledb_data:
+    name: trading-timescaledb-data
 
 networks:
   default:
