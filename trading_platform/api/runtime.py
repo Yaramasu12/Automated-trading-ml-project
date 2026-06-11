@@ -3560,6 +3560,21 @@ class TradingRuntime:
     # ------------------------------------------------------------------
 
     def ai_council_status(self) -> dict:
+        if self._llm_gateway is None:
+            return {
+                "enabled": self.settings.enable_ai_council,
+                "gateway_runtime": self.settings.local_llm_runtime,
+                "primary_model": self.settings.local_llm_primary_model,
+                "gateway_available": False,
+                "fallback_active": True,
+                "gateway_note": "AI Council is disabled; manual previews use the deterministic stub gateway.",
+                "models": {
+                    "primary": self.settings.local_llm_primary_model,
+                    "coordinator": self.settings.local_llm_coordinator_model,
+                    "fast": self.settings.local_llm_fast_model,
+                },
+                "rag": {"enabled": False},
+            }
         gw = self._llm_gateway.status()
         return {
             "enabled": self.settings.enable_ai_council,
@@ -3665,7 +3680,11 @@ class TradingRuntime:
             execution_mode=self.execution_mode.value,
             market_regime=regime,
         )
-        decision = self._agent_council.run(ctx)
+        council = self._agent_council
+        if council is None:
+            gateway = LocalModelGateway(runtime="stub")
+            council = AgentCouncilSupervisor(gateway=gateway, trace_store=self.trace_store)
+        decision = council.run(ctx)
         return decision.to_dict()
 
     # ------------------------------------------------------------------
@@ -3673,6 +3692,21 @@ class TradingRuntime:
     # ------------------------------------------------------------------
 
     def quantum_status(self) -> dict:
+        if self._quantum_service is None:
+            preview_service = QuantumOptimizationService(
+                backend="classical",
+                timeout=self.settings.quantum_timeout_seconds,
+                min_baseline_improvement=self.settings.quantum_min_baseline_improvement,
+                trace_store=self.trace_store,
+            )
+            return {
+                "enabled": self.settings.enable_quantum_lab,
+                "backend": self.settings.quantum_backend,
+                "timeout_seconds": self.settings.quantum_timeout_seconds,
+                "backends": preview_service.backend_status(),
+                "preview_fallback": "classical",
+                "note": "Quantum Lab is disabled; manual previews use the safe classical optimizer.",
+            }
         return {
             "enabled": self.settings.enable_quantum_lab,
             "backend": self.settings.quantum_backend,
@@ -3712,7 +3746,15 @@ class TradingRuntime:
             risk_aversion=self.settings.quantum_risk_aversion,
             cardinality_limit=self.settings.quantum_cardinality_limit,
         )
-        result = self._quantum_service.optimize(req)
+        service = self._quantum_service
+        if service is None:
+            service = QuantumOptimizationService(
+                backend="classical",
+                timeout=self.settings.quantum_timeout_seconds,
+                min_baseline_improvement=self.settings.quantum_min_baseline_improvement,
+                trace_store=self.trace_store,
+            )
+        result = service.optimize(req)
         return result.to_dict()
 
     # ------------------------------------------------------------------
@@ -3785,7 +3827,7 @@ class TradingRuntime:
 
     def promote_policy(self, payload: dict) -> dict:
         policy_id = str(payload.get("policy_id", ""))
-        new_status = str(payload.get("status", ""))
+        new_status = str(payload.get("status") or payload.get("target_status") or "")
         record = self._policy_registry.get_record(policy_id)
         gate = self.policy_promotion_gate(policy_id, new_status, payload)
         if not record or not gate["approved"]:
@@ -4190,6 +4232,15 @@ class TradingRuntime:
                 "correlation": "rolling_corr_30",
             },
         }
+
+    def neural_predict_preview(self, payload: dict) -> dict:
+        symbols = payload.get("symbols", ["NIFTY"])
+        trace_id = new_trace_id("npreview")
+        service = self._neural_service
+        if service is None:
+            service = NeuralPredictionService(trace_store=self.trace_store)
+        bundle = service.predict(trace_id, symbols, {})
+        return bundle.to_dict()
 
     def meta_labeler_status(self) -> dict:
         """Return champion/challenger summary for monitoring and policy UI."""

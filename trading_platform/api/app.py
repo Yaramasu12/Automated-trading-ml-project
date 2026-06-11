@@ -938,11 +938,7 @@ def paper_learning_journal(limit: int = 50, trace_id: str | None = None):
 
 @app.post("/neural/predict-preview", dependencies=[_AuthDep])
 def neural_predict_preview(payload: dict):
-    symbols = payload.get("symbols", ["NIFTY"])
-    from trading_platform.trace.ids import new_trace_id
-    trace_id = new_trace_id("npreview")
-    bundle = runtime._neural_service.predict(trace_id, symbols, {})
-    return bundle.to_dict()
+    return runtime.neural_predict_preview(payload)
 
 
 # ── Quantum Lab ────────────────────────────────────────────────────────────────

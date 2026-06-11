@@ -67,11 +67,11 @@ class Settings:
     live_feed_max_symbols: int = 80
 
     # ── Phase 1–9 feature flags ──────────────────────────────────────────────────
-    enable_ai_council: bool = False
+    enable_ai_council: bool = True
     enable_neural_lab: bool = True    # MA forecaster is always available; safe to enable by default
-    enable_quantum_lab: bool = False
-    enable_marl_lab: bool = False
-    enable_goal_governor: bool = False
+    enable_quantum_lab: bool = True
+    enable_marl_lab: bool = True
+    enable_goal_governor: bool = True
 
     # Local LLM gateway
     local_llm_gateway: str = "disabled"          # disabled | stub | ollama | llama_cpp | vllm
@@ -199,11 +199,11 @@ def load_settings() -> Settings:
         ),
         live_feed_max_symbols=max(1, int(os.getenv("LIVE_FEED_MAX_SYMBOLS", "80"))),
         # Phase 1-9 flags
-        enable_ai_council=_bool_env("ENABLE_AI_COUNCIL", False),
+        enable_ai_council=_bool_env("ENABLE_AI_COUNCIL", True),
         enable_neural_lab=_bool_env("ENABLE_NEURAL_LAB", True),
-        enable_quantum_lab=_bool_env("ENABLE_QUANTUM_LAB", False),
-        enable_marl_lab=_bool_env("ENABLE_MARL_LAB", False),
-        enable_goal_governor=_bool_env("ENABLE_GOAL_GOVERNOR", False),
+        enable_quantum_lab=_bool_env("ENABLE_QUANTUM_LAB", True),
+        enable_marl_lab=_bool_env("ENABLE_MARL_LAB", True),
+        enable_goal_governor=_bool_env("ENABLE_GOAL_GOVERNOR", True),
         local_llm_gateway=os.getenv("LOCAL_LLM_GATEWAY", "disabled"),
         local_llm_runtime=os.getenv("LOCAL_LLM_RUNTIME", "stub"),
         local_llm_primary_model=os.getenv("LOCAL_LLM_PRIMARY_MODEL", "gemma4-31b"),

@@ -66,12 +66,35 @@ const NAV: NavItem[] = [
   { id: 'intelligence', label: 'Intel',        shortLabel: 'Intel',    icon: <Newspaper size={16} />,       group: 'Governance' },
 ]
 
-// Bottom tab bar: 4 most-used + More
+const findNav = (id: NavView) => NAV.find(n => n.id === id)!
+
+const TOP_RAIL_NAV: NavItem[] = [
+  findNav('dashboard'),
+  findNav('ai-lab'),
+  findNav('ai-council'),
+  findNav('neural'),
+  findNav('quantum'),
+  findNav('engine'),
+  findNav('signals'),
+  findNav('strategies'),
+  findNav('backtest'),
+  findNav('models'),
+  findNav('risk'),
+  findNav('execution'),
+  findNav('account'),
+  findNav('goal-governor'),
+  findNav('policies'),
+  findNav('traces'),
+  findNav('tournament'),
+  findNav('intelligence'),
+]
+
+// Bottom tab bar: AI labs are first-class on mobile, with the rest in More.
 const BOTTOM_TABS: NavItem[] = [
-  NAV.find(n => n.id === 'dashboard')!,
-  NAV.find(n => n.id === 'engine')!,
-  NAV.find(n => n.id === 'signals')!,
-  NAV.find(n => n.id === 'ai-lab')!,
+  findNav('dashboard'),
+  findNav('ai-lab'),
+  findNav('neural'),
+  findNav('quantum'),
 ]
 
 // Group labels for sidebar sections
@@ -308,6 +331,27 @@ export function Layout({ children }: { children: ReactNode }) {
             </button>
           </div>
         </header>
+
+        <nav className="flex-shrink-0 border-b border-surface-border bg-surface-card/90">
+          <div className="flex items-center gap-1 overflow-x-auto px-2 py-2 md:px-4">
+            {TOP_RAIL_NAV.map((item) => (
+              <button
+                key={item.id}
+                onClick={() => navigate(item.id)}
+                className={clsx(
+                  'flex items-center gap-1.5 whitespace-nowrap rounded-md border px-2.5 py-1.5 text-[11px] font-medium transition-colors',
+                  activeView === item.id
+                    ? 'border-brand-blue/40 bg-brand-blue/15 text-brand-blue'
+                    : 'border-surface-border bg-surface-elevated/50 text-gray-400 hover:text-gray-200',
+                )}
+                aria-current={activeView === item.id ? 'page' : undefined}
+              >
+                {item.icon}
+                <span>{item.shortLabel ?? item.label}</span>
+              </button>
+            ))}
+          </div>
+        </nav>
 
         {/* Page content */}
         <main className="flex-1 overflow-y-auto p-4 md:p-5 pb-20 md:pb-5 animate-fade-in">
