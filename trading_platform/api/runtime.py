@@ -2183,22 +2183,32 @@ class TradingRuntime:
             raise ValueError("Shadow paper run requires runtime mode PAPER")
         payload = payload or {}
         underlyings = [str(item).upper() for item in payload.get("underlyings", SCAN_UNDERLYINGS)]
-        _default_start = (now_ist().date() - timedelta(days=60)).isoformat()
+        # Keep the default shadow-paper demo deterministic for tests and CI.
+        # Callers that want a rolling or live-history paper run can pass
+        # ``start`` and optionally ``use_live_history=true`` explicitly.
+        _default_start = "2026-01-01"
         start = date.fromisoformat(str(payload.get("start", _default_start)))
         days = int(payload.get("days", 60))
         strategy_names = [str(item) for item in payload["strategy_names"]] if payload.get("strategy_names") else None
-        scans = [
-            self.decision_pipeline.scan(
-                underlying=underlying,
-                start=start,
-                days=days,
-                execution_mode=ExecutionMode.PAPER,
-                live_armed=False,
-                kill_switch_active=self.kill_switch_active,
-                strategy_names=strategy_names,
-            )
-            for underlying in underlyings
-        ]
+        use_live_history = bool(payload.get("use_live_history", False))
+        history_provider = self.decision_pipeline.history_provider
+        if not use_live_history:
+            self.decision_pipeline.history_provider = None
+        try:
+            scans = [
+                self.decision_pipeline.scan(
+                    underlying=underlying,
+                    start=start,
+                    days=days,
+                    execution_mode=ExecutionMode.PAPER,
+                    live_armed=False,
+                    kill_switch_active=self.kill_switch_active,
+                    strategy_names=strategy_names,
+                )
+                for underlying in underlyings
+            ]
+        finally:
+            self.decision_pipeline.history_provider = history_provider
         router = ExecutionRouter(
             broker=self.paper_broker,
             risk_engine=self.risk_engine,
