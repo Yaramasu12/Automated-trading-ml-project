@@ -3,18 +3,27 @@ expected value is strictly positive.
 
 Implements three complementary filters inspired by quantitative finance:
 
-  1. Expected Value (EV) Gate
-     EV = P(win) × avg_profit - P(loss) × avg_loss
-     Only proceed if EV > EV_THRESHOLD (default 0.003 = 0.3% per trade).
+  0. Honest win probability
+     P(win) is the probability of hitting the REAL target before the REAL stop.
+     For a driftless walk that is the barrier probability stop/(stop+target)
+     (~0.29 at 2.5:1), tilted by directional edge from neural/RAG/crew.  A signal
+     with no edge is therefore correctly modelled as a post-cost loser — the old
+     model floored avg_profit at 2× an understated stop and waved coin-flips
+     through.  stop/target mirror what the ExitManager actually applies.
+
+  1. Expected Value (EV) Gate — NET of costs
+     EV = P(win) × target - P(loss) × stop - round_trip_cost
+     Only proceed if EV > EV_THRESHOLD (default 0.0015 = 0.15% after costs).
 
   2. Kelly Criterion Gate
-     f* = (P(win) × RR - P(loss)) / RR   where RR = risk/reward ratio
-     Only proceed if Kelly fraction > KELLY_MIN (default 0.02 = 2%).
+     f* = (P(win) × RR - P(loss)) / RR   where RR = target/stop
+     Only proceed if half-Kelly fraction > KELLY_MIN (default 0.015 = 1.5%).
      Kelly fraction also caps position_size_multiplier to prevent over-betting.
 
   3. Sharpe Estimate Gate
-     Sharpe ≈ (expected_return - 0) / uncertainty_proxy
-     Only proceed if Sharpe > SHARPE_MIN (default 0.50).
+     Sharpe ≈ directional_edge / model_uncertainty   (signal-to-noise)
+     Only proceed if Sharpe > SHARPE_MIN (default 0.15), and only when the
+     neural service actually produced a forecast.
 
   4. Consecutive Loss Circuit Breaker
      If last N trades on this underlying all lost → skip this cycle.
@@ -40,13 +49,25 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 # ── Thresholds ────────────────────────────────────────────────────────────────
-EV_THRESHOLD = 0.003           # minimum expected value per rupee risked (0.3%)
+EV_THRESHOLD = 0.0015          # minimum expected value per trade, NET of costs (0.15%)
 KELLY_MIN = 0.015              # minimum Kelly fraction (1.5% of capital)
 KELLY_MAX = 0.25               # Kelly cap — never bet more than 25% Kelly
-SHARPE_MIN = 0.50              # minimum signal-to-noise ratio
+SHARPE_MIN = 0.15              # minimum signal-to-noise ratio (edge / uncertainty)
 WIN_RATE_MIN = 0.38            # rolling win rate must stay above 38%
 CONSECUTIVE_LOSS_LIMIT = 4     # halt after 4 consecutive losses per underlying
 ROLLING_WINDOW = 20            # rolling window for win-rate calc
+
+# ── Real trade structure ──────────────────────────────────────────────────────
+# These MUST mirror what the ExitManager actually applies (see exit_plan.py /
+# runtime._on_fill).  The EV/Kelly math is only meaningful if it models the same
+# stop and target the trade will really exit at — otherwise the gate "approves"
+# trades whose true expected value is negative.
+STOP_PCT = 0.015               # real default hard stop (matches ExitPlan.from_trade)
+TARGET_PCT = 0.038             # real default target (matches ExitPlan.from_trade)
+ATR_STOP_MULTIPLIER = 2.0      # ATR-based stop distance (matches runtime _on_fill)
+RR_TARGET = 2.5                # exit manager enforces a 2.5:1 target on the stop distance
+EDGE_SENSITIVITY = 1.2         # how strongly directional edge shifts win prob off the no-edge barrier
+ROUND_TRIP_COST = 0.0015       # brokerage+STT+slippage round-trip drag subtracted from EV (~0.15%)
 
 
 @dataclass
@@ -71,6 +92,12 @@ class ProfitGuard:
         sharpe_min: float = SHARPE_MIN,
         win_rate_min: float = WIN_RATE_MIN,
         consecutive_loss_limit: int = CONSECUTIVE_LOSS_LIMIT,
+        stop_pct: float = STOP_PCT,
+        target_pct: float = TARGET_PCT,
+        atr_stop_multiplier: float = ATR_STOP_MULTIPLIER,
+        rr_target: float = RR_TARGET,
+        edge_sensitivity: float = EDGE_SENSITIVITY,
+        round_trip_cost: float = ROUND_TRIP_COST,
     ) -> None:
         self._ev_threshold = ev_threshold
         self._kelly_min = kelly_min
@@ -78,6 +105,12 @@ class ProfitGuard:
         self._sharpe_min = sharpe_min
         self._win_rate_min = win_rate_min
         self._consecutive_loss_limit = consecutive_loss_limit
+        self._stop_pct = stop_pct
+        self._target_pct = target_pct
+        self._atr_stop_multiplier = atr_stop_multiplier
+        self._rr_target = rr_target
+        self._edge_sensitivity = edge_sensitivity
+        self._round_trip_cost = round_trip_cost
 
         # Per-underlying rolling performance
         self._rolling: dict[str, deque[bool]] = {}           # underlying → deque of bool
@@ -135,43 +168,63 @@ class ProfitGuard:
         """Node function: compute EV/Kelly/Sharpe and decide if trade is allowed."""
         underlying = state.underlying
 
-        # Build inputs from upstream nodes
-        win_prob = self._estimate_win_probability(state)
-        expected_return = state.neural_expected_return
-        uncertainty = max(state.neural_uncertainty, 0.01)
-        rag_win_rate = state.rag_win_rate
+        # ── Real trade structure (must match the ExitManager, not a fiction) ──
+        # Prefer the actual ATR-based stop the exit manager will use when ATR is
+        # available in the feature snapshot; otherwise fall back to the flat
+        # percentage stop/target the ExitPlan applies by default.
+        stop_pct = self._stop_pct
+        target_pct = self._target_pct
+        try:
+            mf = state.market_features or {}
+            atr = float(mf.get("atr_14", 0.0) or 0.0)
+            mark = float(mf.get("close", mf.get("price", 0.0)) or 0.0)
+            if atr > 0 and mark > 0:
+                stop_pct = (atr * self._atr_stop_multiplier) / mark
+                target_pct = stop_pct * self._rr_target
+        except Exception:
+            pass
+        stop_pct = max(stop_pct, 0.002)
+        target_pct = max(target_pct, stop_pct * 1.5)
+        rr = target_pct / stop_pct
 
-        # Blend win probability: neural + RAG historical + crew consensus
-        blended_win_prob = (
-            0.45 * win_prob
-            + 0.30 * rag_win_rate
-            + 0.25 * state.crew_confidence
-        )
-        blended_win_prob = min(max(blended_win_prob, 0.01), 0.99)
+        # ── Honest win probability ────────────────────────────────────────────
+        # Start from the no-edge barrier probability of hitting the target before
+        # the stop for a driftless walk: P = stop / (stop + target).  With a 2.5:1
+        # structure this is ~0.29 — i.e. a signal with NO edge is correctly a loser
+        # after costs.  Real directional edge then tilts this baseline up/down.
+        barrier_win = stop_pct / (stop_pct + target_pct)
 
-        # Risk/reward ratio from neural expected return and realistic stop-loss estimate.
-        # avg_loss = base intraday stop (0.8%) scaled up by uncertainty (not the full uncertainty
-        # value, which ranges 0-1 and represents model confidence, not price move size).
-        BASE_STOP = 0.008   # 0.8% typical intraday hard stop
-        # Minimum profit target = 2× stop (2:1 reward/risk is the floor for any viable trade).
-        # Using 0.5% (old floor) with 0.8% stop gave rr=0.625 → Kelly always negative.
-        avg_profit = max(expected_return, BASE_STOP * 2.0)
-        avg_loss = max(BASE_STOP * (1.0 + uncertainty * 0.5), 0.005)
-        rr = avg_profit / avg_loss
+        # Directional edge sources, each centred at 0 (no edge):
+        side_dir_prob = self._estimate_win_probability(state)   # neural P(favorable), 0.5 if absent
+        neural_edge = side_dir_prob - 0.5
+        rag_edge = state.rag_win_rate - 0.5
+        # crew_confidence is a confidence in the chosen side, not a probability —
+        # treat it as a weak directional edge, not a raw win rate.
+        crew_edge = (state.crew_confidence - 0.5) * 0.5
+        combined_edge = 0.5 * neural_edge + 0.3 * rag_edge + 0.2 * crew_edge
 
-        # ── EV calculation ────────────────────────────────────────────────────
-        ev = blended_win_prob * avg_profit - (1 - blended_win_prob) * avg_loss
+        win_prob = barrier_win + self._edge_sensitivity * combined_edge
+        win_prob = min(max(win_prob, 0.02), 0.98)
+        blended_win_prob = win_prob   # name kept for the gate/result payload below
+
+        # Keep avg_profit/avg_loss names for the result payload (R:R, logging).
+        avg_profit = target_pct
+        avg_loss = stop_pct
+
+        # ── EV calculation — NET of round-trip trading costs ──────────────────
+        ev_gross = win_prob * target_pct - (1 - win_prob) * stop_pct
+        ev = ev_gross - self._round_trip_cost
 
         # ── Kelly fraction ────────────────────────────────────────────────────
-        kelly_raw = (blended_win_prob * rr - (1 - blended_win_prob)) / max(rr, 0.01)
+        kelly_raw = (win_prob * rr - (1 - win_prob)) / max(rr, 0.01)
         kelly = min(max(kelly_raw, 0.0), self._kelly_max)
         # Half-Kelly for safety
         kelly_safe = kelly * 0.5
 
         # ── Sharpe estimate ───────────────────────────────────────────────────
-        # Use avg_loss as the return-space volatility proxy (same as the EV denominator)
-        # so the Sharpe is consistent with EV/Kelly and not inflated by raw uncertainty.
-        sharpe = avg_profit / max(avg_loss, 0.001)
+        # Signal-to-noise: directional edge per unit of model uncertainty.  Only
+        # gated when the neural service actually ran (see decision block below).
+        sharpe = max(combined_edge, 0.0) / max(state.neural_uncertainty, 0.1)
 
         # ── Rolling performance check ─────────────────────────────────────────
         rolling_win_rate = self._rolling_win_rate(underlying)
@@ -226,8 +279,8 @@ class ProfitGuard:
             )
 
         logger.info(
-            "ProfitGuard PASSED %s | EV=%.4f Kelly=%.4f Sharpe=%.2f win_prob=%.1%%",
-            underlying, ev, kelly_safe, sharpe, blended_win_prob * 100,
+            "ProfitGuard PASSED %s | EV=%.4f Kelly=%.4f Sharpe=%.2f win_prob=%.1f%% rr=%.2f",
+            underlying, ev, kelly_safe, sharpe, blended_win_prob * 100, rr,
         )
         return NodeResult(updates={"profit_gate": gate})
 

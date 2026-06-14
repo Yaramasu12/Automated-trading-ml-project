@@ -8,6 +8,25 @@ from datetime import datetime, timezone
 
 from trading_platform.api.auth import require_auth, verify_token
 from trading_platform.api.runtime import TradingRuntime
+from trading_platform.api.schemas import (
+    AccountStatusResponse,
+    AgentTradeLogResponse,
+    ComplianceStatusResponse,
+    CountEventsResponse,
+    DataStatusResponse,
+    DbDailyPnlResponse,
+    DbEquityCurveResponse,
+    DbRiskEventsResponse,
+    DbTradesResponse,
+    HealthResponse,
+    InstrumentRow,
+    NewsEventsResponse,
+    PerformanceSummaryResponse,
+    PortfolioPositionsResponse,
+    RiskRejectionsResponse,
+    StateResponse,
+    StrategyCatalogResponse,
+)
 from trading_platform.config import load_settings
 
 try:
@@ -64,12 +83,12 @@ app.add_middleware(
 _AuthDep = Depends(require_auth)
 
 
-@app.get("/health")
+@app.get("/health", response_model=HealthResponse)
 def health():
     return runtime.health()
 
 
-@app.get("/state")
+@app.get("/state", response_model=StateResponse)
 def state():
     return runtime.state_payload()
 
@@ -118,12 +137,12 @@ def kill_switch(payload: dict):
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
-@app.get("/universe")
+@app.get("/universe", response_model=list[InstrumentRow])
 def universe():
     return runtime.universe()
 
 
-@app.get("/strategies/catalog")
+@app.get("/strategies/catalog", response_model=StrategyCatalogResponse)
 def strategy_catalog():
     return runtime.strategy_catalog()
 
@@ -168,17 +187,17 @@ def agent_set_interval(payload: dict):
     return runtime.set_agent_interval(seconds)
 
 
-@app.get("/agent/trades", dependencies=[_AuthDep])
+@app.get("/agent/trades", dependencies=[_AuthDep], response_model=AgentTradeLogResponse)
 def agent_trade_log(limit: int = 100):
     return runtime.agent_trade_log(limit=limit)
 
 
-@app.get("/portfolio/positions", dependencies=[_AuthDep])
+@app.get("/portfolio/positions", dependencies=[_AuthDep], response_model=PortfolioPositionsResponse)
 def portfolio_positions():
     return runtime.portfolio_positions()
 
 
-@app.get("/risk/rejections", dependencies=[_AuthDep])
+@app.get("/risk/rejections", dependencies=[_AuthDep], response_model=RiskRejectionsResponse)
 def risk_rejection_log(limit: int = 100):
     return runtime.risk_rejection_log(limit=limit)
 
@@ -220,12 +239,12 @@ def greeks(payload: dict):
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
-@app.get("/data/status")
+@app.get("/data/status", response_model=DataStatusResponse)
 def data_status():
     return runtime.data_status()
 
 
-@app.get("/account/status")
+@app.get("/account/status", response_model=AccountStatusResponse)
 def account_status():
     return runtime.account_status()
 
@@ -335,7 +354,7 @@ def monitoring_metrics():
     return runtime.monitoring_metrics()
 
 
-@app.get("/monitoring/events")
+@app.get("/monitoring/events", response_model=CountEventsResponse)
 def monitoring_events(limit: int = 20):
     return runtime.monitoring_events(limit)
 
@@ -441,22 +460,22 @@ def db_summary():
     return runtime.db_summary()
 
 
-@app.get("/db/trades", dependencies=[_AuthDep])
+@app.get("/db/trades", dependencies=[_AuthDep], response_model=DbTradesResponse)
 def db_trades(symbol: str | None = None, execution_mode: str | None = None, limit: int = 100):
     return runtime.db_trades(symbol=symbol, execution_mode=execution_mode, limit=limit)
 
 
-@app.get("/db/equity-curve", dependencies=[_AuthDep])
+@app.get("/db/equity-curve", dependencies=[_AuthDep], response_model=DbEquityCurveResponse)
 def db_equity_curve(execution_mode: str | None = None, limit: int = 200):
     return runtime.db_equity_curve(execution_mode=execution_mode, limit=limit)
 
 
-@app.get("/db/daily-pnl", dependencies=[_AuthDep])
+@app.get("/db/daily-pnl", dependencies=[_AuthDep], response_model=DbDailyPnlResponse)
 def db_daily_pnl(limit: int = 30):
     return runtime.db_daily_pnl(limit=limit)
 
 
-@app.get("/db/risk-events", dependencies=[_AuthDep])
+@app.get("/db/risk-events", dependencies=[_AuthDep], response_model=DbRiskEventsResponse)
 def db_risk_events(limit: int = 50):
     return runtime.db_risk_events(limit=limit)
 
@@ -564,7 +583,7 @@ def scheduler_stats():
     return runtime.scheduler_stats()
 
 
-@app.get("/execution/oms/events")
+@app.get("/execution/oms/events", response_model=CountEventsResponse)
 def oms_events(limit: int = 50):
     return runtime.oms_events(limit)
 
@@ -661,7 +680,7 @@ def update_exit_marks(payload: dict):
 # ---------------------------------------------------------------------------
 
 
-@app.get("/risk/compliance", dependencies=[_AuthDep])
+@app.get("/risk/compliance", dependencies=[_AuthDep], response_model=ComplianceStatusResponse)
 def compliance_status():
     return runtime.compliance_status()
 
@@ -684,7 +703,7 @@ def analyze_news(payload: dict):
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
-@app.get("/news/events")
+@app.get("/news/events", response_model=NewsEventsResponse)
 def news_events(limit: int = 50):
     return runtime.news_events(limit)
 
@@ -712,7 +731,7 @@ def goal_state(payload: dict):
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
-@app.get("/performance/summary")
+@app.get("/performance/summary", response_model=PerformanceSummaryResponse)
 def performance_summary(days: int = 30):
     import traceback as _tb, logging as _log
     try:

@@ -286,6 +286,15 @@ class NeuralPredictionService:
         # Sub-models
         self._ma_forecaster = MovingAverageForecaster()
         self._tft_forecaster = TemporalFusionTransformerForecaster()
+        # Validated gradient-boosted direction model — only serves when a model
+        # that passed walk-forward validation has been loaded (else None → MA).
+        from trading_platform.neural.return_forecaster import GradientBoostedReturnForecaster
+        self._gbm_forecaster = GradientBoostedReturnForecaster()
+        if model_dir:
+            try:
+                self._gbm_forecaster.load(f"{model_dir}/return_forecaster")
+            except Exception as exc:
+                logger.debug("ReturnForecaster load skipped: %s", exc)
         self._garch = GARCHVolatilityModel()
         self._tail_risk = TailRiskModel()
         self._corr_graph = RollingCorrelationGraph()
@@ -503,7 +512,24 @@ class NeuralPredictionService:
     # ── Internal helpers ──────────────────────────────────────────────────────
 
     def _forecast_with_standby(self, sym: str, bars: list[dict]) -> ForecastPrediction:
-        """Try TFT → warm-standby TFT → MA baseline."""
+        """Try validated GBM → TFT → warm-standby TFT → MA baseline.
+
+        The GBM model is consulted first but ONLY serves a prediction when it
+        passed walk-forward validation (`is_available()`); otherwise we fall
+        through to the deterministic MA baseline so an unvalidated model can
+        never silently drive trades.
+        """
+        if self._gbm_forecaster.is_available():
+            try:
+                result = self._gbm_forecaster.predict(sym, bars)
+                if result is not None:
+                    self._failures["gbm"] = 0
+                    return result
+            except Exception as exc:
+                self._failures["gbm"] = self._failures.get("gbm", 0) + 1
+                logger.debug("GBM forecast failed for %s (fail#%d): %s",
+                             sym, self._failures["gbm"], exc)
+
         if self._tft_forecaster.is_available():
             try:
                 result = self._tft_forecaster.predict(sym, bars)

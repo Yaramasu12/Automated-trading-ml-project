@@ -70,6 +70,13 @@ from trading_platform.trace.models import DecisionTrace
 from trading_platform.trace.store import TraceStore
 from trading_platform.trace.label_factory import OutcomeFactory
 from trading_platform.trace.learning_journal import PaperLearningJournal
+from trading_platform.api.trace_replay_service import TraceReplayService, decode_oms_event
+from trading_platform.api.model_research_service import ModelResearchService
+from trading_platform.api.db_query_service import DbQueryService
+from trading_platform.api.news_service import NewsService
+from trading_platform.api.policy_service import PolicyService
+from trading_platform.api.options_service import OptionsService
+from trading_platform.api.regime_meta_service import RegimeMetaService
 from trading_platform.ai.meta_labeler import MetaLabeler
 from trading_platform.agents.model_gateway import LocalModelGateway
 from trading_platform.agents.supervisor import AgentCouncilSupervisor
@@ -97,9 +104,6 @@ class RuntimeState:
     broker: str
     angel_one_configured: bool
 
-
-_POLICY_STATUS_ORDER = ["research", "shadow", "paper", "live_canary", "live_approved"]
-_POLICY_TERMINAL_STATUSES = {"disabled"}
 
 
 class TradingRuntime:
@@ -312,7 +316,10 @@ class TradingRuntime:
             self._agent_council = None
 
         if self.settings.enable_neural_lab:
-            self._neural_service = NeuralPredictionService(trace_store=self.trace_store)
+            self._neural_service = NeuralPredictionService(
+                trace_store=self.trace_store,
+                model_dir=self._model_dir,   # loads models/return_forecaster if validated
+            )
         else:
             self._neural_service = None
 
@@ -370,6 +377,60 @@ class TradingRuntime:
         self.master_orchestrator._profit_guard.load_from_db()
         self.master_orchestrator._reflection_engine.set_db(self.db)
         self.master_orchestrator._reflection_engine.load_weights_from_db()
+
+        # Extracted read-only services (Phase 2 runtime decomposition).
+        self._trace_replay_service = TraceReplayService(
+            trace_store=self.trace_store,
+            oms=self.oms,
+            portfolio=self.portfolio,
+            paper_learning_journal=self.paper_learning_journal,
+            outcome_factory=self._outcome_factory,
+            serialize_trade=self._serialize_trade,
+        )
+        self._model_research_service = ModelResearchService(
+            retraining_agent=self.retraining_agent,
+            model_registry=self.model_registry,
+            volatility_forecaster=self.volatility_forecaster,
+            sentiment_analyzer=self.sentiment_analyzer,
+            garch_forecaster=self.garch_forecaster,
+            synthetic_data=self.synthetic_data,
+        )
+        self._db_query_service = DbQueryService(db=self.db)
+        self._news_service = NewsService(
+            news_intelligence=self.news_intelligence,
+            event_risk=self.event_risk,
+            monitor=self.monitor,
+            event_bus=self.event_bus,
+        )
+        self._policy_service = PolicyService(
+            policy_registry=self._policy_registry,
+            policy_promotion_requirements=self._policy_promotion_requirements,
+            paper_learning_journal=self.paper_learning_journal,
+            trace_replay=self.trace_replay,
+            float_or_none=self._float_or_none,
+        )
+        self._options_service = self._build_options_service()
+        self._regime_meta_service = RegimeMetaService(
+            regime_classifier=self.regime_classifier,
+            synthetic_data=self.synthetic_data,
+            news_intelligence=self.news_intelligence,
+            meta_model=self.meta_model,
+            strategy_factory=self.strategy_factory,
+        )
+
+    def _build_options_service(self) -> OptionsService:
+        """Build the OptionsService from the current market engines.
+
+        Re-invoked by _rebuild_market_engines because expiry_calendar and
+        option_chain_builder are replaced on instrument refresh.
+        """
+        return OptionsService(
+            expiry_calendar=self.expiry_calendar,
+            option_chain_builder=self.option_chain_builder,
+            live_feed=self.live_feed,
+            greeks_calculator=self.greeks_calculator,
+            iv_surface_builder=self.iv_surface_builder,
+        )
 
     # ── Orchestrator-facing property shortcuts ────────────────────────────────
 
@@ -1193,6 +1254,9 @@ class TradingRuntime:
         self.contract_selector = ContractSelector(self.instrument_master)
         self.option_chain_builder = OptionChainBuilder(self.instrument_master)
         self.rollover_planner = RolloverPlanner(self.instrument_master)
+        # Rebuild the options service so it uses the fresh calendar/chain builder.
+        if hasattr(self, "_options_service"):
+            self._options_service = self._build_options_service()
         self.decision_pipeline = DecisionPipeline(
             self.instrument_master,
             self.strategy_factory,
@@ -1731,7 +1795,7 @@ class TradingRuntime:
     def _latest_broker_payload_for_order(self, order_id: str) -> tuple[str, dict]:
         """Return broker_order_id and raw broker payload from the latest OMS broker event."""
         try:
-            events = [self._decode_oms_event(event) for event in self.oms.events_for_order(order_id)]
+            events = [decode_oms_event(event) for event in self.oms.events_for_order(order_id)]
         except Exception:
             return "", {}
         for event in reversed(events):
@@ -2326,96 +2390,13 @@ class TradingRuntime:
         return marks
 
     def expiries(self, underlying: str) -> dict:
-        today = now_ist().date()
-        expiries = self.expiry_calendar.expiries(underlying.upper(), today)
-        return {
-            "underlying": underlying.upper(),
-            "count": len(expiries),
-            "expiries": [expiry.isoformat() for expiry in expiries],
-            "nearest": expiries[0].isoformat() if expiries else None,
-        }
+        return self._options_service.expiries(underlying)
 
     def option_chain(self, underlying: str, expiry: str | None = None, spot_price: float | None = None) -> dict:
-        underlying = underlying.upper()
-        if spot_price is None:
-            tick = self.live_feed.latest_tick(underlying)
-            if tick and tick.last_price > 0:
-                spot_price = tick.last_price
-        spot = float(spot_price or 0.0)
-        expiry_date = date.fromisoformat(expiry) if expiry else self.expiry_calendar.nearest(underlying, now_ist().date())
-        chain = self.option_chain_builder.build(underlying, expiry_date)
-        dte = max(1, (expiry_date - now_ist().date()).days)
-        liquid_strikes = chain.liquid_strikes(spot) if spot else chain.strikes
-
-        def enrich(instrument, option_type: str) -> dict:
-            payload = self._serialize_instrument(instrument)
-            tick = self.live_feed.latest_tick(instrument.symbol)
-            ltp = tick.last_price if tick and tick.last_price > 0 else None
-            delta = None
-            if spot > 0 and instrument.strike:
-                try:
-                    greeks = self.calculate_greeks(
-                        {
-                            "spot_price": spot,
-                            "strike": instrument.strike,
-                            "days_to_expiry": dte,
-                            "volatility": 0.18,
-                            "option_type": option_type,
-                        }
-                    )
-                    delta = round(float(greeks.get("delta", 0.0)), 3)
-                except Exception:
-                    delta = None
-            payload["ltp"] = ltp
-            payload["delta"] = delta
-            payload["live"] = ltp is not None
-            return payload
-
-        calls = [enrich(instrument, "CE") for instrument in chain.calls]
-        puts = [enrich(instrument, "PE") for instrument in chain.puts]
-        calls_by_strike = {item["strike"]: item for item in calls}
-        puts_by_strike = {item["strike"]: item for item in puts}
-        rows = [
-            {
-                "strike": strike,
-                "call": calls_by_strike.get(strike),
-                "put": puts_by_strike.get(strike),
-            }
-            for strike in chain.strikes
-            if not liquid_strikes or strike in liquid_strikes
-        ]
-        option_symbols = [
-            leg["symbol"]
-            for row in rows
-            for leg in (row.get("call"), row.get("put"))
-            if leg and leg.get("symbol")
-        ]
-        if option_symbols:
-            self.live_feed.add_subscriptions(option_symbols)
-        return {
-            "underlying": chain.underlying,
-            "expiry": chain.expiry.isoformat(),
-            "dte": dte,
-            "spot_price": spot,
-            "call_count": len(chain.calls),
-            "put_count": len(chain.puts),
-            "strikes": chain.strikes,
-            "liquid_strikes": liquid_strikes,
-            "calls": calls,
-            "puts": puts,
-            "rows": rows,
-        }
+        return self._options_service.option_chain(underlying, expiry, spot_price)
 
     def calculate_greeks(self, payload: dict) -> dict:
-        greeks = self.greeks_calculator.calculate(
-            spot_price=float(payload["spot_price"]),
-            strike=float(payload["strike"]),
-            days_to_expiry=int(payload["days_to_expiry"]),
-            volatility=float(payload.get("volatility", 0.20)),
-            option_type=OptionType(str(payload.get("option_type", "CE")).upper()),
-            risk_free_rate=float(payload.get("risk_free_rate", 0.06)),
-        )
-        return asdict(greeks)
+        return self._options_service.calculate_greeks(payload)
 
     def target_progress(self, payload: dict | None = None) -> dict:
         payload = payload or {}
@@ -2456,261 +2437,33 @@ class TradingRuntime:
         return asdict(decision)
 
     def option_chain_live(self, underlying: str, expiry: str | None = None, spot_price: float | None = None) -> dict:
-        """Option chain enriched with live tick prices and BS-calculated greeks."""
-        underlying = underlying.upper()
-        # Use live feed spot if not provided
-        if spot_price is None:
-            tick = self.live_feed.latest_tick(underlying)
-            if tick and tick.last_price > 0:
-                spot_price = tick.last_price
-        spot = spot_price or 0.0
-
-        expiry_date = (
-            date.fromisoformat(expiry) if expiry
-            else self.expiry_calendar.nearest(underlying, now_ist().date())
-        )
-        chain = self.option_chain_builder.build(underlying, expiry_date)
-        dte = max(1, (expiry_date - now_ist().date()).days)
-
-        def _enrich(instrument, opt_type: str) -> dict:
-            base = self._serialize_instrument(instrument)
-            tick = self.live_feed.latest_tick(instrument.symbol)
-            ltp = tick.last_price if (tick and tick.last_price > 0) else None
-            delta = None
-            if spot > 0:
-                try:
-                    g = self.calculate_greeks({
-                        "spot_price": spot,
-                        "strike": instrument.strike,
-                        "days_to_expiry": dte,
-                        "volatility": 0.18,
-                        "option_type": opt_type,
-                    })
-                    delta = round(g.get("delta", 0.0), 3)
-                except Exception:
-                    pass
-            base["ltp"] = ltp
-            base["delta"] = delta
-            base["live"] = ltp is not None
-            return base
-
-        liquid = chain.liquid_strikes(spot) if spot else chain.strikes
-        calls_map = {i.strike: _enrich(i, "CE") for i in chain.calls}
-        puts_map  = {i.strike: _enrich(i, "PE") for i in chain.puts}
-
-        strikes = sorted(set(calls_map) | set(puts_map))
-        rows = []
-        for s in strikes:
-            if liquid and s not in liquid:
-                continue
-            rows.append({
-                "strike": s,
-                "call": calls_map.get(s),
-                "put": puts_map.get(s),
-            })
-        return {
-            "underlying": underlying,
-            "expiry": expiry_date.isoformat(),
-            "dte": dte,
-            "spot_price": spot,
-            "rows": rows,
-        }
-
-    def _serialize_instrument(self, instrument) -> dict:
-        return {
-            "symbol": instrument.symbol,
-            "exchange": instrument.exchange.value,
-            "segment": instrument.segment.value,
-            "type": instrument.instrument_type.value,
-            "underlying": instrument.underlying,
-            "expiry": instrument.expiry.isoformat() if instrument.expiry else None,
-            "strike": instrument.strike,
-            "option_type": instrument.option_type.value if instrument.option_type else None,
-            "lot_size": instrument.lot_size,
-            "token": instrument.token,
-        }
+        return self._options_service.option_chain_live(underlying, expiry, spot_price)
 
     def retraining_decision(self, payload: dict) -> dict:
-        performance = ModelPerformance(
-            model_name=payload.get("model_name", "candidate"),
-            profit_factor=float(payload.get("profit_factor", 1.0)),
-            sharpe=float(payload.get("sharpe", 0.0)),
-            drawdown=float(payload.get("drawdown", 0.0)),
-            iv_interval_coverage=float(payload.get("iv_interval_coverage", 0.95)),
-            sentiment_precision=float(payload.get("sentiment_precision", 0.90)),
-            sample_size=int(payload.get("sample_size", 0)),
-            feature_drift_score=float(payload.get("feature_drift_score", 0.0)),
-        )
-        should_retrain, reason = self.retraining_agent.should_retrain(
-            performance,
-            target_gap_pct=float(payload.get("target_gap_pct", 0.0)),
-        )
-        return {
-            "should_retrain": should_retrain,
-            "reason": reason,
-            "evaluated_at": datetime.now(timezone.utc).isoformat(),
-        }
+        return self._model_research_service.retraining_decision(payload)
 
     def model_catalog(self) -> dict:
-        candidates = self.model_registry.candidates()
-        by_family: dict[str, int] = {}
-        for candidate in candidates:
-            by_family[candidate["family"]] = by_family.get(candidate["family"], 0) + 1
-        return {
-            "count": len(candidates),
-            "by_family": by_family,
-            "models": candidates,
-        }
+        return self._model_research_service.model_catalog()
 
     def volatility_forecast(self, payload: dict | None = None) -> dict:
-        payload = payload or {}
-        closes = self._closes_from_payload(payload)
-        model_name = str(payload.get("model_name", "ewma_volatility"))
-        forecast = self.volatility_forecaster.forecast(closes, model_name=model_name)
-        in_sample_eval = self.volatility_forecaster.evaluate_interval(
-            closes[-min(len(closes), 20):], forecast, in_sample=True
-        )
-        result = {
-            "forecast": asdict(forecast),
-            "interval_evaluation": asdict(in_sample_eval),
-            "policy": {
-                "promotion_gate": "Candidate volatility models must keep OUT-OF-SAMPLE interval coverage above 85% before live use.",
-                "current_use": "baseline risk sizing and IV sanity checks",
-                "interval_evaluation_note": (
-                    "interval_evaluation.in_sample=True; this number is computed on the same "
-                    "closes the forecast was derived from. Use walk_forward_evaluation for an "
-                    "honest forecast hit-rate."
-                ),
-            },
-        }
-        try:
-            wf = self.volatility_forecaster.walk_forward_evaluate(closes, model_name=model_name)
-            result["walk_forward_evaluation"] = asdict(wf)
-        except ValueError as exc:
-            result["walk_forward_evaluation"] = {"error": str(exc)}
-        return result
+        return self._model_research_service.volatility_forecast(payload)
 
     def sentiment(self, payload: dict) -> dict:
-        text = str(payload.get("text", ""))
-        if not text.strip():
-            raise ValueError("text is required")
-        result = self.sentiment_analyzer.analyze(text)
-        return {
-            "sentiment": asdict(result),
-            "policy": {
-                "live_gate": "Sentiment models can influence ranking only after precision exceeds 90% on labeled data.",
-            },
-        }
+        return self._model_research_service.sentiment(payload)
 
     def model_selection(self, payload: dict) -> dict:
-        performances = [
-            ModelPerformance(
-                model_name=item.get("model_name", item.get("name", "candidate")),
-                profit_factor=float(item.get("profit_factor", 1.0)),
-                sharpe=float(item.get("sharpe", 0.0)),
-                drawdown=float(item.get("drawdown", 0.0)),
-                iv_interval_coverage=float(item.get("iv_interval_coverage", 0.95)),
-                sentiment_precision=float(item.get("sentiment_precision", 0.90)),
-                sample_size=int(item.get("sample_size", 0)),
-                feature_drift_score=float(item.get("feature_drift_score", 0.0)),
-            )
-            for item in payload.get("performances", [])
-        ]
-        result = self.model_registry.select(performances)
-        return {
-            "selected_model": result.selected_model,
-            "reason": result.reason,
-            "candidates": [asdict(candidate) for candidate in result.candidates],
-        }
-
-    def _closes_from_payload(self, payload: dict) -> list[float]:
-        if payload.get("closes"):
-            return [float(value) for value in payload["closes"]]
-        symbol = str(payload.get("symbol", "NIFTY")).upper()
-        start_raw = str(payload.get("start", "2026-01-01"))
-        days = int(payload.get("days", 30))
-        bars = self.synthetic_data.generate_daily_bars(symbol, date.fromisoformat(start_raw), days)
-        return [bar.close for bar in bars]
-
-    # ------------------------------------------------------------------
-    # GARCH forecast
-    # ------------------------------------------------------------------
+        return self._model_research_service.model_selection(payload)
 
     def garch_forecast(self, payload: dict | None = None) -> dict:
-        payload = payload or {}
-        closes = self._closes_from_payload(payload)
-        forecast = self.garch_forecaster.forecast(closes)
-        in_sample_eval = self.volatility_forecaster.evaluate_interval(
-            closes[-min(len(closes), 20):], forecast, in_sample=True
-        )
-        params = self.garch_forecaster.fitted_params(closes)
-        result = {
-            "forecast": asdict(forecast),
-            "garch_params": params,
-            "interval_evaluation": asdict(in_sample_eval),
-            "interval_evaluation_note": (
-                "in_sample=True — fitted-on-itself coverage. Use walk_forward_evaluation for a "
-                "genuine out-of-sample forecast hit-rate."
-            ),
-        }
-        try:
-            wf = self.garch_forecaster.walk_forward_evaluate(closes)
-            result["walk_forward_evaluation"] = asdict(wf)
-        except ValueError as exc:
-            result["walk_forward_evaluation"] = {"error": str(exc)}
-        return result
+        return self._model_research_service.garch_forecast(payload)
+
 
     # ------------------------------------------------------------------
     # IV surface
     # ------------------------------------------------------------------
 
     def iv_surface_compute(self, payload: dict) -> dict:
-        underlying = str(payload["underlying"]).upper()
-        spot_price = float(payload["spot_price"])
-        expiry_raw = payload.get("expiry")
-        market_prices: dict[str, float] = {str(k): float(v) for k, v in (payload.get("market_prices") or {}).items()}
-        risk_free_rate = float(payload.get("risk_free_rate", 0.06))
-
-        as_of = date.fromisoformat(str(payload.get("as_of", now_ist().date().isoformat())))
-        if expiry_raw:
-            expiry_date = date.fromisoformat(str(expiry_raw))
-        else:
-            expiry_date = self.expiry_calendar.nearest(underlying, as_of)
-
-        chain = self.option_chain_builder.build(underlying, expiry_date)
-
-        if not market_prices:
-            # Synthetic premiums using Black-Scholes with a flat 20% vol assumption
-            volatility = float(payload.get("volatility", 0.20))
-            dte = max((expiry_date - as_of).days, 1)
-            for instrument in [*chain.calls, *chain.puts]:
-                if instrument.strike and instrument.option_type:
-                    greeks = self.greeks_calculator.calculate(
-                        spot_price=spot_price,
-                        strike=instrument.strike,
-                        days_to_expiry=dte,
-                        volatility=volatility,
-                        option_type=instrument.option_type,
-                        risk_free_rate=risk_free_rate,
-                    )
-                    # Use vega-scaled price as synthetic premium
-                    intrinsic = max(0.0, (spot_price - instrument.strike) if instrument.option_type.value == "CE" else (instrument.strike - spot_price))
-                    premium = max(intrinsic + greeks.vega * volatility * 100, 0.50)
-                    market_prices[instrument.symbol] = premium
-
-        surface = self.iv_surface_builder.build(
-            underlying=underlying,
-            option_chain=chain,
-            spot_price=spot_price,
-            market_prices=market_prices,
-            as_of=as_of,
-            risk_free_rate=risk_free_rate,
-        )
-        return surface.to_dict()
-
-    # ------------------------------------------------------------------
-    # Walk-forward backtesting
-    # ------------------------------------------------------------------
+        return self._options_service.iv_surface_compute(payload)
 
     def walk_forward_backtest(self, payload: dict | None = None) -> dict:
         payload = payload or {}
@@ -2737,45 +2490,7 @@ class TradingRuntime:
     # ------------------------------------------------------------------
 
     def regime_classify(self, payload: dict) -> dict:
-        symbol = str(payload.get("symbol", "NIFTY")).upper()
-        start_raw = str(payload.get("start", "2026-01-01"))
-        days = int(payload.get("days", 30))
-
-        if payload.get("features"):
-            from trading_platform.ai.features import FeatureSnapshot
-            f = payload["features"]
-            features = FeatureSnapshot(
-                symbol=symbol,
-                close=float(f.get("close", 0)),
-                momentum_5=float(f.get("momentum_5", 0)),
-                momentum_20=float(f.get("momentum_20", 0)),
-                realized_volatility=float(f.get("realized_volatility", 0)),
-                volume_ratio=float(f.get("volume_ratio", 1)),
-                trend_strength=float(f.get("trend_strength", 0)),
-            )
-        else:
-            bars = self.synthetic_data.generate_daily_bars(symbol, date.fromisoformat(start_raw), days)
-            from trading_platform.ai.features import FeatureEngine
-            features = FeatureEngine().compute(bars)
-
-        # We deliberately do NOT auto-train on FeatureStore records here:
-        # those records are labelled by the rule-based regime agent, and
-        # fitting sklearn to its own teacher's labels has no validation
-        # value (see RegimeClassifier.train docstring). The classifier
-        # therefore stays in deterministic rule mode unless an external
-        # caller invokes `regime_classifier.train(records, label_source=...)`
-        # with non-rule labels.
-        regime = self.regime_classifier.predict(features)
-        proba = self.regime_classifier.predict_proba(features)
-        return {
-            "symbol": symbol,
-            "regime": regime,
-            "probabilities": proba,
-            "classifier_trained": self.regime_classifier.is_trained,
-            "label_source": self.regime_classifier.label_source,
-            "training_metrics": self.regime_classifier.last_train_metrics,
-            "features": asdict(features),
-        }
+        return self._regime_meta_service.regime_classify(payload)
 
     # ------------------------------------------------------------------
     # Feature store
@@ -2838,24 +2553,10 @@ class TradingRuntime:
     # ------------------------------------------------------------------
 
     def meta_model_rank(self, payload: dict) -> dict:
-        regime = str(payload.get("regime", "MEAN_REVERTING"))
-        strategy_names = [str(n) for n in payload.get("strategy_names", self.strategy_factory.names())]
-        ranked = self.meta_model.rank(regime, strategy_names)
-        return {
-            "regime": regime,
-            "ranked_strategies": [
-                {"strategy_name": item.strategy_name, "score": item.score, "rank": item.rank}
-                for item in ranked
-            ],
-            "summary": self.meta_model.summary(),
-        }
+        return self._regime_meta_service.meta_model_rank(payload)
 
     def meta_model_update(self, payload: dict) -> dict:
-        regime = str(payload["regime"])
-        strategy_name = str(payload["strategy_name"])
-        score = float(payload["score"])
-        self.meta_model.update(regime, strategy_name, score)
-        return {"updated": True, "regime": regime, "strategy_name": strategy_name, "score": score}
+        return self._regime_meta_service.meta_model_update(payload)
 
     # ------------------------------------------------------------------
     # Live tick feed
@@ -2940,23 +2641,20 @@ class TradingRuntime:
     # ------------------------------------------------------------------
 
     def db_summary(self) -> dict:
-        return self.db.summary()
+        return self._db_query_service.db_summary()
 
     def db_trades(self, symbol: str | None = None, execution_mode: str | None = None, limit: int = 100) -> dict:
-        trades = self.db.trades(symbol=symbol, execution_mode=execution_mode, limit=limit)
-        return {"count": len(trades), "trades": trades}
+        return self._db_query_service.db_trades(symbol=symbol, execution_mode=execution_mode, limit=limit)
 
     def db_equity_curve(self, execution_mode: str | None = None, limit: int = 200) -> dict:
-        curve = self.db.equity_curve(execution_mode=execution_mode, limit=limit)
-        return {"count": len(curve), "curve": curve}
+        return self._db_query_service.db_equity_curve(execution_mode=execution_mode, limit=limit)
 
     def db_daily_pnl(self, limit: int = 30) -> dict:
-        history = self.db.daily_pnl_history(limit=limit)
-        return {"count": len(history), "history": history}
+        return self._db_query_service.db_daily_pnl(limit=limit)
 
     def db_risk_events(self, limit: int = 50) -> dict:
-        events = self.db.recent_risk_events(limit=limit)
-        return {"count": len(events), "events": events}
+        return self._db_query_service.db_risk_events(limit=limit)
+
 
     def health(self) -> dict:
         return {
@@ -3147,47 +2845,17 @@ class TradingRuntime:
         }
 
     def news_analyze(self, payload: dict) -> dict:
-        analysis = self.news_intelligence.analyze(payload)
-        if analysis.recommended_action in {"BLOCK_ENTRIES", "MANUAL_APPROVAL", "REDUCE_SIZE"}:
-            self.event_risk.register_temporary_event(
-                reason=analysis.reason,
-                expires_at=analysis.expires_at,
-                recommended_action=analysis.recommended_action,
-            )
-        self.monitor.record_event(
-            "news_event_analyzed",
-            analysis.reason,
-            severity="WARN" if analysis.recommended_action != "MONITOR" else "INFO",
-            metadata={
-                "event_id": analysis.event_id,
-                "recommended_action": analysis.recommended_action,
-                "global_risk_score": analysis.global_risk_score,
-            },
-        )
-        self.event_bus.publish("news.event_received.v1", analysis.to_dict(), "news")
-        return analysis.to_dict()
+        return self._news_service.news_analyze(payload)
 
     def news_events(self, limit: int = 50) -> dict:
-        events = self.news_intelligence.recent_events(limit)
-        return {"count": len(events), "events": events, "features": self.news_intelligence.feature_snapshot()}
+        return self._news_service.news_events(limit=limit)
 
     def news_features(self) -> dict:
-        return self.news_intelligence.feature_snapshot()
+        return self._news_service.news_features()
+
 
     def current_regime(self, symbol: str = "NIFTY") -> dict:
-        features_payload = self.regime_classify({"symbol": symbol, "days": 30})
-        news_features = self.news_intelligence.feature_snapshot()
-        action = news_features["recommended_action"]
-        adjusted_regime = features_payload["regime"]
-        if action in {"BLOCK_ENTRIES", "MANUAL_APPROVAL"}:
-            adjusted_regime = "EVENT_RISK"
-        elif action == "REDUCE_SIZE" and adjusted_regime != "HIGH_VOLATILITY":
-            adjusted_regime = f"{adjusted_regime}_EVENT_RISK"
-        return {
-            **features_payload,
-            "adjusted_regime": adjusted_regime,
-            "news_features": news_features,
-        }
+        return self._regime_meta_service.current_regime(symbol)
 
     def performance_summary(self, payload: dict | None = None) -> dict:
         payload = payload or {}
@@ -3298,272 +2966,14 @@ class TradingRuntime:
     # ------------------------------------------------------------------
 
     def get_trace(self, trace_id: str) -> dict | None:
-        trace = self.trace_store.get(trace_id)
-        if trace is None:
-            return None
-        return trace.to_dict()
+        return self._trace_replay_service.get_trace(trace_id)
 
     def list_traces(self, max_traces: int = 50) -> dict:
-        traces = list(self.trace_store.iter_recent(max_traces))
-        return {"count": len(traces), "traces": traces}
+        return self._trace_replay_service.list_traces(max_traces)
 
     def trace_replay(self, trace_id: str) -> dict | None:
-        """Reconstruct one decision lifecycle from trace, OMS, fills, and labels."""
-        trace = self.trace_store.get(trace_id)
-        if trace is None:
-            return None
-        trace_dict = trace.to_dict()
-        order_ids = self._trace_order_ids(trace_dict)
-        orders = []
-        oms_timeline = []
-        broker_order_ids: set[str] = set()
-        for order_id in order_ids:
-            events = [self._decode_oms_event(event) for event in self.oms.events_for_order(order_id)]
-            for event in events:
-                if event.get("broker_order_id"):
-                    broker_order_ids.add(str(event["broker_order_id"]))
-                oms_timeline.append(self._timeline_from_oms(event))
-            orders.append({
-                "order_id": order_id,
-                "status": self._order_status_from_events(events),
-                "symbol": self._first_event_value(events, "symbol"),
-                "strategy_name": self._first_event_value(events, "strategy_name"),
-                "events": events,
-            })
+        return self._trace_replay_service.trace_replay(trace_id)
 
-        journal_events = self.paper_learning_journal.events_for_trace(trace_id)
-        journal_labels = [
-            dict(event.get("payload") or {})
-            for event in journal_events
-            if event.get("event_type") == "outcome_label_created"
-        ]
-        label_candidates = [
-            label
-            for label in self._outcome_factory.recent_labels(5000)
-            if label.get("trace_id") == trace_id
-        ]
-        label_candidates.extend(journal_labels)
-        labels_by_key: dict[tuple, dict] = {}
-        for label in label_candidates:
-            key = (
-                label.get("trace_id"),
-                label.get("symbol"),
-                label.get("ts"),
-                label.get("entry_price"),
-                label.get("exit_price"),
-            )
-            labels_by_key[key] = label
-        labels = list(labels_by_key.values())
-        fills = [
-            dict(event.get("payload") or {})
-            for event in journal_events
-            if event.get("event_type") == "fill_recorded"
-        ]
-        slippage = [
-            dict(event.get("payload") or {})
-            for event in journal_events
-            if event.get("event_type") == "slippage_recorded"
-        ]
-        trades = [
-            self._serialize_trade(trade)
-            for trade in self.portfolio.trades
-            if trade.order_id in set(order_ids) or trade.order_id in broker_order_ids
-        ]
-
-        timeline = [
-            {
-                "ts": event.get("ts"),
-                "source": "trace",
-                "event_type": event.get("event_type"),
-                "component": event.get("component"),
-                "order_id": (event.get("data") or {}).get("order_id"),
-                "symbol": (event.get("data") or {}).get("symbol"),
-                "reason": (event.get("data") or {}).get("reason"),
-                "data": event.get("data") or {},
-            }
-            for event in trace_dict.get("events", [])
-        ]
-        timeline.extend(oms_timeline)
-        for event in journal_events:
-            payload = event.get("payload") or {}
-            timeline.append({
-                "ts": event.get("occurred_at"),
-                "source": "paper_journal",
-                "event_type": event.get("event_type"),
-                "component": "PaperLearningJournal",
-                "order_id": event.get("order_id"),
-                "symbol": event.get("symbol"),
-                "reason": payload.get("barrier_outcome") or payload.get("reason"),
-                "data": payload,
-            })
-        for label in labels:
-            timeline.append({
-                "ts": label.get("ts"),
-                "source": "label",
-                "event_type": "outcome_label_created",
-                "component": "OutcomeFactory",
-                "order_id": None,
-                "symbol": label.get("symbol"),
-                "reason": label.get("barrier_outcome"),
-                "data": label,
-            })
-        timeline.sort(key=lambda item: str(item.get("ts") or ""))
-
-        summary = self._trace_replay_summary(
-            trace_dict,
-            orders,
-            labels,
-            trades,
-            timeline,
-            journal_events,
-        )
-        return {
-            "trace_id": trace_id,
-            "summary": summary,
-            "trace": trace_dict,
-            "timeline": timeline,
-            "orders": orders,
-            "labels": labels,
-            "fills": fills,
-            "slippage": slippage,
-            "trades": trades,
-            "risk_decisions": trace_dict.get("risk_decisions", []),
-            "paper_journal": {
-                "event_count": len(journal_events),
-                "events": journal_events,
-            },
-            "raw": {
-                "trace_events": trace_dict.get("events", []),
-                "oms_event_count": sum(len(order["events"]) for order in orders),
-                "paper_journal_event_count": len(journal_events),
-            },
-        }
-
-    @staticmethod
-    def _trace_order_ids(trace: dict) -> list[str]:
-        ids = list(trace.get("order_intent_ids") or [])
-        for event in trace.get("events", []):
-            data = event.get("data") or {}
-            order_id = data.get("order_id")
-            if order_id:
-                ids.append(str(order_id))
-        return list(dict.fromkeys(ids))
-
-    @staticmethod
-    def _decode_oms_event(event: dict) -> dict:
-        decoded = dict(event)
-        metadata = decoded.get("metadata")
-        if isinstance(metadata, str) and metadata:
-            try:
-                decoded["metadata"] = json.loads(metadata)
-            except json.JSONDecodeError:
-                decoded["metadata"] = {"raw": metadata}
-        elif metadata is None:
-            decoded["metadata"] = {}
-        return decoded
-
-    @staticmethod
-    def _timeline_from_oms(event: dict) -> dict:
-        metadata = event.get("metadata") or {}
-        return {
-            "ts": event.get("occurred_at"),
-            "source": "oms",
-            "event_type": event.get("event_type"),
-            "component": "OMS",
-            "order_id": event.get("order_id"),
-            "symbol": event.get("symbol"),
-            "reason": event.get("rejection_reason") or metadata.get("reason"),
-            "data": event,
-        }
-
-    @staticmethod
-    def _first_event_value(events: list[dict], key: str) -> object:
-        for event in events:
-            if event.get(key) is not None:
-                return event[key]
-        return None
-
-    @staticmethod
-    def _order_status_from_events(events: list[dict]) -> str:
-        event_types = [event.get("event_type") for event in events]
-        if "broker_filled" in event_types:
-            return "FILLED"
-        if "broker_rejected" in event_types:
-            return "BROKER_REJECTED"
-        if "risk_rejected" in event_types:
-            return "RISK_REJECTED"
-        if "capital_check_failed" in event_types:
-            return "CAPITAL_REJECTED"
-        if "compliance_rejected" in event_types:
-            return "COMPLIANCE_REJECTED"
-        if "broker_submitted" in event_types:
-            return "SUBMITTED"
-        if "intent_queued" in event_types:
-            return "QUEUED"
-        return "TRACE_ONLY"
-
-    @staticmethod
-    def _trace_replay_summary(
-        trace: dict,
-        orders: list[dict],
-        labels: list[dict],
-        trades: list[dict],
-        timeline: list[dict],
-        journal_events: list[dict] | None = None,
-    ) -> dict:
-        journal_events = journal_events or []
-        event_types = {str(item.get("event_type")) for item in timeline}
-        order_statuses = [order["status"] for order in orders]
-        has_rejection = any(status.endswith("REJECTED") for status in order_statuses) or "final_gate_rejected" in event_types
-        has_fill = (
-            any(status == "FILLED" for status in order_statuses)
-            or "broker_filled" in event_types
-            or "fill_recorded" in event_types
-        )
-        journal_event_counts: dict[str, int] = {}
-        for event in journal_events:
-            event_type = str(event.get("event_type") or "")
-            journal_event_counts[event_type] = journal_event_counts.get(event_type, 0) + 1
-        status = "DECISION_ONLY"
-        if has_rejection:
-            status = "REJECTED"
-        elif labels:
-            status = "LABELED"
-        elif has_fill:
-            status = "FILLED"
-        elif orders:
-            status = "ORDER_IN_PROGRESS"
-
-        required = ["decision_cycle_started", "baseline_scan_completed"] if trace.get("metadata", {}).get("baseline_summary") else []
-        if orders:
-            required.append("order_intent_created")
-            required.append("final_gate_rejected" if has_rejection else "final_gate_approved")
-        if has_fill:
-            required.append("broker_filled")
-        if labels:
-            required.extend(["outcome_label_created", "post_trade_learning_updated"])
-        missing = [item for item in required if item not in event_types]
-        return {
-            "status": status,
-            "execution_mode": trace.get("execution_mode"),
-            "symbols": trace.get("symbol_universe", []),
-            "order_count": len(orders),
-            "timeline_event_count": len(timeline),
-            "trace_event_count": len(trace.get("events", [])),
-            "oms_event_count": sum(len(order["events"]) for order in orders),
-            "journal_event_count": len(journal_events),
-            "journal_event_counts": journal_event_counts,
-            "trade_count": len(trades),
-            "fill_count": int(journal_event_counts.get("fill_recorded", len(trades))),
-            "slippage_count": int(journal_event_counts.get("slippage_recorded", 0)),
-            "label_count": len(labels),
-            "learning_update_count": int(journal_event_counts.get("post_trade_learning_updated", 0)),
-            "rejection_count": sum(1 for status in order_statuses if status.endswith("REJECTED")),
-            "broker_submitted": "broker_submitted" in event_types,
-            "broker_filled": "broker_filled" in event_types,
-            "lifecycle_complete": not missing and status in {"DECISION_ONLY", "REJECTED", "LABELED"},
-            "missing_stages": missing,
-        }
 
     # ------------------------------------------------------------------
     # Phase 2: AI Council API helpers
@@ -3615,66 +3025,7 @@ class TradingRuntime:
         return self.paper_learning_journal.summary(limit=limit, trace_id=trace_id)
 
     def live_canary_readiness_payload(self) -> dict:
-        """Return M6 readiness: whether live-canary can be considered.
-
-        This is stricter than broker readiness. Broker readiness says whether
-        live plumbing can be armed; M6 says whether the paper/shadow evidence is
-        clean enough to even consider a live-canary policy.
-        """
-        trace_ids, journal_days = self._live_canary_evidence_trace_ids()
-        metrics = self._policy_promotion_metrics({"trace_ids": trace_ids})
-        metrics["paper_trading_days"] = max(metrics["paper_trading_days"], len(journal_days))
-        req = self._policy_promotion_requirements
-
-        paper_checks = self._paper_readiness_checks(metrics)
-        policy_candidates = self._live_canary_policy_candidates()
-        ready_candidates = [
-            item for item in policy_candidates
-            if item["status"] in {"live_canary", "live_approved"} or item["gate"].get("approved")
-        ]
-        paper_days = metrics["paper_trading_days"]
-        target_max_paper_days = 20
-        checks = [
-            *paper_checks,
-            self._promotion_check(
-                "paper_review_window",
-                paper_days <= target_max_paper_days,
-                f"<={target_max_paper_days}",
-                paper_days,
-                "paper_review_overdue",
-            ),
-            self._promotion_check(
-                "policy_gate_ready",
-                len(ready_candidates) > 0,
-                ">0 paper policy with approved live_canary gate",
-                len(ready_candidates),
-            ),
-        ]
-        approved = all(check["passed"] for check in checks)
-        blocking = [check["reason"] or check["name"] for check in checks if not check["passed"]]
-        return {
-            "can_consider_live_canary": approved,
-            "status": "READY" if approved else "NOT_READY",
-            "blocking_reasons": blocking,
-            "evaluated_at": datetime.now(timezone.utc).isoformat(),
-            "paper_window": {
-                "min_days": req["min_paper_trading_days"],
-                "target_max_days": target_max_paper_days,
-                "actual_days": paper_days,
-                "minimum_met": paper_days >= req["min_paper_trading_days"],
-                "within_target_review_window": req["min_paper_trading_days"] <= paper_days <= target_max_paper_days,
-                "review_overdue": paper_days > target_max_paper_days,
-            },
-            "metrics": metrics,
-            "checks": checks,
-            "policy_candidates": policy_candidates,
-            "requirements": {**req, "target_max_paper_days": target_max_paper_days},
-            "evidence": {
-                "trace_count": len(trace_ids),
-                "trace_ids": trace_ids[:100],
-                "paper_days": sorted(journal_days),
-            },
-        }
+        return self._policy_service.live_canary_readiness_payload()
 
     def streaming_bus_status(self) -> dict:
         """Return TypedTopicBus topic counts and status."""
@@ -3833,404 +3184,13 @@ class TradingRuntime:
     # ------------------------------------------------------------------
 
     def list_policies(self) -> dict:
-        return {"policies": [self._policy_payload(rec) for rec in self._policy_registry._records.values()]}
+        return self._policy_service.list_policies()
 
     def promote_policy(self, payload: dict) -> dict:
-        policy_id = str(payload.get("policy_id", ""))
-        new_status = str(payload.get("status") or payload.get("target_status") or "")
-        record = self._policy_registry.get_record(policy_id)
-        gate = self.policy_promotion_gate(policy_id, new_status, payload)
-        if not record or not gate["approved"]:
-            return {"policy_id": policy_id, "new_status": new_status, "ok": False, "gate": gate}
-
-        evidence = self._policy_promotion_evidence(record, payload)
-        if evidence:
-            record.metadata["promotion_evidence"] = {
-                **dict(record.metadata.get("promotion_evidence") or {}),
-                **evidence,
-            }
-
-        if not self._policy_registry.promote(policy_id, new_status):
-            gate = {**gate, "approved": False, "reason": "registry_promotion_failed"}
-            return {"policy_id": policy_id, "new_status": new_status, "ok": False, "gate": gate}
-
-        now = datetime.now(timezone.utc).isoformat()
-        history = list(record.metadata.get("promotion_history") or [])
-        history.append({
-            "ts": now,
-            "from_status": gate["current_status"],
-            "to_status": new_status,
-            "gate": gate,
-        })
-        record.metadata["promotion_history"] = history[-50:]
-        record.metadata["promoted_at"] = now
-        record.metadata["last_promotion_gate"] = gate
-        return {
-            "policy_id": policy_id,
-            "new_status": new_status,
-            "ok": True,
-            "gate": gate,
-            "policy": self._policy_payload(record),
-        }
+        return self._policy_service.promote_policy(payload)
 
     def rollback_policy(self, payload: dict) -> dict:
-        policy_id = str(payload.get("policy_id", ""))
-        record = self._policy_registry.get_record(policy_id)
-        if record is None:
-            return {"policy_id": policy_id, "status": "disabled", "ok": False, "reason": "policy_not_found"}
-        previous = record.status
-        if not self._policy_registry.promote(policy_id, "disabled"):
-            return {"policy_id": policy_id, "status": "disabled", "ok": False, "reason": "rollback_failed"}
-        now = datetime.now(timezone.utc).isoformat()
-        history = list(record.metadata.get("promotion_history") or [])
-        history.append({"ts": now, "from_status": previous, "to_status": "disabled", "reason": "rollback"})
-        record.metadata["promotion_history"] = history[-50:]
-        record.metadata["disabled_at"] = now
-        return {"policy_id": policy_id, "status": "disabled", "ok": True, "previous_status": previous}
-
-    def _live_canary_evidence_trace_ids(self) -> tuple[list[str], set[str]]:
-        trace_ids: list[str] = []
-        paper_days: set[str] = set()
-        try:
-            events = self.paper_learning_journal.recent_events(limit=5000, execution_mode="PAPER")
-        except Exception:
-            events = []
-        for event in reversed(events):
-            trace_id = str(event.get("trace_id") or "")
-            if trace_id:
-                trace_ids.append(trace_id)
-            occurred_at = str(event.get("occurred_at") or "")
-            if occurred_at:
-                paper_days.add(occurred_at[:10])
-        return list(dict.fromkeys(trace_ids)), paper_days
-
-    def _live_canary_policy_candidates(self) -> list[dict]:
-        candidates = []
-        for record in self._policy_registry._records.values():
-            if record.status not in {"paper", "live_canary", "live_approved"}:
-                continue
-            gate = (
-                {"approved": True, "reason": "already_in_live_canary_stage"}
-                if record.status in {"live_canary", "live_approved"}
-                else self._policy_promotion_gate_for_record(record, "live_canary", {})
-            )
-            candidates.append({
-                "policy_id": record.policy_id,
-                "role": record.role,
-                "status": record.status,
-                "gate": gate,
-            })
-        return candidates
-
-    def policy_promotion_gate(self, policy_id: str, target_status: str, payload: dict | None = None) -> dict:
-        record = self._policy_registry.get_record(policy_id)
-        if record is None:
-            return {
-                "approved": False,
-                "reason": "policy_not_found",
-                "policy_id": policy_id,
-                "current_status": None,
-                "target_status": target_status,
-                "checks": [self._promotion_check("policy_exists", False, True, False)],
-                "metrics": {},
-                "requirements": self._policy_promotion_requirements,
-            }
-        return self._policy_promotion_gate_for_record(record, target_status, payload or {})
-
-    def _policy_payload(self, record: PolicyRecord) -> dict:
-        next_status = self._next_policy_status(record.status)
-        payload = {
-            "policy_id": record.policy_id,
-            "role": record.role,
-            "status": record.status,
-            "version": record.version,
-            "metadata": record.metadata,
-            "can_submit_live_orders": record.can_submit_live_orders,
-            "promoted_at": record.metadata.get("promoted_at"),
-            "rollback_pointer": record.metadata.get("rollback_pointer"),
-        }
-        if next_status:
-            payload["promotion_gate"] = self._policy_promotion_gate_for_record(record, next_status, {})
-        else:
-            payload["promotion_gate"] = {
-                "approved": False,
-                "reason": "no_next_status",
-                "current_status": record.status,
-                "target_status": None,
-                "checks": [],
-                "metrics": {},
-                "requirements": self._policy_promotion_requirements,
-            }
-        return payload
-
-    @staticmethod
-    def _next_policy_status(status: str) -> str | None:
-        if status in _POLICY_TERMINAL_STATUSES:
-            return None
-        if status not in _POLICY_STATUS_ORDER:
-            return None
-        idx = _POLICY_STATUS_ORDER.index(status)
-        if idx >= len(_POLICY_STATUS_ORDER) - 1:
-            return None
-        return _POLICY_STATUS_ORDER[idx + 1]
-
-    @staticmethod
-    def _promotion_check(name: str, passed: bool, required, actual, reason: str | None = None) -> dict:
-        return {
-            "name": name,
-            "passed": bool(passed),
-            "required": required,
-            "actual": actual,
-            "reason": reason or ("" if passed else name),
-        }
-
-    def _policy_promotion_gate_for_record(
-        self,
-        record: PolicyRecord,
-        target_status: str,
-        payload: dict,
-    ) -> dict:
-        valid_statuses = set(_POLICY_STATUS_ORDER) | _POLICY_TERMINAL_STATUSES
-        expected_next = self._next_policy_status(record.status)
-        checks = [
-            self._promotion_check("policy_exists", True, True, True),
-            self._promotion_check("target_status_valid", target_status in valid_statuses, sorted(valid_statuses), target_status),
-            self._promotion_check("policy_not_disabled", record.status != "disabled", True, record.status),
-            self._promotion_check("single_step_forward", target_status == expected_next, expected_next, target_status),
-        ]
-
-        policy = self._policy_registry.get(record.policy_id)
-        policy_can_live = bool(getattr(policy, "can_submit_live_orders", False))
-        checks.append(
-            self._promotion_check(
-                "advisory_only_policy",
-                not policy_can_live and not record.can_submit_live_orders,
-                "policies must not submit live orders directly",
-                {"policy": policy_can_live, "record": record.can_submit_live_orders},
-            )
-        )
-
-        evidence = self._policy_promotion_evidence(record, payload)
-        metrics = self._policy_promotion_metrics(evidence)
-        if target_status in {"live_canary", "live_approved"}:
-            checks.extend(self._paper_readiness_checks(metrics))
-        if target_status == "live_approved":
-            manual_approval = bool(
-                payload.get("manual_approval")
-                or evidence.get("manual_approval")
-                or evidence.get("live_approval_acknowledged")
-            )
-            checks.append(
-                self._promotion_check(
-                    "manual_live_approval",
-                    manual_approval,
-                    True,
-                    manual_approval,
-                    "manual_live_approval_required",
-                )
-            )
-
-        approved = all(check["passed"] for check in checks)
-        failed = [check["reason"] or check["name"] for check in checks if not check["passed"]]
-        return {
-            "approved": approved,
-            "reason": "approved" if approved else failed[0],
-            "policy_id": record.policy_id,
-            "current_status": record.status,
-            "target_status": target_status,
-            "checks": checks,
-            "metrics": metrics,
-            "requirements": self._policy_promotion_requirements,
-        }
-
-    def _paper_readiness_checks(self, metrics: dict) -> list[dict]:
-        req = self._policy_promotion_requirements
-        return [
-            self._promotion_check("trace_replay_evidence_present", metrics["trace_count"] > 0, ">0", metrics["trace_count"]),
-            self._promotion_check(
-                "trace_replay_complete",
-                metrics["complete_replay_count"] >= req["min_complete_replays"],
-                req["min_complete_replays"],
-                metrics["complete_replay_count"],
-            ),
-            self._promotion_check(
-                "paper_trading_days",
-                metrics["paper_trading_days"] >= req["min_paper_trading_days"],
-                req["min_paper_trading_days"],
-                metrics["paper_trading_days"],
-            ),
-            self._promotion_check(
-                "paper_fill_count",
-                metrics["fill_count"] >= req["min_paper_fills"],
-                req["min_paper_fills"],
-                metrics["fill_count"],
-            ),
-            self._promotion_check(
-                "paper_label_count",
-                metrics["label_count"] >= req["min_paper_labels"],
-                req["min_paper_labels"],
-                metrics["label_count"],
-            ),
-            self._promotion_check(
-                "slippage_record_count",
-                metrics["slippage_count"] >= req["min_slippage_records"],
-                req["min_slippage_records"],
-                metrics["slippage_count"],
-            ),
-            self._promotion_check(
-                "learning_update_count",
-                metrics["learning_update_count"] >= req["min_learning_updates"],
-                req["min_learning_updates"],
-                metrics["learning_update_count"],
-            ),
-            self._promotion_check(
-                "profit_factor",
-                metrics["profit_factor"] >= req["min_profit_factor"],
-                req["min_profit_factor"],
-                metrics["profit_factor"],
-            ),
-            self._promotion_check(
-                "sharpe",
-                metrics["sharpe"] >= req["min_sharpe"],
-                req["min_sharpe"],
-                metrics["sharpe"],
-            ),
-            self._promotion_check(
-                "max_drawdown",
-                metrics["max_drawdown_pct"] <= req["max_drawdown_pct"],
-                req["max_drawdown_pct"],
-                metrics["max_drawdown_pct"],
-            ),
-            self._promotion_check(
-                "avg_slippage_surprise",
-                metrics["avg_slippage_surprise"] <= req["max_avg_slippage_surprise"],
-                req["max_avg_slippage_surprise"],
-                metrics["avg_slippage_surprise"],
-            ),
-        ]
-
-    @staticmethod
-    def _policy_promotion_evidence(record: PolicyRecord, payload: dict) -> dict:
-        evidence = dict(record.metadata.get("promotion_evidence") or {})
-        payload_evidence = payload.get("promotion_evidence") or payload.get("evidence") or {}
-        if isinstance(payload_evidence, dict):
-            evidence.update(payload_evidence)
-        trace_ids = []
-        for raw in (
-            evidence.get("trace_ids"),
-            evidence.get("evidence_trace_ids"),
-            payload.get("trace_ids"),
-            payload.get("evidence_trace_ids"),
-        ):
-            if isinstance(raw, str):
-                trace_ids.append(raw)
-            elif isinstance(raw, list):
-                trace_ids.extend(str(item) for item in raw if item)
-        if payload.get("trace_id"):
-            trace_ids.append(str(payload["trace_id"]))
-        if trace_ids:
-            evidence["trace_ids"] = list(dict.fromkeys(trace_ids))
-        return evidence
-
-    def _policy_promotion_metrics(self, evidence: dict) -> dict:
-        trace_ids = [str(item) for item in evidence.get("trace_ids", []) if item]
-        labels: list[dict] = []
-        slippage_rows: list[dict] = []
-        journal_days: set[str] = set()
-        fill_count = 0
-        slippage_count = 0
-        learning_update_count = 0
-        complete_replays = 0
-        missing_traces: list[str] = []
-        for trace_id in trace_ids:
-            replay = self.trace_replay(trace_id)
-            if replay is None:
-                missing_traces.append(trace_id)
-                continue
-            summary = replay.get("summary") or {}
-            fill_count += int(summary.get("fill_count") or summary.get("trade_count") or 0)
-            slippage_count += int(summary.get("slippage_count") or 0)
-            learning_update_count += int(summary.get("learning_update_count") or 0)
-            labels.extend(replay.get("labels") or [])
-            slippage_rows.extend(replay.get("slippage") or [])
-            if summary.get("lifecycle_complete"):
-                complete_replays += 1
-            for event in (replay.get("paper_journal") or {}).get("events", []):
-                occurred_at = str(event.get("occurred_at") or "")
-                if occurred_at:
-                    journal_days.add(occurred_at[:10])
-
-        returns = [self._float_or_none(label.get("forward_return_pct")) for label in labels]
-        returns = [value for value in returns if value is not None]
-        gross_profit = sum(value for value in returns if value > 0)
-        gross_loss = abs(sum(value for value in returns if value < 0))
-        if gross_loss > 0:
-            profit_factor = gross_profit / gross_loss
-        elif gross_profit > 0:
-            profit_factor = 999.0
-        else:
-            profit_factor = 0.0
-
-        if len(returns) > 1:
-            mean_return = sum(returns) / len(returns)
-            variance = sum((value - mean_return) ** 2 for value in returns) / (len(returns) - 1)
-            stddev = math.sqrt(max(0.0, variance))
-            sharpe = mean_return / stddev * math.sqrt(min(252, len(returns))) if stddev > 0 else (999.0 if mean_return > 0 else 0.0)
-        elif len(returns) == 1:
-            sharpe = 999.0 if returns[0] > 0 else 0.0
-        else:
-            sharpe = 0.0
-
-        drawdowns = [abs(self._float_or_none(label.get("max_drawdown_pct")) or 0.0) for label in labels]
-        max_drawdown = max(drawdowns) if drawdowns else 0.0
-        slip_surprises = []
-        for row in slippage_rows:
-            value = self._float_or_none(row.get("slippage_surprise"))
-            if value is not None:
-                slip_surprises.append(value)
-        if not slip_surprises:
-            for label in labels:
-                value = self._float_or_none(label.get("slippage_surprise"))
-                if value is not None:
-                    slip_surprises.append(value)
-        avg_slippage_surprise = sum(slip_surprises) / len(slip_surprises) if slip_surprises else 0.0
-
-        metrics = {
-            "trace_ids": trace_ids,
-            "missing_trace_ids": missing_traces,
-            "trace_count": len(trace_ids) - len(missing_traces),
-            "complete_replay_count": complete_replays,
-            "paper_trading_days": len(journal_days),
-            "fill_count": fill_count,
-            "label_count": len(labels),
-            "slippage_count": slippage_count,
-            "learning_update_count": learning_update_count,
-            "profit_factor": profit_factor,
-            "sharpe": sharpe,
-            "max_drawdown_pct": max_drawdown,
-            "avg_slippage_surprise": avg_slippage_surprise,
-        }
-        overrides = {
-            "paper_trading_days": ["paper_trading_days", "paper_days"],
-            "fill_count": ["paper_fill_count", "fill_count"],
-            "label_count": ["paper_label_count", "label_count"],
-            "slippage_count": ["slippage_count", "paper_slippage_count"],
-            "learning_update_count": ["learning_update_count", "paper_learning_update_count"],
-            "profit_factor": ["profit_factor", "paper_profit_factor"],
-            "sharpe": ["sharpe", "paper_sharpe"],
-            "max_drawdown_pct": ["max_drawdown_pct", "paper_max_drawdown_pct"],
-            "avg_slippage_surprise": ["avg_slippage_surprise", "paper_avg_slippage_surprise"],
-        }
-        for metric, keys in overrides.items():
-            for key in keys:
-                if key not in evidence:
-                    continue
-                override = self._float_or_none(evidence.get(key))
-                if override is None:
-                    continue
-                metrics[metric] = max(metrics[metric], int(override)) if metric.endswith("_count") or metric == "paper_trading_days" else override
-                break
-        return metrics
+        return self._policy_service.rollback_policy(payload)
 
     def neural_status(self) -> dict:
         return {

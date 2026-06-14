@@ -258,15 +258,19 @@ class MasterOrchestrator:
         except Exception:
             pass
 
-        # Event risk check — EventRiskGuard.check(as_of: date|None) takes a date, not a symbol
+        # Event risk check — EventRiskGuard.check(as_of: date|None) takes a date, not a symbol.
+        # FAIL-SAFE: if the event-risk check itself errors we cannot prove the window is
+        # safe, so we treat it as blocked rather than silently trading through it.
         event_risk_active = False
         event_risk_reason = ""
         try:
             er = rt.event_risk_guard.check()          # no arg → uses today's date
             event_risk_active = bool(getattr(er, "blocked", False))
             event_risk_reason = str(getattr(er, "reason", ""))
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning("Event-risk check failed — blocking as a precaution: %s", e)
+            event_risk_active = True
+            event_risk_reason = f"event_risk_check_error: {e}"
 
         # RAG retrieval — update state first so RAG has regime + news
         interim_state = _merge(state, NodeResult(updates={
@@ -342,9 +346,13 @@ class MasterOrchestrator:
                     # Council aligns → boost crew confidence and consensus
                     crew_confidence = 0.60 * crew_confidence + 0.40 * c_conf
                     crew_consensus = min(crew_consensus * 1.10, 1.0)
-                    # If crew said HOLD but council says PROCEED with decent confidence, flip to BUY
+                    # If crew said HOLD but council says PROCEED with decent confidence,
+                    # flip into the directionally-appropriate side rather than always BUY.
+                    # Lean is taken from regime + news so we can short bearish setups
+                    # instead of buy-and-hoping in down moves.
                     if crew_action == "HOLD" and c_conf >= 0.55:
-                        crew_action = "BUY"
+                        lean = _directional_lean(state)
+                        crew_action = "SELL" if lean < 0 else "BUY"
                 elif c_action_raw in ("HALT", "REDUCE"):
                     # Council is more conservative → pull crew back
                     crew_confidence *= 0.60
@@ -451,7 +459,9 @@ class MasterOrchestrator:
         try:
             from trading_platform.quantum.schemas import PortfolioOptimizationRequest, QuantumCandidate
             # QuantumOptimizationService.optimize(req: PortfolioOptimizationRequest) — not keyword args
-            fusion_side = state.fusion_action if state.fusion_action in ("BUY", "SELL") else "BUY"
+            # NOTE: Node 4 runs BEFORE ConsensusFusion (Node 7), so state.fusion_action is not
+            # populated yet. Use the crew's decided side, which IS available from Node 2.
+            fusion_side = state.crew_action if state.crew_action in ("BUY", "SELL") else "BUY"
             q_candidates = [
                 QuantumCandidate(
                     symbol=sym,
@@ -530,9 +540,15 @@ class MasterOrchestrator:
             updates["risk_reason"] = "all_checks_passed"
 
         except Exception as e:
-            logger.warning("Risk critic node error: %s", e)
-            updates["risk_approved"] = True   # fail-open: let downstream gates decide
-            updates["risk_reason"] = f"check_error: {e}"
+            # FAIL-SAFE: a risk check that throws must BLOCK the trade, never approve it.
+            # (The runtime's final execution gate is a second line of defence, but a risk
+            # node that errors should not let a candidate proceed on its own.)
+            logger.error("Risk critic node error — halting to protect capital: %s", e)
+            return NodeResult(
+                updates={**updates, "risk_approved": False, "risk_reason": f"check_error: {e}"},
+                halt=True,
+                halt_reason=f"risk: check error ({e})",
+            )
 
         return NodeResult(updates=updates)
 
@@ -661,7 +677,12 @@ class MasterOrchestrator:
                 halt_reason=f"fusion_score={fusion_score:.3f} < threshold={FUSION_PROCEED_THRESHOLD}",
             )
 
-        fusion_action = state.crew_action if state.crew_action in {"BUY", "SELL"} else "BUY"
+        # crew_action is normally already BUY/SELL here (HOLD halts at Node 2); the
+        # fallback derives a side from the directional lean instead of forcing BUY.
+        if state.crew_action in {"BUY", "SELL"}:
+            fusion_action = state.crew_action
+        else:
+            fusion_action = "SELL" if _directional_lean(state) < 0 else "BUY"
         fusion_confidence = fusion_score * state.crew_confidence * (1 - state.neural_uncertainty * 0.5)
 
         return NodeResult(updates={
@@ -782,6 +803,30 @@ class MasterOrchestrator:
         )
 
         return NodeResult(updates={"order_candidates": candidates})
+
+
+# ── Directional lean ──────────────────────────────────────────────────────────
+
+# Signed regime lean: +bullish / −bearish. Mirrors SpecialistCrew._regime_score
+# so the orchestrator agrees with the crew on which way a regime points.
+_REGIME_LEAN = {
+    "TRENDING_UP": 0.8, "BULLISH": 0.7, "BREAKOUT": 0.6, "TRENDING": 0.5,
+    "NEUTRAL": 0.0, "MEAN_REVERTING": 0.0, "unknown": 0.0,
+    "HIGH_VOLATILITY": -0.2, "VOLATILE": -0.2,
+    "TRENDING_DOWN": -0.7, "BEARISH": -0.8,
+}
+
+
+def _directional_lean(state: OrchestratorState) -> float:
+    """Signed [-1, 1] lean from regime + news + neural. <0 ⇒ short, >0 ⇒ long.
+
+    Used only to pick a side when the crew abstained (HOLD) but a downstream gate
+    still wants to trade — so we can short bearish setups instead of always buying.
+    """
+    regime_lean = _REGIME_LEAN.get(state.regime, 0.0)
+    news_lean = max(-1.0, min(1.0, state.news_sentiment))
+    neural_lean = (state.neural_direction_prob - 0.5) * 2.0 if state.neural_passed else 0.0
+    return 0.5 * regime_lean + 0.3 * news_lean + 0.2 * neural_lean
 
 
 # ── State helpers ─────────────────────────────────────────────────────────────
