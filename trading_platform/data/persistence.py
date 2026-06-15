@@ -12,6 +12,7 @@ Public API is identical for both backends — all callers are unaffected.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import sqlite3
 import threading
@@ -19,6 +20,8 @@ from contextlib import contextmanager
 from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any, Generator
+
+logger = logging.getLogger(__name__)
 
 _DEFAULT_DB_PATH = Path(__file__).parent.parent.parent / "data" / "trading.db"
 
@@ -370,43 +373,43 @@ class TradingDatabase:
         self._setup_pg_schema()
 
     def _setup_pg_schema(self) -> None:
-        with self._cursor() as cur:
-            # Core tables + pgvector extension
-            for stmt in _PG_DDL.strip().split(";"):
-                stmt = stmt.strip()
-                if stmt:
+        # Run schema DDL in AUTOCOMMIT so each statement is its own transaction.
+        # Otherwise the first failing statement (e.g. an optional TimescaleDB
+        # hypertable, or CREATE EXTENSION on a restricted role) aborts the whole
+        # transaction in PostgreSQL, every subsequent CREATE TABLE is silently
+        # skipped, and the final commit rolls everything back — leaving a fresh
+        # database with ZERO tables. Autocommit isolates each statement so the
+        # optional/idempotent ones can fail harmlessly without poisoning the rest.
+        conn = self._pool.getconn()
+        try:
+            prev_autocommit = conn.autocommit
+            conn.autocommit = True
+            cur = conn.cursor()
+            try:
+                # Order matters: extension + core tables first, then indexes,
+                # hypertables, and column migrations (each non-fatal).
+                statements = (
+                    [s.strip() for s in _PG_DDL.strip().split(";")]
+                    + [s.strip() for s in _PG_INDEXES.strip().split(";")]
+                    + [s.strip() for s in _PG_HYPERTABLES.strip().split(";")]
+                    + [
+                        "ALTER TABLE trades ADD COLUMN IF NOT EXISTS ts TIMESTAMPTZ DEFAULT now()",
+                        "ALTER TABLE trades ADD COLUMN IF NOT EXISTS feature_vector vector(7)",
+                    ]
+                )
+                for stmt in statements:
+                    if not stmt:
+                        continue
                     try:
                         cur.execute(stmt)
-                    except Exception:
-                        pass  # extension already exists or vector not available
-
-            # Indexes (non-fatal if they already exist)
-            for stmt in _PG_INDEXES.strip().split(";"):
-                stmt = stmt.strip()
-                if stmt:
-                    try:
-                        cur.execute(stmt)
-                    except Exception:
-                        pass
-
-            # TimescaleDB hypertables (non-fatal if TimescaleDB not installed)
-            for stmt in _PG_HYPERTABLES.strip().split(";"):
-                stmt = stmt.strip()
-                if stmt:
-                    try:
-                        cur.execute(stmt)
-                    except Exception:
-                        pass  # TimescaleDB not available — plain PostgreSQL is fine
-
-            # Migrate existing tables with new columns (non-fatal)
-            for alter_sql in [
-                "ALTER TABLE trades ADD COLUMN IF NOT EXISTS ts TIMESTAMPTZ DEFAULT now()",
-                "ALTER TABLE trades ADD COLUMN IF NOT EXISTS feature_vector vector(7)",
-            ]:
-                try:
-                    cur.execute(alter_sql)
-                except Exception:
-                    pass
+                    except Exception as exc:
+                        # Idempotent re-create, missing pgvector/TimescaleDB, etc.
+                        logger.debug("pg schema stmt skipped: %s", exc)
+            finally:
+                cur.close()
+                conn.autocommit = prev_autocommit
+        finally:
+            self._pool.putconn(conn)
 
     @contextmanager
     def _cursor(self) -> Generator:
