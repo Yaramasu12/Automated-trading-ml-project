@@ -223,6 +223,62 @@ class MasterOrchestrator:
     def recent_reflections(self, n: int = 20) -> list[dict]:
         return self._reflection_engine.recent_reflections(n)
 
+    # ── Market-data population (feeds the crew/neural with real features) ──────
+
+    def _ensure_market_features(self, underlying: str, regime: str) -> dict:
+        """Return market features for `underlying`, computing & persisting them
+        when the feature store has none yet.
+
+        Replicates what the old decision pipeline did (fetch candles →
+        FeatureEngine.compute → feature_store.append) so the autonomous loop is
+        no longer blind. Cheap on subsequent scans: once a snapshot is stored,
+        get_features() returns it and no re-fetch happens.
+        """
+        rt = self._runtime
+        try:
+            existing = rt.feature_store.get_features(underlying)
+            if existing:
+                return existing
+        except Exception:
+            return {}
+
+        bars = self._fetch_recent_bars(underlying)
+        if not bars or len(bars) < 5:
+            return {}
+        try:
+            from dataclasses import asdict
+            from trading_platform.ai.features import FeatureEngine
+            snapshot = FeatureEngine().compute(bars)
+            try:
+                rt.feature_store.append(underlying, datetime.now(timezone.utc).date(), snapshot, regime)
+            except Exception as exc:
+                logger.debug("feature_store.append failed for %s: %s", underlying, exc)
+            return asdict(snapshot)
+        except Exception as exc:
+            logger.debug("FeatureEngine.compute failed for %s: %s", underlying, exc)
+            return {}
+
+    def _fetch_recent_bars(self, underlying: str):
+        """Recent daily candles — real Angel One when configured, else synthetic."""
+        from datetime import date, timedelta
+        rt = self._runtime
+        try:
+            if getattr(rt.settings, "angel_one_configured", False):
+                inst = rt.instrument_master.get(underlying)
+                to_dt = datetime.now(timezone.utc)
+                from_dt = to_dt - timedelta(days=120)
+                bars = rt.angel_one_history.get_candles(inst, from_dt, to_dt, "ONE_DAY")
+                if bars and len(bars) >= 5:
+                    return bars
+        except Exception as exc:
+            logger.debug("Angel candles unavailable for %s: %s", underlying, exc)
+        try:
+            base = rt.synthetic_data._BASE_PRICES.get(underlying, 1500.0)
+            start = date.today() - timedelta(days=90)
+            return rt.synthetic_data.generate_daily_bars(underlying, start, 60, base_price=base)
+        except Exception:
+            return []
+
     # ── Node 1: Market Intelligence (Adaptive RAG) ────────────────────────────
 
     def _node_market_intelligence(self, state: OrchestratorState) -> NodeResult:
@@ -241,12 +297,16 @@ class MasterOrchestrator:
         except Exception as e:
             logger.debug("Regime detection failed: %s", e)
 
-        # Market features from feature store
+        # Market features — compute & PERSIST them when the store is empty for
+        # this underlying. The autonomous orchestrated loop (unlike the old
+        # /signals/scan pipeline) had no step that populated the feature store,
+        # so the crew scored every symbol on empty data and always voted HOLD →
+        # zero orders. This makes the live loop data-driven.
         market_features: dict[str, Any] = {}
         try:
-            market_features = rt.feature_store.get_features(state.underlying) or {}
-        except Exception:
-            pass
+            market_features = self._ensure_market_features(state.underlying, regime)
+        except Exception as e:
+            logger.debug("ensure_market_features failed for %s: %s", state.underlying, e)
 
         # News sentiment — NewsIntelligence.analyze(payload) returns NewsAnalysis.sentiment_score
         news_sentiment = 0.0
@@ -365,10 +425,15 @@ class MasterOrchestrator:
             logger.debug("AI council blend failed (non-critical): %s", e)
 
         if crew_action == "HOLD" or crew_consensus < CREW_CONSENSUS_MIN:
+            reason = (
+                f"crew action=HOLD (no directional conviction, consensus={crew_consensus:.2f})"
+                if crew_action == "HOLD"
+                else f"crew consensus={crew_consensus:.2f} < {CREW_CONSENSUS_MIN}"
+            )
             return NodeResult(
                 updates=result.updates,
                 halt=True,
-                halt_reason=f"crew: action={crew_action} consensus={crew_consensus:.2f} < {CREW_CONSENSUS_MIN}",
+                halt_reason=reason,
             )
 
         return result
