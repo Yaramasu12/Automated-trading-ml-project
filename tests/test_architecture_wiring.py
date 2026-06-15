@@ -401,7 +401,9 @@ class ArchitectureWiringTests(unittest.TestCase):
             "paper_trading_days": 1,
         }
         stale_days = {f"2026-01-{day:02d}" for day in range(1, 22)}
-        runtime._live_canary_evidence_trace_ids = lambda: ([trace_id], stale_days)
+        # _live_canary_evidence_trace_ids now lives on the extracted PolicyService;
+        # patch it there so the readiness computation actually uses the stub.
+        runtime._policy_service._live_canary_evidence_trace_ids = lambda: ([trace_id], stale_days)
 
         readiness = runtime.live_canary_readiness_payload()
 

@@ -383,7 +383,7 @@ class TradingRuntime:
             trace_store=self.trace_store,
             oms=self.oms,
             portfolio=self.portfolio,
-            paper_learning_journal=self.paper_learning_journal,
+            journal_getter=lambda: self.paper_learning_journal,
             outcome_factory=self._outcome_factory,
             serialize_trade=self._serialize_trade,
         )
@@ -405,7 +405,7 @@ class TradingRuntime:
         self._policy_service = PolicyService(
             policy_registry=self._policy_registry,
             policy_promotion_requirements=self._policy_promotion_requirements,
-            paper_learning_journal=self.paper_learning_journal,
+            journal_getter=lambda: self.paper_learning_journal,
             trace_replay=self.trace_replay,
             float_or_none=self._float_or_none,
         )

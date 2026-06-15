@@ -32,7 +32,7 @@ def _svc() -> PolicyService:
     return PolicyService(
         policy_registry=_Registry(),
         policy_promotion_requirements=_REQ,
-        paper_learning_journal=_Journal(),
+        journal_getter=lambda: _Journal(),
         trace_replay=lambda t: None,
         float_or_none=lambda v: float(v) if v is not None else None,
     )

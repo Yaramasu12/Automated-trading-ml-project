@@ -28,15 +28,22 @@ class PolicyService:
         *,
         policy_registry: Any,
         policy_promotion_requirements: dict,
-        paper_learning_journal: Any,
+        journal_getter: Callable[[], Any],
         trace_replay: Callable[[str], dict | None],
         float_or_none: Callable[[object], float | None],
     ) -> None:
         self._policy_registry = policy_registry
         self._policy_promotion_requirements = policy_promotion_requirements
-        self.paper_learning_journal = paper_learning_journal
+        # The runtime can REASSIGN paper_learning_journal after construction
+        # (e.g. test isolation, restore_state), so read it dynamically via a
+        # getter rather than freezing the reference at construction time.
+        self._journal_getter = journal_getter
         self.trace_replay = trace_replay
         self._float_or_none = float_or_none
+
+    @property
+    def paper_learning_journal(self):
+        return self._journal_getter()
 
     def live_canary_readiness_payload(self) -> dict:
         """Return M6 readiness: whether live-canary can be considered.

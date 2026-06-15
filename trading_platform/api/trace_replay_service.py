@@ -152,16 +152,22 @@ class TraceReplayService:
         trace_store: Any,
         oms: Any,
         portfolio: Any,
-        paper_learning_journal: Any,
+        journal_getter: Callable[[], Any],
         outcome_factory: Any,
         serialize_trade: Callable[[Any], dict],
     ) -> None:
         self._trace_store = trace_store
         self._oms = oms
         self._portfolio = portfolio
-        self._paper_learning_journal = paper_learning_journal
+        # Read paper_learning_journal dynamically — the runtime can reassign it
+        # after construction (test isolation / restore_state).
+        self._journal_getter = journal_getter
         self._outcome_factory = outcome_factory
         self._serialize_trade = serialize_trade
+
+    @property
+    def _paper_learning_journal(self):
+        return self._journal_getter()
 
     def get_trace(self, trace_id: str) -> dict | None:
         trace = self._trace_store.get(trace_id)

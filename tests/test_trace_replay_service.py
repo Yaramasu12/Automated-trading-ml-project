@@ -73,7 +73,7 @@ def _service(trace_dict):
         trace_store=_FakeStore(_Trace(trace_dict)),
         oms=_FakeOMS(),
         portfolio=_FakePortfolio(),
-        paper_learning_journal=_FakeJournal(),
+        journal_getter=lambda: _FakeJournal(),
         outcome_factory=_FakeOutcome(),
         serialize_trade=lambda t: {"order_id": t.order_id},
     )
@@ -98,7 +98,7 @@ def test_trace_replay_reconstructs_filled_order():
 def test_trace_replay_missing_returns_none():
     svc = TraceReplayService(
         trace_store=type("S", (), {"get": staticmethod(lambda _t: None)})(),
-        oms=_FakeOMS(), portfolio=_FakePortfolio(), paper_learning_journal=_FakeJournal(),
+        oms=_FakeOMS(), portfolio=_FakePortfolio(), journal_getter=lambda: _FakeJournal(),
         outcome_factory=_FakeOutcome(), serialize_trade=lambda t: {},
     )
     assert svc.trace_replay("missing") is None
