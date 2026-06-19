@@ -77,6 +77,7 @@ from trading_platform.api.news_service import NewsService
 from trading_platform.api.policy_service import PolicyService
 from trading_platform.api.options_service import OptionsService
 from trading_platform.api.regime_meta_service import RegimeMetaService
+from trading_platform.api.quantum_lab_service import QuantumLabService
 from trading_platform.api.ai_capabilities import ai_capabilities, log_capabilities_at_startup
 from trading_platform.logging_safety import note_swallowed, swallowed_error_count
 from trading_platform.ai.meta_labeler import MetaLabeler
@@ -418,6 +419,12 @@ class TradingRuntime:
             news_intelligence=self.news_intelligence,
             meta_model=self.meta_model,
             strategy_factory=self.strategy_factory,
+        )
+        self._quantum_lab_service = QuantumLabService(
+            quantum_service=self._quantum_service,
+            quantum_kernel_service=self._quantum_kernel_service,
+            settings=self.settings,
+            trace_store=self.trace_store,
         )
 
         # Honest startup banner: which "advanced" AI layers are inert/advisory.
@@ -3065,70 +3072,14 @@ class TradingRuntime:
     # ------------------------------------------------------------------
 
     def quantum_status(self) -> dict:
-        if self._quantum_service is None:
-            preview_service = QuantumOptimizationService(
-                backend="classical",
-                timeout=self.settings.quantum_timeout_seconds,
-                min_baseline_improvement=self.settings.quantum_min_baseline_improvement,
-                trace_store=self.trace_store,
-            )
-            return {
-                "enabled": self.settings.enable_quantum_lab,
-                "backend": self.settings.quantum_backend,
-                "timeout_seconds": self.settings.quantum_timeout_seconds,
-                "backends": preview_service.backend_status(),
-                "preview_fallback": "classical",
-                "note": "Quantum Lab is disabled; manual previews use the safe classical optimizer.",
-            }
-        return {
-            "enabled": self.settings.enable_quantum_lab,
-            "backend": self.settings.quantum_backend,
-            "timeout_seconds": self.settings.quantum_timeout_seconds,
-            "backends": self._quantum_service.backend_status(),
-        }
+        return self._quantum_lab_service.quantum_status()
 
     def quantum_kernel_status(self) -> dict:
-        """Return quantum kernel research service status and shadow-only flag."""
-        if self._quantum_kernel_service is None:
-            return {"available": False, "shadow_only": True, "note": "quantum_lab not enabled"}
-        available = self._quantum_kernel_service.is_available()
-        return {
-            "available": available,
-            "shadow_only": True,
-            "note": (
-                "Quantum kernel classifier runs in shadow mode — results are logged and "
-                "returned in scan output but never influence live trade decisions."
-            ),
-        }
+        return self._quantum_lab_service.quantum_kernel_status()
 
     def quantum_optimize_preview(self, payload: dict) -> dict:
-        candidates_raw = payload.get("candidates", [])
-        trace_id = new_trace_id("qpreview")
-        candidates = [
-            QuantumCandidate(
-                symbol=c.get("symbol", "UNKNOWN"),
-                side=c.get("side", "BUY"),
-                expected_edge=float(c.get("expected_edge", 0.01)),
-                risk_estimate=float(c.get("risk_estimate", 0.5)),
-            )
-            for c in candidates_raw
-        ]
-        req = PortfolioOptimizationRequest(
-            trace_id=trace_id,
-            candidates=candidates,
-            risk_aversion=self.settings.quantum_risk_aversion,
-            cardinality_limit=self.settings.quantum_cardinality_limit,
-        )
-        service = self._quantum_service
-        if service is None:
-            service = QuantumOptimizationService(
-                backend="classical",
-                timeout=self.settings.quantum_timeout_seconds,
-                min_baseline_improvement=self.settings.quantum_min_baseline_improvement,
-                trace_store=self.trace_store,
-            )
-        result = service.optimize(req)
-        return result.to_dict()
+        return self._quantum_lab_service.quantum_optimize_preview(payload)
+
 
     # ------------------------------------------------------------------
     # Phase 6: Goal governor API helpers
