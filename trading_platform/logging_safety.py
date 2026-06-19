@@ -105,3 +105,29 @@ def install_secret_redaction() -> None:
         pass
 
     _INSTALLED = True
+
+
+# ── Swallowed-exception observability (review finding #3) ──────────────────────
+# In a trading system, `except Exception: pass` hides fill/persistence/broker
+# failures. Where a swallow is genuinely intentional (must not disrupt a hot
+# path), route it through note_swallowed() so it is at least LOGGED and COUNTED
+# instead of vanishing. The counter is surfaced in /health for observability.
+
+import logging as _logging
+
+_SWALLOWED = {"count": 0}
+_swallow_logger = _logging.getLogger("trading_platform.swallowed")
+
+
+def note_swallowed(component: str, exc: BaseException) -> None:
+    """Record a deliberately-swallowed exception (log + count). Never raises."""
+    _SWALLOWED["count"] += 1
+    try:
+        _swallow_logger.debug("swallowed[%s]: %s: %s", component, type(exc).__name__, exc)
+    except Exception:
+        pass
+
+
+def swallowed_error_count() -> int:
+    """Total exceptions routed through note_swallowed() since process start."""
+    return _SWALLOWED["count"]

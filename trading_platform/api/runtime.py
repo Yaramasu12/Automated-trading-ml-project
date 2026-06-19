@@ -78,6 +78,7 @@ from trading_platform.api.policy_service import PolicyService
 from trading_platform.api.options_service import OptionsService
 from trading_platform.api.regime_meta_service import RegimeMetaService
 from trading_platform.api.ai_capabilities import ai_capabilities, log_capabilities_at_startup
+from trading_platform.logging_safety import note_swallowed, swallowed_error_count
 from trading_platform.ai.meta_labeler import MetaLabeler
 from trading_platform.agents.model_gateway import LocalModelGateway
 from trading_platform.agents.supervisor import AgentCouncilSupervisor
@@ -635,8 +636,8 @@ class TradingRuntime:
                         neural_direction_prob=float(_ctx_for_fv.get("neural_direction_probability", 0.5)),
                         neural_uncertainty=0.5,
                     )
-            except Exception:
-                pass
+            except Exception as exc:
+                note_swallowed("trade_feature_vector", exc)
             _aio.ensure_future(_aio.to_thread(self.db.save_trade, trade, execution_mode=exec_mode, feature_vector=_fv))
             mark_prices: dict[str, float] = {}
             for sym in list(self.portfolio.positions.keys()):
@@ -931,8 +932,10 @@ class TradingRuntime:
         )
         try:
             self.db.save_exit_plan(plan.to_dict(), execution_mode=exec_mode)
-        except Exception:
-            pass
+        except Exception as exc:
+            # A lost exit-plan persist means no SL/TP protection survives a restart —
+            # must not vanish silently. Log + count (still non-fatal to the fill).
+            note_swallowed("save_exit_plan", exc)
         broker_name = getattr(self.broker_client(), "name", self.settings.broker)
         capabilities = self.broker_capabilities.get(broker_name)
         self.oms.append(
@@ -2679,6 +2682,9 @@ class TradingRuntime:
             },
             # Honest report of which "advanced" AI layers are real vs stub/heuristic.
             "ai_capabilities": ai_capabilities(self),
+            # Count of deliberately-swallowed exceptions — a rising number means
+            # hot-path failures are being silently absorbed; investigate.
+            "swallowed_errors": swallowed_error_count(),
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }
 
