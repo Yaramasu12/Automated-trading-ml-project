@@ -10,7 +10,9 @@ from trading_platform.api.auth import require_auth, verify_token
 from trading_platform.api.runtime import TradingRuntime
 from trading_platform.api.schemas import (
     AccountStatusResponse,
+    AgentIntervalRequest,
     AgentTradeLogResponse,
+    ArmLiveRequest,
     ComplianceStatusResponse,
     CountEventsResponse,
     DataStatusResponse,
@@ -18,9 +20,12 @@ from trading_platform.api.schemas import (
     DbEquityCurveResponse,
     DbRiskEventsResponse,
     DbTradesResponse,
+    ExecutionModeRequest,
     HealthResponse,
     InstrumentRow,
+    KillSwitchRequest,
     NewsEventsResponse,
+    OrderRequest,
     PerformanceSummaryResponse,
     PortfolioPositionsResponse,
     RiskRejectionsResponse,
@@ -94,9 +99,9 @@ def state():
 
 
 @app.post("/live/arm", dependencies=[_AuthDep])
-def arm_live(payload: dict):
+def arm_live(req: ArmLiveRequest):
     try:
-        return runtime.arm_live(bool(payload.get("armed", False)))
+        return runtime.arm_live(req.armed)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -118,21 +123,20 @@ def live_canary_readiness():
 
 
 @app.post("/execution-mode", dependencies=[_AuthDep])
-def execution_mode(payload: dict):
+def execution_mode(req: ExecutionModeRequest):
     try:
-        return runtime.set_execution_mode(str(payload.get("mode", "BACKTEST")))
+        return runtime.set_execution_mode(req.mode.value)
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @app.post("/kill-switch", dependencies=[_AuthDep])
-def kill_switch(payload: dict):
-    active = bool(payload.get("active", True))
-    reason = str(payload.get("reason", "")).strip()
-    if active and not reason:
+def kill_switch(req: KillSwitchRequest):
+    reason = req.reason.strip()
+    if req.active and not reason:
         raise HTTPException(status_code=400, detail="kill_switch_reason_required")
     try:
-        return runtime.set_kill_switch(active, reason=reason)
+        return runtime.set_kill_switch(req.active, reason=reason)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -182,9 +186,8 @@ def agent_stop():
 
 
 @app.post("/agent/interval", dependencies=[_AuthDep])
-def agent_set_interval(payload: dict):
-    seconds = int(payload.get("seconds", 300))
-    return runtime.set_agent_interval(seconds)
+def agent_set_interval(req: AgentIntervalRequest):
+    return runtime.set_agent_interval(req.seconds)
 
 
 @app.get("/agent/trades", dependencies=[_AuthDep], response_model=AgentTradeLogResponse)
@@ -290,17 +293,17 @@ def run_backtest(payload: dict):
 
 
 @app.post("/orders/preview", dependencies=[_AuthDep])
-def preview_order(payload: dict):
+def preview_order(req: OrderRequest):
     try:
-        return runtime.preview_order(payload)
+        return runtime.preview_order(req.model_dump())
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @app.post("/orders/paper", dependencies=[_AuthDep])
-def simulate_order(payload: dict):
+def simulate_order(req: OrderRequest):
     try:
-        return runtime.simulate_order(payload)
+        return runtime.simulate_order(req.model_dump())
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 

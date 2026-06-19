@@ -13,10 +13,54 @@ forgotten field silently disappears from a response. Declared fields ARE
 validated, so they must match what the runtime actually returns (use ``| None``
 for anything that can be null).
 """
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
+
+from trading_platform.domain.enums import ExecutionMode, Side
 
 # NOTE: intentionally no `from __future__ import annotations` — pydantic must see
 # `state: StateResponse` as a real type, not a stringized forward reference.
+
+
+# ── Request models — validate control-mutating & order inputs at the boundary ──
+# These are the highest-risk endpoints, so they get the strictest validation:
+# a malformed body now returns a clean 422 at the API edge instead of becoming a
+# KeyError/TypeError deep inside the runtime (an opaque 500).
+
+class ExecutionModeRequest(BaseModel):
+    """POST /execution-mode — switch runtime execution mode."""
+    mode: ExecutionMode
+
+
+class ArmLiveRequest(BaseModel):
+    """POST /live/arm — arm/disarm live order submission."""
+    armed: bool
+
+
+class KillSwitchRequest(BaseModel):
+    """POST /kill-switch — activate/clear the kill switch."""
+    active: bool
+    reason: str = ""
+
+
+class AgentIntervalRequest(BaseModel):
+    """POST /agent/interval — set the autonomous scan interval (seconds)."""
+    seconds: int = Field(gt=0, le=86_400)
+
+
+class OrderRequest(BaseModel):
+    """POST /orders/preview and /orders/paper — a single-leg order intent.
+
+    extra='allow' so optional fields (metadata, priority, …) still pass through to
+    the runtime's _intent_from_payload, while the core fields are validated here.
+    """
+    model_config = ConfigDict(extra="allow")
+    symbol: str = Field(min_length=1)
+    side: Side
+    price: float = Field(gt=0)
+    quantity: int = Field(gt=0)
+    strategy_name: str = "manual"
+    confidence: float = Field(default=1.0, ge=0, le=1)
+    reason: str = ""
 
 
 class StateResponse(BaseModel):

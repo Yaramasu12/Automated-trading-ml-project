@@ -7,7 +7,15 @@ so adding response_model never silently drops a field).
 """
 from __future__ import annotations
 
+import pytest
+from pydantic import ValidationError
+
 from trading_platform.api.schemas import (
+    AgentIntervalRequest,
+    ArmLiveRequest,
+    ExecutionModeRequest,
+    KillSwitchRequest,
+    OrderRequest,
     AccountStatusResponse,
     DataStatusResponse,
     DbDailyPnlResponse,
@@ -138,3 +146,34 @@ def test_wrapper_models():
     assert RiskRejectionsResponse.model_validate({"count": 1, "rejections": [{"r": "x"}]}).model_dump()["rejections"][0] == {"r": "x"}
     assert AgentTradeLogResponse.model_validate({"count": 1, "trades": [{"t": 1}]}).model_dump()["trades"] == [{"t": 1}]
     assert NewsEventsResponse.model_validate({"count": 1, "events": [{"n": 1}], "features": {"f": 1}}).model_dump()["features"] == {"f": 1}
+
+
+# ── Request models (control-mutating + order endpoints) ───────────────────────
+
+def test_execution_mode_request_validates_enum():
+    assert ExecutionModeRequest(mode="PAPER").mode.value == "PAPER"
+    with pytest.raises(ValidationError):
+        ExecutionModeRequest(mode="HACKERMODE")
+
+
+def test_order_request_rejects_bad_inputs():
+    ok = OrderRequest(symbol="RELIANCE", side="BUY", price=100, quantity=1)
+    assert ok.symbol == "RELIANCE" and ok.side.value == "BUY"
+    with pytest.raises(ValidationError):
+        OrderRequest(symbol="X", side="BUY", price=-5, quantity=1)     # negative price
+    with pytest.raises(ValidationError):
+        OrderRequest(symbol="X", side="BUY", price=5, quantity=0)      # zero quantity
+    with pytest.raises(ValidationError):
+        OrderRequest(symbol="X", side="HOLD", price=5, quantity=1)     # invalid side
+
+
+def test_agent_interval_request_positive():
+    assert AgentIntervalRequest(seconds=300).seconds == 300
+    with pytest.raises(ValidationError):
+        AgentIntervalRequest(seconds=0)
+
+
+def test_kill_switch_and_arm_requests():
+    assert KillSwitchRequest(active=True, reason="manual halt").active is True
+    assert KillSwitchRequest(active=False).reason == ""
+    assert ArmLiveRequest(armed=True).armed is True
