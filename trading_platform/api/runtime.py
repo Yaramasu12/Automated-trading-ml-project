@@ -77,6 +77,7 @@ from trading_platform.api.news_service import NewsService
 from trading_platform.api.policy_service import PolicyService
 from trading_platform.api.options_service import OptionsService
 from trading_platform.api.regime_meta_service import RegimeMetaService
+from trading_platform.api.ai_capabilities import ai_capabilities, log_capabilities_at_startup
 from trading_platform.ai.meta_labeler import MetaLabeler
 from trading_platform.agents.model_gateway import LocalModelGateway
 from trading_platform.agents.supervisor import AgentCouncilSupervisor
@@ -417,6 +418,9 @@ class TradingRuntime:
             meta_model=self.meta_model,
             strategy_factory=self.strategy_factory,
         )
+
+        # Honest startup banner: which "advanced" AI layers are inert/advisory.
+        log_capabilities_at_startup(self)
 
     def _build_options_service(self) -> OptionsService:
         """Build the OptionsService from the current market engines.
@@ -2673,6 +2677,8 @@ class TradingRuntime:
             "exit_manager": {
                 "active_plans": self.exit_manager.active_plan_count,
             },
+            # Honest report of which "advanced" AI layers are real vs stub/heuristic.
+            "ai_capabilities": ai_capabilities(self),
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }
 
