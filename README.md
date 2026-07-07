@@ -112,8 +112,10 @@ npm run dev      # http://localhost:5173
 ```
 
 The dev server expects the API at `http://localhost:8000`. If you've enabled
-auth, set the bearer token in the dashboard via the in-app settings (or the
-`VITE_API_TOKEN` env var if you wire one up locally) — and make sure
+auth, set the bearer token via the "API Token" control in the dashboard
+sidebar — it is stored only in that browser's localStorage. Do NOT put the
+token in a `VITE_*` env var: Vite inlines those into the shipped JS bundle,
+handing the control-plane token to anyone who can load the page. Make sure
 `API_CORS_ORIGINS` includes the Vite origin.
 
 For a production-style build:

@@ -53,6 +53,12 @@ VALID_EVENT_TYPES = frozenset({
     "broker_rejected",
     "broker_cancelled",
     "fill_processed",
+    # 2026-07 audit-fix events
+    "fill_unresolved",            # C1: no terminal state within tracking window
+    "fill_price_missing",         # M2: FILLED reported without an average price
+    "mode_mismatch_rejected",     # H3: intent stamped in another execution mode
+    "duplicate_suppressed",       # H5: idempotency re-check under instrument lock
+    "queue_full_exit_deferred",   # M4: exit intent deferred, plan stays armed
     "exit_plan_created",
     "position_reconciled",
     "kill_switch_cancelled",

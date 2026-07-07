@@ -18,12 +18,16 @@ import type {
   WalkForwardResult,
 } from './types'
 
+import { getApiToken } from './auth'
+
 const BASE = import.meta.env.VITE_API_URL ?? '/api'
-const TOKEN = import.meta.env.VITE_API_TOKEN ?? ''
 
 async function req<T>(path: string, init?: RequestInit): Promise<T> {
   const headers: Record<string, string> = { 'Content-Type': 'application/json' }
-  if (TOKEN) headers['Authorization'] = `Bearer ${TOKEN}`
+  // Token read per-request from localStorage (audit fix H4) — never from a
+  // VITE_ env var, which would be inlined into the shipped bundle.
+  const token = getApiToken()
+  if (token) headers['Authorization'] = `Bearer ${token}`
   const res = await fetch(`${BASE}${path}`, { headers, ...init })
   if (!res.ok) {
     const text = await res.text()

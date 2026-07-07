@@ -1,14 +1,16 @@
 import { useEffect, useRef } from 'react'
+import { getApiToken } from './auth'
 import { useStore } from './store'
 import type { WsDashboardMessage } from './types'
 
+// Token intentionally NOT in the URL (audit fix L2): query strings end up in
+// proxy/access logs. Auth is sent as the first message after the socket opens —
+// the backend supports {"action": "auth", "token": ...} for exactly this.
 const WS_URL = (() => {
   const base = import.meta.env.VITE_WS_URL
   if (base) return base
   const proto = window.location.protocol === 'https:' ? 'wss' : 'ws'
-  const token = import.meta.env.VITE_API_TOKEN ?? ''
-  const query = token ? `?token=${encodeURIComponent(token)}` : ''
-  return `${proto}://${window.location.host}/ws/dashboard${query}`
+  return `${proto}://${window.location.host}/ws/dashboard`
 })()
 
 const RECONNECT_DELAY_MS = 3000
@@ -29,7 +31,10 @@ export function useDashboardWs() {
       wsRef.current = ws
 
       ws.onopen = () => {
-        if (!unmountedRef.current) setConnected(true)
+        if (unmountedRef.current) return
+        setConnected(true)
+        const token = getApiToken()
+        if (token) ws.send(JSON.stringify({ action: 'auth', token }))
       }
 
       ws.onmessage = (ev) => {

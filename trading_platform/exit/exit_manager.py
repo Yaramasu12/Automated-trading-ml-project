@@ -1,107 +1,55 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
-import sqlite3
-from datetime import date, datetime, timezone
-from pathlib import Path
+from datetime import datetime, timezone
 from typing import Callable, Awaitable
 
 from trading_platform.domain.enums import OrderPriority, OrderType, ProductType, Side
-from trading_platform.domain.models import OrderIntent, Signal, Trade
+from trading_platform.domain.models import OrderIntent, Signal
 from trading_platform.exit.exit_plan import ExitPlan, ExitTrigger
 
 logger = logging.getLogger(__name__)
 
 ExitEnqueueFn = Callable[[OrderIntent], Awaitable[None]]
 
-_DEFAULT_DB_PATH = Path(__file__).parent.parent.parent / "data" / "exit_plans.db"
-
-_CREATE_EXIT_PLANS = """
-CREATE TABLE IF NOT EXISTS exit_plans (
-    plan_id         TEXT PRIMARY KEY,
-    symbol          TEXT NOT NULL,
-    entry_price     REAL NOT NULL,
-    quantity        INTEGER NOT NULL,
-    strategy_name   TEXT,
-    side            TEXT NOT NULL,
-    trace_id        TEXT,
-    stop_loss_price REAL,
-    target_price    REAL,
-    trailing_pct    REAL,
-    expiry_date     TEXT,
-    partial_exit_enabled INTEGER NOT NULL DEFAULT 0,
-    partial_exit_done    INTEGER NOT NULL DEFAULT 0,
-    partial_exit_qty     INTEGER NOT NULL DEFAULT 0,
-    active          INTEGER NOT NULL DEFAULT 1,
-    created_at      TEXT NOT NULL
-)
-"""
-
-
-def _plan_to_row(plan: ExitPlan) -> tuple:
-    return (
-        plan.plan_id,
-        plan.symbol,
-        plan.entry_price,
-        plan.quantity,
-        plan.strategy_name,
-        plan.side,
-        plan.trace_id,
-        plan.stop_loss_price,
-        plan.target_price,
-        plan.trailing_pct,
-        plan.expiry_date.isoformat() if plan.expiry_date else None,
-        int(plan.partial_exit_enabled),
-        int(plan.partial_exit_done),
-        plan.partial_exit_qty,
-        int(plan.active),
-        datetime.now(timezone.utc).isoformat(),
-    )
-
-
-def _row_to_plan(row: dict) -> ExitPlan:
-    plan = ExitPlan(
-        plan_id=row["plan_id"],
-        symbol=row["symbol"],
-        entry_price=row["entry_price"],
-        quantity=row["quantity"],
-        strategy_name=row["strategy_name"] or "",
-        side=row["side"],
-        trace_id=row["trace_id"] or "",
-        stop_loss_price=row["stop_loss_price"],
-        target_price=row["target_price"],
-        trailing_pct=row["trailing_pct"],
-        expiry_date=date.fromisoformat(row["expiry_date"]) if row["expiry_date"] else None,
-        partial_exit_enabled=bool(row["partial_exit_enabled"]),
-        partial_exit_done=bool(row["partial_exit_done"]),
-        partial_exit_qty=row["partial_exit_qty"],
-        active=bool(row["active"]),
-    )
-    plan._highest_price = plan.entry_price
-    plan._lowest_price = plan.entry_price
-    return plan
+# How long an emitted exit may stay unfilled before the plan re-arms and the
+# trigger fires again. Covers rejected/lost exit orders: the position never
+# silently loses protection just because one exit attempt died downstream.
+PENDING_EXIT_RETRY_SECONDS = 120.0
 
 
 class ExitManager:
     """Background monitor that tracks active ExitPlans and emits exit intents.
 
-    After every entry fill the scheduler calls `register(plan)`.
-    The monitor loop polls live prices and enqueues exit OrderIntents
-    via the provided enqueue function (pointing at ExecutionScheduler.enqueue).
+    After every entry fill the runtime calls `register(plan)`. The monitor
+    loop polls marks and enqueues exit OrderIntents via the provided enqueue
+    function (pointing at ExecutionScheduler.enqueue).
 
-    Active exit plans are persisted to SQLite on every add/remove and reloaded
-    on startup so open positions retain protection across process restarts.
+    Lifecycle (audit fix H1): a plan is NOT removed when its trigger fires —
+    emitting an exit order is not the same as being flat. The plan enters a
+    "pending exit" state and is only deregistered when the exit FILL arrives
+    (runtime._on_fill → on_exit_fill). If no fill arrives within
+    PENDING_EXIT_RETRY_SECONDS (order rejected, queue full, broker down),
+    the plan re-arms and the exit is retried.
+
+    Persistence (audit fix H2): the runtime's database is the single source
+    of truth (save on entry fill, delete on exit fill, restore on startup
+    with instruments attached and filtered by execution mode). This class
+    keeps no store of its own — an earlier private SQLite mirror restored
+    plans without instruments and without mode scoping, which could silently
+    drop protection or leak plans across PAPER/LIVE.
+
+    Kill switch (audit fix C2): freeze semantics. The kill switch blocks new
+    entries at the scheduler/risk layer; exit plans stay registered and exit
+    orders continue to flow (scheduler and RiskEngine explicitly allow
+    position-reducing orders during kill switch). Flattening everything is a
+    separate, explicit action (EmergencySquareOff).
 
     Mark price priority:
-      1. Live tick from live feed (most accurate)
-      2. Externally supplied mark via update_marks()
-      3. Last known mark price for the symbol (sticky — avoids silent skip)
-      4. Entry price (worst case — at least SL/target can still check on large moves)
-
-    Without this fallback, paper-mode positions where the live feed has no tick
-    for the instrument are NEVER closed, causing unlimited unrealized losses.
+      1. Live tick pushed via update_marks() (runtime._on_tick, per tick)
+      2. Sticky last-known mark for the symbol
+      3. Entry price (worst case — at least SL/target can still check on large moves)
     """
 
     PRIORITY_MAP: dict[ExitTrigger, OrderPriority] = {
@@ -119,82 +67,19 @@ class ExitManager:
         enqueue_fn: ExitEnqueueFn,
         poll_interval: float = 1.0,
         portfolio=None,
-        db_path: Path | None = None,
     ) -> None:
         self._enqueue = enqueue_fn
         self.poll_interval = poll_interval
         self._plans: dict[str, ExitPlan] = {}
         self._mark_prices: dict[str, float] = {}
         self._last_known_marks: dict[str, float] = {}   # sticky prices for fallback
+        # plan_id → (monotonic-ish wall time when the exit intent was enqueued, trigger)
+        self._pending_exits: dict[str, tuple[datetime, ExitTrigger]] = {}
         self._running = False
         self._task: asyncio.Task | None = None
         # Optional portfolio reference — used to guard against phantom exits for
         # positions that are already flat (e.g. after restart with stale DB plans).
         self._portfolio = portfolio
-        self._db_path = db_path or _DEFAULT_DB_PATH
-        self._db_path.parent.mkdir(parents=True, exist_ok=True)
-        self._init_db()
-        self._load_from_db()
-
-    # ── Persistence helpers ───────────────────────────────────────────────────
-
-    def _conn(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(str(self._db_path), check_same_thread=False)
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA synchronous=NORMAL")
-        conn.row_factory = sqlite3.Row
-        return conn
-
-    def _init_db(self) -> None:
-        try:
-            with self._conn() as conn:
-                conn.execute(_CREATE_EXIT_PLANS)
-        except Exception as exc:
-            logger.error("ExitManager: failed to init DB: %s", exc)
-
-    def _upsert_plan(self, plan: ExitPlan) -> None:
-        try:
-            with self._conn() as conn:
-                conn.execute(
-                    """INSERT OR REPLACE INTO exit_plans
-                       (plan_id, symbol, entry_price, quantity, strategy_name, side,
-                        trace_id, stop_loss_price, target_price, trailing_pct,
-                        expiry_date, partial_exit_enabled, partial_exit_done,
-                        partial_exit_qty, active, created_at)
-                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                    _plan_to_row(plan),
-                )
-        except Exception as exc:
-            logger.error("ExitManager: failed to upsert plan %s: %s", plan.plan_id, exc)
-
-    def _delete_plan(self, plan_id: str) -> None:
-        try:
-            with self._conn() as conn:
-                conn.execute(
-                    "UPDATE exit_plans SET active=0 WHERE plan_id=?",
-                    (plan_id,),
-                )
-        except Exception as exc:
-            logger.error("ExitManager: failed to deactivate plan %s in DB: %s", plan_id, exc)
-
-    def _load_from_db(self) -> None:
-        try:
-            with self._conn() as conn:
-                rows = conn.execute(
-                    "SELECT * FROM exit_plans WHERE active=1"
-                ).fetchall()
-            for row in rows:
-                try:
-                    plan = _row_to_plan(dict(row))
-                    self._plans[plan.plan_id] = plan
-                    if plan.entry_price > 0:
-                        self._last_known_marks.setdefault(plan.symbol, plan.entry_price)
-                except Exception as exc:
-                    logger.error("ExitManager: failed to restore plan row: %s", exc)
-            if self._plans:
-                logger.info("ExitManager: restored %d active exit plan(s) from DB", len(self._plans))
-        except Exception as exc:
-            logger.error("ExitManager: failed to load plans from DB: %s", exc)
 
     # ── Public API ────────────────────────────────────────────────────────────
 
@@ -203,25 +88,46 @@ class ExitManager:
         # Seed last-known price from entry so the monitor has a fallback immediately
         if plan.entry_price > 0:
             self._last_known_marks.setdefault(plan.symbol, plan.entry_price)
-        self._upsert_plan(plan)
         logger.debug("ExitPlan registered: %s for %s", plan.plan_id, plan.symbol)
 
     def deregister(self, plan_id: str) -> None:
         self._plans.pop(plan_id, None)
-        self._delete_plan(plan_id)
+        self._pending_exits.pop(plan_id, None)
 
     def update_marks(self, prices: dict[str, float]) -> None:
         self._mark_prices.update(prices)
         # Keep sticky last-known for fallback when live feed goes stale
         self._last_known_marks.update({k: v for k, v in prices.items() if v > 0})
 
-    def kill_all(self) -> None:
-        """Mark all active plans as kill-switch triggered (no broker call needed)."""
+    def on_exit_fill(self, symbol: str, plan_id: str | None = None, trigger: str | None = None) -> None:
+        """Confirmed exit fill — the ONLY event that removes a plan.
+
+        Partial-target fills reduce the plan's remaining quantity and keep it
+        active (stop already raised to breakeven by check_trigger); every other
+        trigger closes out the plan.
+        """
         now = datetime.now(timezone.utc)
-        for plan in self._plans.values():
-            if plan.active:
-                plan.mark_triggered(ExitTrigger.KILL_SWITCH, now)
-                self._delete_plan(plan.plan_id)
+        plans = (
+            [self._plans[plan_id]] if plan_id and plan_id in self._plans
+            else [p for p in self._plans.values() if p.symbol == symbol]
+        )
+        for plan in list(plans):
+            if trigger == ExitTrigger.PARTIAL_TARGET.value:
+                remaining = plan.quantity - plan.partial_exit_qty
+                if remaining > 0:
+                    plan.quantity = remaining
+                    self._pending_exits.pop(plan.plan_id, None)
+                    logger.info(
+                        "ExitPlan %s: partial exit filled, %d lot(s) remain under trailing protection",
+                        plan.plan_id, remaining,
+                    )
+                    continue
+            plan.mark_triggered(
+                ExitTrigger(trigger) if trigger in ExitTrigger._value2member_map_ else ExitTrigger.MANUAL,
+                now,
+            )
+            self.deregister(plan.plan_id)
+            logger.info("ExitPlan %s closed on confirmed exit fill (%s)", plan.plan_id, trigger)
 
     async def start(self) -> None:
         if self._running:
@@ -244,11 +150,21 @@ class ExitManager:
         while self._running:
             await asyncio.sleep(self.poll_interval)
             now = datetime.now(timezone.utc)
-            triggered: list[str] = []
             for plan_id, plan in list(self._plans.items()):
                 if not plan.active:
                     continue
-                # Mark price resolution: live tick → cached update → sticky last-known → entry price
+                pending = self._pending_exits.get(plan_id)
+                if pending is not None:
+                    emitted_at, prev_trigger = pending
+                    if (now - emitted_at).total_seconds() < PENDING_EXIT_RETRY_SECONDS:
+                        continue  # exit order in flight — wait for its fill
+                    # No fill confirmation within the window: re-arm and retry.
+                    self._pending_exits.pop(plan_id, None)
+                    logger.warning(
+                        "ExitPlan %s: exit (%s) unconfirmed after %.0fs — re-arming trigger",
+                        plan_id, prev_trigger.value, PENDING_EXIT_RETRY_SECONDS,
+                    )
+                # Mark price resolution: live tick → sticky last-known → entry price
                 mark = (
                     self._mark_prices.get(plan.symbol)
                     or self._last_known_marks.get(plan.symbol)
@@ -259,25 +175,28 @@ class ExitManager:
                 trigger = plan.check_trigger(mark, now)
                 if trigger:
                     try:
-                        await self._emit_exit_intent(plan, trigger, mark, now)
-                        # Only mark triggered and remove the plan after enqueue succeeds.
-                        # If enqueue fails (queue full, broker offline), we leave the plan
-                        # active so the next poll cycle retries — prevents positions from
-                        # going unprotected after a transient failure.
-                        plan.mark_triggered(trigger, now)
-                        triggered.append(plan_id)
+                        status = await self._emit_exit_intent(plan, trigger, mark, now)
                     except Exception as exc:
                         logger.exception("Failed to emit exit for plan %s: %s", plan_id, exc)
-            for plan_id in triggered:
-                self._plans.pop(plan_id, None)
-                self._delete_plan(plan_id)
+                        continue  # plan stays registered — retried next poll
+                    if status == "emitted":
+                        self._pending_exits[plan_id] = (now, trigger)
+                    elif status == "flat":
+                        # Position already closed elsewhere (square-off/manual) — plan is stale.
+                        self.deregister(plan_id)
+                    # status == "no_instrument": keep the plan and keep alarming;
+                    # deleting it would silently strip protection (audit fix H1).
 
     async def _emit_exit_intent(
         self, plan: ExitPlan, trigger: ExitTrigger, price: float, now: datetime
-    ) -> None:
+    ) -> str:
+        """Returns "emitted" | "flat" | "no_instrument"."""
         if plan.instrument is None:
-            logger.warning("ExitPlan %s has no instrument — cannot emit exit intent", plan.plan_id)
-            return
+            logger.critical(
+                "ExitPlan %s has no instrument — cannot emit exit intent; position %s is UNPROTECTED",
+                plan.plan_id, plan.symbol,
+            )
+            return "no_instrument"
 
         # Guard: suppress phantom exits for already-flat positions.
         # This prevents duplicate sells after restarts where stale DB exit plans
@@ -289,7 +208,7 @@ class ExitManager:
                     "ExitPlan %s: position %s is already flat — suppressing phantom exit (trigger=%s)",
                     plan.plan_id, plan.symbol, trigger.value,
                 )
-                return
+                return "flat"
 
         exit_side = Side.SELL if plan.side == "BUY" else Side.BUY
         priority = self.PRIORITY_MAP.get(trigger, OrderPriority.TARGET)
@@ -329,6 +248,7 @@ class ExitManager:
             "Exit intent enqueued: %s side=%s trigger=%s price=%.2f",
             plan.symbol, exit_side.value, trigger.value, price,
         )
+        return "emitted"
 
     def current_mark(self, symbol: str) -> float | None:
         """Return the best available mark price for `symbol`, or None if unknown."""

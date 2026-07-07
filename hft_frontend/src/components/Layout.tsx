@@ -28,6 +28,7 @@ import {
   Users,
 } from 'lucide-react'
 import { useState, type ReactNode } from 'react'
+import { getApiToken, promptForApiToken } from '../auth'
 import { useStore } from '../store'
 import type { NavView } from '../store'
 import { execModeBadge } from './shared/Badge'
@@ -205,6 +206,16 @@ export function Layout({ children }: { children: ReactNode }) {
               <span className="text-[10px] font-mono text-gray-300">{monitoring.total_orders}</span>
             </div>
           )}
+          <button
+            onClick={promptForApiToken}
+            className="w-full flex items-center justify-between text-[10px] text-gray-500 hover:text-gray-300 transition-colors"
+            title="Set the control-plane API token (stored only in this browser)"
+          >
+            <span className="uppercase tracking-wider">API Token</span>
+            <span className={clsx('font-mono', getApiToken() ? 'text-brand-green' : 'text-brand-red')}>
+              {getApiToken() ? 'SET' : 'MISSING'}
+            </span>
+          </button>
         </div>
       </aside>
 
