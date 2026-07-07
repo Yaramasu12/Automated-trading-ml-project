@@ -42,6 +42,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 from trading_platform.orchestrator.state import OrchestratorState, NodeResult, ProfitGateResult
+from trading_platform.logging_safety import note_swallowed
 
 if TYPE_CHECKING:
     pass
@@ -181,8 +182,8 @@ class ProfitGuard:
             if atr > 0 and mark > 0:
                 stop_pct = (atr * self._atr_stop_multiplier) / mark
                 target_pct = stop_pct * self._rr_target
-        except Exception:
-            pass
+        except Exception as exc:
+            note_swallowed("profit_guard.atr_stop", exc)
         stop_pct = max(stop_pct, 0.002)
         target_pct = max(target_pct, stop_pct * 1.5)
         rr = target_pct / stop_pct

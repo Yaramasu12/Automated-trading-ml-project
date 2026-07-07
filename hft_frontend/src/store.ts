@@ -162,7 +162,7 @@ export const useStore = create<Store>((set) => ({
       runtimeState: msg.state,
       monitoring: msg.monitoring,
       liveFeed: msg.live_feed,
-      dbSummary: msg.db,
+      dbSummary: msg.db ?? null,
       livePortfolio: msg.portfolio ?? null,
     }),
 

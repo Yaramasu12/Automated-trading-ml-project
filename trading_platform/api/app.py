@@ -29,6 +29,7 @@ from trading_platform.api.schemas import (
     PerformanceSummaryResponse,
     PortfolioPositionsResponse,
     RiskRejectionsResponse,
+    SquareOffRequest,
     StateResponse,
     StrategyCatalogResponse,
 )
@@ -44,20 +45,26 @@ except ImportError as exc:  # pragma: no cover - exercised only without optional
 runtime = TradingRuntime()
 _settings = load_settings()
 
-# Registry of active WebSocket connections for push broadcasting
-_ws_clients: list[WebSocket] = []
-
-
-async def _broadcast(message: dict) -> None:
-    dead: list[WebSocket] = []
-    text = json.dumps(message)
-    for ws in list(_ws_clients):
-        try:
-            await ws.send_text(text)
-        except Exception:
-            dead.append(ws)
-    for ws in dead:
-        _ws_clients.remove(ws)
+def _ws_snapshot_content(authed: bool) -> dict:
+    """Dashboard snapshot body, mirroring REST auth: fields whose REST
+    endpoints require a Bearer token (portfolio, db summary, approvals,
+    exit plans) are only included on authenticated connections."""
+    content = {
+        "authenticated": authed,
+        "state": runtime.state_payload(),
+        "monitoring": runtime.monitoring_metrics(),
+        "live_feed": runtime.live_feed_snapshot(),
+        "scheduler": runtime.scheduler_stats(),
+        "event_bus": runtime.event_bus_summary(),
+    }
+    if authed:
+        content.update({
+            "db": runtime.db_summary(),
+            "exit_plans": runtime.exit_manager.active_plan_count,
+            "manual_approvals": runtime.manual_approval_status()["pending_count"],
+            "portfolio": runtime.portfolio_positions(),
+        })
+    return content
 
 
 @asynccontextmanager
@@ -559,6 +566,9 @@ def feed_ticks_batch(symbols: str = ""):
     return {"ticks": {sym: runtime.latest_tick(sym) for sym in syms}}
 
 
+_FEED_BATCH_MAX_SYMBOLS = 500
+
+
 @app.post("/feed/ticks/batch")
 def feed_ticks_batch_post(payload: dict | None = None):
     """Return ticks for many symbols without relying on a very long URL."""
@@ -567,6 +577,11 @@ def feed_ticks_batch_post(payload: dict | None = None):
     include_unavailable = bool(payload.get("include_unavailable", False))
     if isinstance(symbols, str):
         symbols = [s.strip() for s in symbols.split(",") if s.strip()]
+    if len(symbols) > _FEED_BATCH_MAX_SYMBOLS:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Too many symbols ({len(symbols)}); max {_FEED_BATCH_MAX_SYMBOLS} per request.",
+        )
     ticks = {
         str(sym).upper(): runtime.latest_tick(str(sym))
         for sym in symbols
@@ -597,10 +612,10 @@ def oms_order_events(order_id: str):
 
 
 @app.post("/execution/enqueue", dependencies=[_AuthDep])
-async def enqueue_order(payload: dict):
+async def enqueue_order(req: OrderRequest):
     """Enqueue an OrderIntent directly (for testing / manual orders)."""
     try:
-        return await runtime.enqueue_order(payload)
+        return await runtime.enqueue_order(req.model_dump())
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -640,9 +655,9 @@ def multi_leg_orders():
 
 
 @app.post("/execution/square-off", dependencies=[_AuthDep])
-async def square_off(payload: dict):
+async def square_off(req: SquareOffRequest):
     try:
-        return await runtime.square_off(payload)
+        return await runtime.square_off(req.model_dump())
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -673,7 +688,9 @@ def active_exit_plans():
 
 
 @app.post("/execution/exit-marks", dependencies=[_AuthDep])
-def update_exit_marks(payload: dict):
+def update_exit_marks(payload: dict[str, float]):
+    # dict[str, float] makes FastAPI reject non-numeric marks with a clean 422
+    # at the edge instead of raising ValueError (an opaque 500) in the runtime.
     prices = {str(k): float(v) for k, v in payload.items()}
     return runtime.update_exit_marks(prices)
 
@@ -726,7 +743,7 @@ def current_regime(symbol: str = "NIFTY"):
 # ---------------------------------------------------------------------------
 
 
-@app.post("/goal/state")
+@app.post("/goal/state", dependencies=[_AuthDep])
 def goal_state(payload: dict):
     try:
         return runtime.goal_state(payload)
@@ -761,8 +778,8 @@ def reconcile_positions(payload: dict):
 
 
 @app.post("/api/v1/mode", dependencies=[_AuthDep])
-def api_v1_mode(payload: dict):
-    return execution_mode({"mode": payload.get("mode", "BACKTEST")})
+def api_v1_mode(req: ExecutionModeRequest):
+    return execution_mode(req)
 
 
 @app.get("/api/v1/health")
@@ -776,8 +793,8 @@ def api_v1_orders(limit: int = 100):
 
 
 @app.post("/api/v1/orders", dependencies=[_AuthDep])
-async def api_v1_enqueue_order(payload: dict):
-    return await enqueue_order(payload)
+async def api_v1_enqueue_order(req: OrderRequest):
+    return await enqueue_order(req)
 
 
 @app.post("/api/v1/orders/{request_id}/approve", dependencies=[_AuthDep])
@@ -791,8 +808,8 @@ def api_v1_reject_order(request_id: str, payload: dict | None = None):
 
 
 @app.post("/api/v1/square-off", dependencies=[_AuthDep])
-async def api_v1_square_off(payload: dict):
-    return await square_off(payload)
+async def api_v1_square_off(req: SquareOffRequest):
+    return await square_off(req)
 
 
 @app.get("/api/v1/news/events")
@@ -828,40 +845,40 @@ def api_v1_events(limit: int = 100, stream: str | None = None):
 @app.websocket("/ws/dashboard")
 async def ws_dashboard(websocket: WebSocket):
     # Token may be supplied as ?token=... query param, or via the first
-    # JSON message {"action": "auth", "token": "..."}. Snapshots are
-    # streamed regardless, but mutating commands are rejected until the
-    # connection is authenticated.
+    # JSON message {"action": "auth", "token": "..."}. Unauthenticated
+    # connections receive only the public snapshot fields (same subset the
+    # unauthenticated REST surface exposes); mutating commands are rejected
+    # until the connection is authenticated.
     await websocket.accept()
     query_token = websocket.query_params.get("token")
     authed = verify_token(query_token)
-    _ws_clients.append(websocket)
     _last_snapshot_hash: str = ""
     _push_interval = 5.0  # push at most every 5 seconds to reduce serialization load
     try:
         while True:
-            snapshot = {
-                "type": "snapshot",
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-                "authenticated": authed,
-                "state": runtime.state_payload(),
-                "monitoring": runtime.monitoring_metrics(),
-                "live_feed": runtime.live_feed_snapshot(),
-                "db": runtime.db_summary(),
-                "scheduler": runtime.scheduler_stats(),
-                "exit_plans": runtime.exit_manager.active_plan_count,
-                "manual_approvals": runtime.manual_approval_status()["pending_count"],
-                "event_bus": runtime.event_bus_summary(),
-                "portfolio": runtime.portfolio_positions(),
-            }
-            # Only send the snapshot when content has actually changed to avoid
-            # redundant serialization and bandwidth on every poll cycle.
-            snapshot_text = json.dumps(snapshot)
-            snapshot_hash = hashlib.md5(snapshot_text.encode(), usedforsecurity=False).hexdigest()
+            # Snapshot building hits SQLite and marks the portfolio — run it in
+            # a worker thread so a slow query never stalls the event loop.
+            content = await asyncio.to_thread(_ws_snapshot_content, authed)
+            # Only send when content actually changed. The hash intentionally
+            # excludes the timestamp — hashing it too would make every cycle
+            # look "changed" and defeat the dedup entirely.
+            content_text = json.dumps(content)
+            snapshot_hash = hashlib.md5(content_text.encode(), usedforsecurity=False).hexdigest()
             if snapshot_hash != _last_snapshot_hash:
-                await websocket.send_text(snapshot_text)
+                snapshot = {
+                    "type": "snapshot",
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    **content,
+                }
+                await websocket.send_text(json.dumps(snapshot))
                 _last_snapshot_hash = snapshot_hash
             try:
                 raw = await asyncio.wait_for(websocket.receive_text(), timeout=_push_interval)
+            except asyncio.TimeoutError:
+                continue
+            # A malformed frame (bad JSON, non-numeric mark, unknown mode)
+            # must produce an error reply, not tear down the connection.
+            try:
                 cmd = json.loads(raw)
                 action = cmd.get("action")
                 if action == "auth":
@@ -878,13 +895,12 @@ async def ws_dashboard(websocket: WebSocket):
                 elif action == "update_marks":
                     marks = {str(k): float(v) for k, v in cmd.get("prices", {}).items()}
                     runtime.update_exit_marks(marks)
-            except asyncio.TimeoutError:
-                pass
+            except WebSocketDisconnect:
+                raise
+            except Exception as exc:
+                await websocket.send_text(json.dumps({"type": "error", "error": str(exc)}))
     except WebSocketDisconnect:
         pass
-    finally:
-        if websocket in _ws_clients:
-            _ws_clients.remove(websocket)
 
 
 # ── Phase 8: High-End AI / Quantum / Neural API endpoints ─────────────────────

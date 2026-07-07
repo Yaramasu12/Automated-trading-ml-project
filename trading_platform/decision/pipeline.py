@@ -16,6 +16,7 @@ from trading_platform.domain.models import Instrument, MarketBar, OrderIntent, S
 from trading_platform.portfolio.ledger import PortfolioLedger, PortfolioSnapshot
 from trading_platform.risk.engine import RiskDecision, RiskEngine
 from trading_platform.strategies.factory import StrategyFactory
+from trading_platform.logging_safety import note_swallowed
 
 if TYPE_CHECKING:
     from trading_platform.ai.feature_store import FeatureStore
@@ -354,8 +355,8 @@ class DecisionPipeline:
                             underlying, strategy_name, instrument, signal, 0, None,
                             "no_live_tick:futures_entry_blocked_without_price_confirmation",
                         )
-            except Exception:
-                pass
+            except Exception as exc:
+                note_swallowed("pipeline.futures_tick_check", exc)
 
         # Gate 3: volatility blowout filter — annualised vol > 60% = avoid new entries
         if features is not None:
@@ -446,8 +447,8 @@ class DecisionPipeline:
                     lp = tick.last_price if hasattr(tick, "last_price") else tick.get("last_price", 0)
                     if lp and lp > 0:
                         return float(lp)
-            except Exception:
-                pass
+            except Exception as exc:
+                note_swallowed("pipeline.latest_tick_price", exc)
         return self.data_provider._BASE_PRICES.get(underlying, 1000.0)
 
     def _market_time(self, bar: MarketBar) -> datetime:

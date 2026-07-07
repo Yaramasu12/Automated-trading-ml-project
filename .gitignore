@@ -46,3 +46,13 @@ models/*
 
 # FUSE filesystem artifacts left by Docker Desktop / network volume mounts
 data/.fuse_hidden*
+
+# SQLite backup snapshots (subdirectories aren't matched by data/*.db)
+data/_sqlite_backup_*/
+
+# Vite/PWA build debris
+hft_frontend/dev-dist/
+hft_frontend/vite.config.ts.timestamp-*.mjs
+
+# Historical candle cache downloaded by scripts/train_return_forecaster.py
+data/historical/

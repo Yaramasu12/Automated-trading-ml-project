@@ -204,7 +204,8 @@ def _train_and_report(bars_by_symbol: dict, horizon: int, save: bool) -> tuple[b
     print(f"WALK-FORWARD VALIDATION  (horizon={horizon})")
     print("=" * 60)
     if "oos_auc" in m:
-        print(f"  out-of-sample AUC      : {m['oos_auc']:.4f}   (need > 0.52)")
+        threshold = m.get("auc_threshold", 0.52)
+        print(f"  out-of-sample AUC      : {m['oos_auc']:.4f}   (need > {threshold:.4f})")
         print(f"  out-of-sample accuracy : {m['oos_accuracy']:.4f}")
         print(f"  majority baseline      : {m['majority_baseline']:.4f}")
         print(f"  OOS samples            : {m['oos_samples']}")
@@ -229,7 +230,7 @@ def main() -> int:
     ap.add_argument("--symbols", default="", help="comma-separated; default = a large-cap basket")
     ap.add_argument("--days", type=int, default=750)
     ap.add_argument("--interval", default="ONE_DAY")
-    ap.add_argument("--horizon", type=int, default=5, help="forward bars for the direction label")
+    ap.add_argument("--horizon", type=int, default=1, help="forward bars for the direction label")
     ap.add_argument("--sweep", action="store_true",
                     help="try horizons 1/3/5/10 and keep the best VALIDATED one")
     ap.add_argument("--save", action="store_true", help="persist the model if validation accepts it")

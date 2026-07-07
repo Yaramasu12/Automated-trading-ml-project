@@ -217,8 +217,9 @@ class OnnxExporter:
         try:
             with open(OnnxExporter._manifest_path(path), "w") as fh:
                 json.dump(meta, fh)
-        except Exception:
-            pass
+        except Exception as exc:
+            from trading_platform.logging_safety import note_swallowed
+            note_swallowed("onnx_exporter.write_manifest", exc)
 
     @staticmethod
     def _read_manifest(path: str) -> dict:

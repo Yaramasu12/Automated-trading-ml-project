@@ -496,10 +496,12 @@ export interface LivePortfolioSnapshot {
 export interface WsDashboardMessage {
   type: 'snapshot'
   timestamp: string
+  authenticated?: boolean
   state: RuntimeState
   monitoring: MonitoringMetrics
   live_feed: LiveFeedSnapshot
-  db: DBSummary
+  // Auth-gated fields: absent when the connection is unauthenticated.
+  db?: DBSummary
   manual_approvals?: number
   event_bus?: EventBusSummary
   portfolio?: LivePortfolioSnapshot

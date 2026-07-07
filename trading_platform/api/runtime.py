@@ -78,6 +78,7 @@ from trading_platform.api.policy_service import PolicyService
 from trading_platform.api.options_service import OptionsService
 from trading_platform.api.regime_meta_service import RegimeMetaService
 from trading_platform.api.quantum_lab_service import QuantumLabService
+from trading_platform.api.live_feed_service import LiveFeedService
 from trading_platform.api.ai_capabilities import ai_capabilities, log_capabilities_at_startup
 from trading_platform.logging_safety import note_swallowed, swallowed_error_count
 from trading_platform.ai.meta_labeler import MetaLabeler
@@ -280,8 +281,8 @@ class TradingRuntime:
         if self.settings.auto_load_models:
             try:
                 self._meta_labeler.load(f"{self._model_dir}/meta_labeler.json")
-            except Exception:
-                pass
+            except Exception as exc:
+                note_swallowed("init.meta_labeler_load", exc)
 
         # ── Gap 3: Typed streaming bus ────────────────────────────────────────
         # Wraps existing InMemoryEventBus; backward-compat — all existing
@@ -413,6 +414,7 @@ class TradingRuntime:
             float_or_none=self._float_or_none,
         )
         self._options_service = self._build_options_service()
+        self._live_feed_service = self._build_live_feed_service()
         self._regime_meta_service = RegimeMetaService(
             regime_classifier=self.regime_classifier,
             synthetic_data=self.synthetic_data,
@@ -442,6 +444,25 @@ class TradingRuntime:
             live_feed=self.live_feed,
             greeks_calculator=self.greeks_calculator,
             iv_surface_builder=self.iv_surface_builder,
+        )
+
+    def _build_live_feed_service(self) -> LiveFeedService:
+        """Build the LiveFeedService from the current instrument master.
+
+        Re-invoked by _rebuild_market_engines because instrument_master is
+        replaced on instrument refresh. execution_mode and live-order eligibility
+        change without a rebuild, so they are injected as callables that read the
+        live runtime state.
+        """
+        return LiveFeedService(
+            live_feed=self.live_feed,
+            instrument_master=self.instrument_master,
+            instrument_freshness=self.instrument_freshness,
+            monitor=self.monitor,
+            settings=self.settings,
+            can_submit_live_orders=self._can_submit_live_orders,
+            load_cached_instruments=self._load_cached_instruments_if_available,
+            get_execution_mode=lambda: self.execution_mode,
         )
 
     # ── Orchestrator-facing property shortcuts ────────────────────────────────
@@ -490,8 +511,8 @@ class TradingRuntime:
                 exchange=tick.exchange,
                 ts=tick.timestamp.isoformat(),
             )
-        except Exception:
-            pass  # never disrupt the tick stream
+        except Exception as exc:
+            note_swallowed("on_tick.publish", exc)  # never disrupt the tick stream
 
     def state(self) -> RuntimeState:
         return RuntimeState(
@@ -586,8 +607,8 @@ class TradingRuntime:
                 reason=reason,
                 approved=not active,
             )
-        except Exception:
-            pass
+        except Exception as exc:
+            note_swallowed("kill_switch.audit_emit", exc)
         self.event_bus.publish(
             "kill_switch.triggered.v1" if active else "kill_switch.cleared.v1",
             {"active": active, "reason": reason},
@@ -695,8 +716,8 @@ class TradingRuntime:
                                 pnl=pnl_pct * entry_price,
                                 equity=equity,
                             )
-                        except Exception:
-                            pass
+                        except Exception as exc:
+                            note_swallowed("on_fill.goal_governor_daily_pnl", exc)
                         # Champion/challenger: update with richer label score + neural quality
                         try:
                             neural_dir_prob = ctx.get("neural_direction_probability", 0.5)
@@ -756,8 +777,8 @@ class TradingRuntime:
                             source="MetaModel",
                             trade_id=getattr(trade, "trade_id", ""),
                         )
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        note_swallowed("on_fill.meta_model_trace", exc)
 
                 # Wire MasterOrchestrator reflection: update RAG patterns + ProfitGuard
                 # rolling window so future cycles benefit from this trade's outcome.
@@ -770,8 +791,8 @@ class TradingRuntime:
                         market_feats: dict = {}
                         try:
                             market_feats = self.feature_store.get_features(underlying_sym) or {}
-                        except Exception:
-                            pass
+                        except Exception as exc:
+                            note_swallowed("on_fill.feature_store_lookup", exc)
                         orch._reflection_engine.reflect(
                             trace_id=ctx.get("trace_id", ""),
                             underlying=underlying_sym,
@@ -824,8 +845,8 @@ class TradingRuntime:
             # Remove persisted exit plan now that the position is closed
             try:
                 self.db.delete_exit_plans_for_symbol(symbol, execution_mode=exec_mode)
-            except Exception:
-                pass
+            except Exception as exc:
+                note_swallowed("on_fill.delete_exit_plans", exc)
 
             # Gap 3: publish ORDER_EVENT fill to typed bus
             try:
@@ -836,8 +857,8 @@ class TradingRuntime:
                     strategy=strategy_name,
                     intent_id=intent.idempotency_key,
                 )
-            except Exception:
-                pass
+            except Exception as exc:
+                note_swallowed("on_fill.publish_exit_order_event", exc)
             return
 
         # ── Entry fill: record context for ML feedback later ────────────────
@@ -889,8 +910,8 @@ class TradingRuntime:
                 strategy=strategy_name,
                 intent_id=intent.idempotency_key,
             )
-        except Exception:
-            pass
+        except Exception as exc:
+            note_swallowed("on_fill.publish_entry_order_event", exc)
         self._agent_trade_log.append({
             "ts": now_ts, "type": "ENTRY", "symbol": symbol,
             "strategy": strategy_name, "side": side, "entry_price": fill_price,
@@ -1016,8 +1037,8 @@ class TradingRuntime:
                 )
                 try:
                     self.db.delete_exit_plans_for_symbol(symbol, execution_mode=exec_mode)
-                except Exception:
-                    pass
+                except Exception as exc:
+                    note_swallowed("restore_state.delete_stale_exit_plans", exc)
                 continue
             expiry = date.fromisoformat(plan_data["expiry_date"]) if plan_data.get("expiry_date") else None
             plan = ExitPlan(
@@ -1271,6 +1292,9 @@ class TradingRuntime:
         # Rebuild the options service so it uses the fresh calendar/chain builder.
         if hasattr(self, "_options_service"):
             self._options_service = self._build_options_service()
+        # Rebuild the live-feed service so it resolves symbols against the fresh master.
+        if hasattr(self, "_live_feed_service"):
+            self._live_feed_service = self._build_live_feed_service()
         self.decision_pipeline = DecisionPipeline(
             self.instrument_master,
             self.strategy_factory,
@@ -1616,8 +1640,8 @@ class TradingRuntime:
                 symbol=str(payload["symbol"]).upper() if payload.get("symbol") else None,
                 approved=True,
             )
-        except Exception:
-            pass
+        except Exception as exc:
+            note_swallowed("square_off.save_risk_event", exc)
         if self.execution_mode == ExecutionMode.PAPER:
             try:
                 self.paper_learning_journal.append(
@@ -1629,8 +1653,8 @@ class TradingRuntime:
                     source="runtime.square_off",
                     payload={**result, "reason": payload.get("reason", "")},
                 )
-            except Exception:
-                pass
+            except Exception as exc:
+                note_swallowed("square_off.paper_learning_journal", exc)
         self.event_bus.publish("square_off.requested.v1", result, "control")
         return result
 
@@ -2200,8 +2224,8 @@ class TradingRuntime:
                 component="final_execution_gate",
                 intent_id=intent.idempotency_key,
             )
-        except Exception:
-            pass
+        except Exception as exc:
+            note_swallowed("final_gate_rejection.trace_emit", exc)
         try:
             self.db.save_risk_event(
                 event_type="final_gate_rejected",
@@ -2210,8 +2234,8 @@ class TradingRuntime:
                 risk_score=decision.risk_score,
                 approved=False,
             )
-        except Exception:
-            pass
+        except Exception as exc:
+            note_swallowed("final_gate_rejection.save_risk_event", exc)
 
     def _can_submit_live_orders(self) -> bool:
         return (
@@ -2577,78 +2601,16 @@ class TradingRuntime:
     # ------------------------------------------------------------------
 
     def start_live_feed(self, symbols: list[str] | None = None) -> dict:
-        if not self.settings.angel_one_configured:
-            raise ValueError("Angel One credentials are required to start the live market-data feed")
-        if self.instrument_freshness.status()["is_synthetic"]:
-            self._load_cached_instruments_if_available()
-        requested_symbols = symbols or list(self.settings.live_feed_default_symbols)
-        symbols = self._resolve_feed_symbols(requested_symbols)
-        if not symbols:
-            raise ValueError("No feed symbols could be resolved from the current instrument master")
-        if len(symbols) > self.settings.live_feed_max_symbols:
-            symbols = symbols[: self.settings.live_feed_max_symbols]
-        # Register ALL instruments so the feed has token+exchange mappings for everything
-        self.live_feed.register_instruments(self.instrument_master.all())
-        self.live_feed.subscribe(symbols)
-        self.live_feed.start()
-        self.monitor.record_event(
-            "live_feed_started",
-            f"Paper-safe live tick feed started for {len(symbols)} symbol(s)",
-        )
-        return {
-            "started": True,
-            "mode": "paper_market_data",
-            "live_orders_possible": self._can_submit_live_orders(),
-            "symbols": symbols,
-            "symbol_count": len(symbols),
-            "max_symbols": self.settings.live_feed_max_symbols,
-        }
+        return self._live_feed_service.start_live_feed(symbols)
 
     def stop_live_feed(self) -> dict:
-        self.live_feed.stop()
-        self.monitor.record_event("live_feed_stopped", "Live tick feed stopped")
-        return {"stopped": True}
+        return self._live_feed_service.stop_live_feed()
 
     def live_feed_snapshot(self) -> dict:
-        snap = self.live_feed.snapshot()
-        snap["mode"] = "paper_market_data" if not self.execution_mode.value.startswith("LIVE") else "live_market_data"
-        snap["live_orders_possible"] = self._can_submit_live_orders()
-        snap["default_symbols"] = list(self.settings.live_feed_default_symbols)
-        snap["max_symbols"] = self.settings.live_feed_max_symbols
-        return snap
-
-    def _resolve_feed_symbols(self, requested_symbols: list[str] | tuple[str, ...]) -> list[str]:
-        today = now_ist().date()
-        resolved: list[str] = []
-        seen: set[str] = set()
-        all_symbols = set(self.instrument_master.instruments)
-        for raw_symbol in requested_symbols:
-            symbol = str(raw_symbol).strip().upper()
-            if not symbol:
-                continue
-            candidates: list[str] = []
-            if symbol in all_symbols:
-                candidates.append(symbol)
-            cash_symbol = f"{symbol}-EQ"
-            if cash_symbol in all_symbols:
-                candidates.append(cash_symbol)
-            try:
-                future = self.instrument_master.select_future(symbol, today)
-                candidates.append(future.symbol)
-            except Exception:
-                pass
-            for candidate in candidates:
-                if candidate not in seen:
-                    resolved.append(candidate)
-                    seen.add(candidate)
-                    break
-        return resolved
+        return self._live_feed_service.live_feed_snapshot()
 
     def latest_tick(self, symbol: str) -> dict:
-        tick = self.live_feed.latest_tick(symbol.upper())
-        if tick is None:
-            return {"symbol": symbol.upper(), "available": False}
-        return {"available": True, **tick.to_dict()}
+        return self._live_feed_service.latest_tick(symbol)
 
     # ------------------------------------------------------------------
     # Database

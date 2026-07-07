@@ -29,10 +29,21 @@ logger = logging.getLogger(__name__)
 
 # Bars of history needed before the first feature row can be formed.
 LOOKBACK = 20
-# Forward horizon (bars) the direction label is computed over.
-DEFAULT_HORIZON = 5
+# Forward horizon (bars) the direction label is computed over. 1 bar, because
+# the engineered features are bar-level momentum/mean-reversion signals: their
+# information dilutes roughly as sqrt(h) against the h-bar return variance, and
+# empirically the walk-forward gate cannot reliably certify even strong genuine
+# AR(1) edge at horizon 5. Multi-bar horizons remain available via the
+# constructor / training-script sweep, which picks whatever horizon validates.
+DEFAULT_HORIZON = 1
 # Acceptance margins over the naive baselines (out-of-sample).
-MIN_AUC_GAIN = 0.02      # OOS AUC must exceed 0.50 by this much
+# MIN_AUC_GAIN is a floor: the effective AUC threshold is
+# 0.5 + max(MIN_AUC_GAIN, 2 * SE_null), where SE_null is the Hanley-McNeil
+# standard error of AUC under the no-skill null. On small OOS samples
+# (single symbol, ~650 rows) pure noise clears a fixed 0.52 bar about 20% of
+# the time; scaling with sample size keeps the gate honest there while leaving
+# the large pooled real-data pipeline (threshold ≈ 0.523) essentially unchanged.
+MIN_AUC_GAIN = 0.02      # floor on how much OOS AUC must exceed 0.50
 MIN_ACC_GAIN = 0.01      # OOS accuracy must exceed majority-class rate by this much
 MIN_TRAIN_ROWS = 120     # need a reasonable sample before trusting validation
 MODEL_ID = "gbm_direction_v1"
@@ -205,11 +216,17 @@ def _walk_forward_metrics(X: np.ndarray, y: np.ndarray, n_splits: int, random_st
         auc = float(roc_auc_score(oos_true, oos_proba))
     except Exception:
         auc = 0.5
+    # Hanley-McNeil SE of AUC under the no-skill null (AUC = 0.5): how far
+    # pure noise wanders from 0.5 at this sample size.
+    n1 = int(oos_true_arr.sum())
+    n0 = len(oos_true_arr) - n1
+    auc_null_se = math.sqrt((n1 + n0 + 1) / (12.0 * n1 * n0))
     return {
         "oos_accuracy": acc,
         "oos_auc": auc,
         "majority_baseline": majority,
         "oos_samples": len(oos_true),
+        "auc_null_se": auc_null_se,
     }
 
 
@@ -288,10 +305,12 @@ class GradientBoostedReturnForecaster:
             self._accepted = False
             return False
 
-        beats_auc = metrics["oos_auc"] >= 0.5 + MIN_AUC_GAIN
+        auc_threshold = 0.5 + max(MIN_AUC_GAIN, 2.0 * metrics["auc_null_se"])
+        beats_auc = metrics["oos_auc"] >= auc_threshold
         beats_acc = metrics["oos_accuracy"] >= metrics["majority_baseline"] + MIN_ACC_GAIN
         accepted = bool(beats_auc and beats_acc)
         metrics.update({"accepted": accepted, "rejected": not accepted,
+                        "auc_threshold": auc_threshold,
                         "horizon": self._horizon, "model_id": MODEL_ID,
                         "n_symbols": len(symbols) if symbols else 1})
         self._last_metrics = metrics

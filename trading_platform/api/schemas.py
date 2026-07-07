@@ -63,6 +63,21 @@ class OrderRequest(BaseModel):
     reason: str = ""
 
 
+class SquareOffRequest(BaseModel):
+    """POST /execution/square-off — emergency flatten of one symbol or all positions.
+
+    Every field is optional (a bare ``{}`` squares off everything), but typing the
+    body means non-string/garbage values are rejected with a clean 422 at the edge
+    instead of becoming a TypeError deep in the runtime. extra='allow' preserves any
+    forward-compat flags (manual_approved, approval_expiry_seconds, …).
+    """
+    model_config = ConfigDict(extra="allow")
+    symbol: str | None = None
+    reason: str = ""
+    strategy_name: str | None = None
+    trace_id: str | None = None
+
+
 class StateResponse(BaseModel):
     """GET /state — runtime execution state."""
     model_config = ConfigDict(extra="allow")

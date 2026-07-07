@@ -73,6 +73,7 @@ from trading_platform.orchestrator.profit_guard import ProfitGuard
 from trading_platform.orchestrator.reflection_engine import ReflectionEngine
 from trading_platform.orchestrator.specialist_crew import SpecialistCrew
 from trading_platform.orchestrator.state import NodeResult, OrchestratorState
+from trading_platform.logging_safety import note_swallowed
 
 if TYPE_CHECKING:
     from trading_platform.api.runtime import TradingRuntime
@@ -315,8 +316,8 @@ class MasterOrchestrator:
                 {"text": state.underlying, "symbol": state.underlying, "source": "orchestrator"}
             )
             news_sentiment = float(getattr(news_result, "sentiment_score", 0.0))
-        except Exception:
-            pass
+        except Exception as exc:
+            note_swallowed("orchestrator.news_sentiment", exc)
 
         # Event risk check — EventRiskGuard.check(as_of: date|None) takes a date, not a symbol.
         # FAIL-SAFE: if the event-risk check itself errors we cannot prove the window is
@@ -389,8 +390,8 @@ class MasterOrchestrator:
                         "drawdown": snap.drawdown,
                         "open_positions": snap.open_positions,
                     }
-                except Exception:
-                    pass
+                except Exception as exc:
+                    note_swallowed("orchestrator.portfolio_snapshot", exc)
                 council_ctx = AgentInputContext(
                     trace_id=state.trace_id,
                     symbols=state.symbol_universe or [state.underlying],
@@ -464,8 +465,8 @@ class MasterOrchestrator:
                     bars = self._runtime.feature_store.get_bars(sym, limit=60)
                     if bars:
                         bars_map[sym] = bars
-            except Exception:
-                pass
+            except Exception as exc:
+                note_swallowed("orchestrator.feature_bars", exc)
 
             bundle = neural_service.predict(
                 trace_id=state.trace_id,
@@ -651,8 +652,8 @@ class MasterOrchestrator:
                 portfolio = self._runtime.portfolio
                 snap = portfolio.snapshot() if hasattr(portfolio, "snapshot") else {}
                 ps = snap if isinstance(snap, dict) else {}
-            except Exception:
-                pass
+            except Exception as exc:
+                note_swallowed("orchestrator.policy_portfolio_snapshot", exc)
 
             obs = EnvObservation(
                 features=[
@@ -688,8 +689,8 @@ class MasterOrchestrator:
                     action = policy.act(obs)
                     rl_score += _action_to_score.get(action, 0.0)
                     rl_vote_count += 1
-                except Exception:
-                    pass
+                except Exception as exc:
+                    note_swallowed("orchestrator.rl_policy_act", exc)
         except Exception as e:
             logger.debug("RL vote collection failed (non-critical): %s", e)
 
@@ -795,8 +796,8 @@ class MasterOrchestrator:
                     multiplier = max(0.5, state.neural_uncertainty)
                 elif recommendation == "PRESERVATION":
                     multiplier = 0.25
-        except Exception:
-            pass
+        except Exception as exc:
+            note_swallowed("orchestrator.goal_multiplier", exc)
 
         # Kelly fraction caps the multiplier
         pg = state.profit_gate

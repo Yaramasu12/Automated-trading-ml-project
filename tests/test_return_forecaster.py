@@ -23,8 +23,12 @@ def _bars_from_returns(returns: np.ndarray, base: float = 1000.0) -> list[dict]:
     return bars
 
 
-def _autocorrelated_series(n: int, phi: float = 0.45, seed: int = 1) -> list[dict]:
-    """Returns with positive AR(1) autocorrelation → momentum is genuinely predictable."""
+def _autocorrelated_series(n: int, phi: float = 0.6, seed: int = 1) -> list[dict]:
+    """Returns with positive AR(1) autocorrelation → momentum is genuinely predictable.
+
+    phi=0.6 keeps the OOS AUC comfortably above the statistical acceptance
+    threshold (0.5 + 2·SE_null ≈ 0.564 at this sample size) across seeds, so the
+    test asserts the gate mechanism rather than a borderline draw."""
     rng = np.random.default_rng(seed)
     r = np.zeros(n)
     for t in range(1, n):
