@@ -222,23 +222,33 @@ class InstrumentMaster:
             if instrument.underlying == underlying and (segment is None or instrument.segment == segment)
         ]
 
-    def expiries(self, underlying: str) -> list[date]:
+    def expiries(self, underlying: str, segment: Segment | None = None) -> list[date]:
         return sorted(
             {
                 instrument.expiry
-                for instrument in self.by_underlying(underlying)
+                for instrument in self.by_underlying(underlying, segment)
                 if instrument.expiry is not None
             }
         )
 
-    def nearest_expiry(self, underlying: str, as_of: date) -> date:
-        future_expiries = [expiry for expiry in self.expiries(underlying) if expiry >= as_of]
+    def nearest_expiry(self, underlying: str, as_of: date, segment: Segment | None = None) -> date:
+        """Earliest expiry on/after `as_of`, optionally scoped to one segment.
+
+        Pass `segment` when selecting a contract: index options expire WEEKLY
+        (NIFTY: Tuesdays) while futures expire MONTHLY, so the mixed nearest
+        expiry is almost always an options-only date with no futures contract.
+        """
+        future_expiries = [expiry for expiry in self.expiries(underlying, segment) if expiry >= as_of]
         if not future_expiries:
-            raise ValueError(f"No future expiry found for {underlying} from {as_of}")
+            scope = segment.value if segment else "any segment"
+            raise ValueError(f"No future expiry found for {underlying} ({scope}) from {as_of}")
         return future_expiries[0]
 
     def select_future(self, underlying: str, as_of: date) -> Instrument:
-        expiry = self.nearest_expiry(underlying, as_of)
+        # Futures-only expiry ladder: the mixed nearest expiry lands on a weekly
+        # options date, which used to fail with "No future contract found" for
+        # every index with weekly options on most days of the month.
+        expiry = self.nearest_expiry(underlying, as_of, segment=Segment.FUTURES)
         futures = [
             instrument
             for instrument in self.by_underlying(underlying, Segment.FUTURES)
@@ -256,7 +266,7 @@ class InstrumentMaster:
         option_type: OptionType,
         moneyness_steps: int = 0,
     ) -> Instrument:
-        expiry = self.nearest_expiry(underlying, as_of)
+        expiry = self.nearest_expiry(underlying, as_of, segment=Segment.OPTIONS)
         options = [
             instrument
             for instrument in self.by_underlying(underlying, Segment.OPTIONS)
