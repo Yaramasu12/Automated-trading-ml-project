@@ -220,6 +220,9 @@ class TradingRuntime:
             event_bus=self.event_bus,
             charges_model=self.charges_model,
             final_gate=self._evaluate_final_execution_gate,
+            # Audit fix H3: intents are stamped with the mode they were created
+            # under and rejected at dequeue if the runtime has since switched.
+            get_execution_mode=lambda: self.execution_mode.value,
         )
 
         self.exit_manager = ExitManager(
@@ -499,6 +502,11 @@ class TradingRuntime:
         Runs in the WebSocket thread; must never block or raise.
         """
         try:
+            # Audit fix C3: exit protection must see every tick, not just the
+            # agent's scan-cycle sync. Stop-losses now evaluate against prices
+            # at most one exit-manager poll (1s) old instead of up to 5 minutes.
+            if tick.last_price and tick.last_price > 0:
+                self.exit_manager.update_marks({tick.symbol: float(tick.last_price)})
             publish_tick(
                 self.typed_bus,
                 symbol=tick.symbol,
@@ -592,10 +600,11 @@ class TradingRuntime:
         self.scheduler.kill_switch_active = active
         if active:
             self.live_armed = False
-            # Immediately cancel all exit-manager polls so no new exit orders are enqueued
-            # while the kill switch is active. Without this the exit manager continues to
-            # fire and can enqueue sells for positions that the kill switch was meant to freeze.
-            self.exit_manager.kill_all()
+            # FREEZE semantics (audit fix C2): the kill switch blocks new entries
+            # (enforced in scheduler.enqueue and RiskEngine) but exit plans stay
+            # registered and stop-loss/target exits continue to flow — position-
+            # reducing orders are explicitly allowed during kill switch. Flattening
+            # everything is a separate explicit action: POST /execution/square-off.
         self.monitor.record_event(
             "kill_switch_changed",
             f"Kill switch set to {active}: {reason}",
@@ -842,9 +851,19 @@ class TradingRuntime:
                     "ts": now_ts, "type": "EXIT", "symbol": symbol,
                     "strategy": strategy_name, "side": side, "exit_price": fill_price,
                 })
-            # Remove persisted exit plan now that the position is closed
+            # Confirmed exit fill: this is the ONLY event that releases the
+            # exit plan (audit fix H1 — emitting an exit order is not being flat).
+            exit_trigger = intent.signal.metadata.get("exit_trigger")
+            exit_plan_id = intent.signal.metadata.get("exit_plan_id")
+            self.exit_manager.on_exit_fill(symbol, plan_id=exit_plan_id, trigger=exit_trigger)
             try:
-                self.db.delete_exit_plans_for_symbol(symbol, execution_mode=exec_mode)
+                if exit_trigger == "PARTIAL_TARGET" and self.exit_manager.active_plan_count:
+                    # Half booked, remainder still protected: persist the reduced plan.
+                    for live_plan in self.exit_manager.active_plans():
+                        if live_plan.get("symbol") == symbol:
+                            self.db.save_exit_plan(live_plan, execution_mode=exec_mode)
+                else:
+                    self.db.delete_exit_plans_for_symbol(symbol, execution_mode=exec_mode)
             except Exception as exc:
                 note_swallowed("on_fill.delete_exit_plans", exc)
 
@@ -998,6 +1017,24 @@ class TradingRuntime:
         exec_mode = self.execution_mode.value
         restored_positions = 0
         restored_plans = 0
+
+        # Audit fix M9: restoring against a synthetic instrument master would
+        # skip real contract symbols and DISCARD their exit plans. Try the real
+        # cache first; if the master is still synthetic, defer restore entirely
+        # (leave the DB untouched) so a later restart can recover cleanly.
+        if self.instrument_freshness.status()["is_synthetic"]:
+            self._load_cached_instruments_if_available()
+        if self.instrument_freshness.status()["is_synthetic"]:
+            logger.critical(
+                "restore_state DEFERRED: instrument master is synthetic — positions/exit plans "
+                "left in DB untouched. Refresh instruments and restart to restore state."
+            )
+            self.monitor.record_event(
+                "state_restore_deferred",
+                "Instrument master is synthetic; position/exit-plan restore deferred to protect DB state",
+                severity="CRITICAL",
+            )
+            return
 
         # ── Restore portfolio positions ────────────────────────────────────
         snapshot = self.db.latest_snapshot(execution_mode=exec_mode)
@@ -1496,8 +1533,31 @@ class TradingRuntime:
             "pending": pending,
         }
 
+    # Max drift between the price the order was decided at and the live price
+    # at approval time. Beyond this, "approve" would execute a materially
+    # different trade than the one the human reviewed (audit fix M8).
+    _APPROVAL_MAX_PRICE_DRIFT_PCT = 0.01
+
     async def approve_order(self, request_id: str, payload: dict | None = None) -> dict:
         payload = payload or {}
+        pending = self.manual_approval._pending.get(request_id)
+        if pending is not None and pending.intent is not None:
+            decided_price = float(pending.intent.signal.price or 0.0)
+            tick = self.live_feed.latest_tick(pending.intent.instrument.symbol)
+            live_price = float(getattr(tick, "last_price", 0.0) or 0.0) if tick else 0.0
+            if decided_price > 0 and live_price > 0:
+                drift = abs(live_price - decided_price) / decided_price
+                if drift > self._APPROVAL_MAX_PRICE_DRIFT_PCT:
+                    self.manual_approval.reject(
+                        request_id,
+                        note=f"auto-rejected: price drifted {drift:.2%} during approval "
+                             f"(decided {decided_price:.2f}, now {live_price:.2f})",
+                    )
+                    raise ValueError(
+                        f"price_drift_rejected: market moved {drift:.2%} since this order was "
+                        f"submitted for approval (limit {self._APPROVAL_MAX_PRICE_DRIFT_PCT:.0%}). "
+                        "Re-run the scan to generate a fresh order."
+                    )
         request = self.manual_approval.approve(request_id, str(payload.get("approval_reason", "")))
         if request.intent is None:
             raise ValueError("Approval request has no order intent")
@@ -2128,6 +2188,30 @@ class TradingRuntime:
                 if trace_side_effects:
                     self._record_trace_final_gate(intent, decision)
                 return decision
+            if opens_position:
+                # Audit fix M7: a LIVE entry priced without a real market tick is
+                # priced from fantasy (signal price may fall back to static base
+                # prices). Never open a real-money position on an unconfirmed price.
+                live_tick = self.live_feed.latest_tick(intent.instrument.symbol)
+                if live_tick is None or not getattr(live_tick, "last_price", 0) > 0:
+                    decision = FinalGateDecision.reject(
+                        "no_live_price_confirmation",
+                        stage=gate_phase,
+                        details={**common_details, "reason": "no live tick for symbol; refusing live entry"},
+                    )
+                    if trace_side_effects:
+                        self._record_trace_final_gate(intent, decision)
+                    return decision
+
+        # Audit fix M1: the scheduler calls this gate with no payload, which used
+        # to zero out daily_pnl and neuter the daily-loss check at the last line
+        # of defense. Compute today's P&L from session-start equity when the
+        # caller didn't supply it.
+        if "daily_pnl" in payload:
+            gate_daily_pnl = float(payload["daily_pnl"])
+        else:
+            session_start = float(getattr(self.scheduler, "_session_start_equity", 0.0) or 0.0) if hasattr(self, "scheduler") else 0.0
+            gate_daily_pnl = (snapshot.equity - session_start) if session_start > 0 else 0.0
 
         risk_decision = self.risk_engine.evaluate(
             intent=intent,
@@ -2136,7 +2220,7 @@ class TradingRuntime:
             execution_mode=self.execution_mode,
             live_armed=self.live_armed,
             kill_switch_active=self.kill_switch_active,
-            daily_pnl=float(payload.get("daily_pnl", 0.0)),
+            daily_pnl=gate_daily_pnl,
             strategy_daily_pnl=float(payload.get("strategy_daily_pnl", 0.0)),
             options_short_exposure=float(payload.get("options_short_exposure", 0.0)),
             gamma_exposure=float(payload.get("gamma_exposure", 0.0)),

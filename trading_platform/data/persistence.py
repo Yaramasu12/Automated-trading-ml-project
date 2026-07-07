@@ -822,6 +822,7 @@ class TradingDatabase:
                       expiry_date, partial_exit_enabled, created_at)
                      VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                      ON CONFLICT (plan_id) DO UPDATE SET
+                       quantity=EXCLUDED.quantity,
                        stop_loss_price=EXCLUDED.stop_loss_price,
                        target_price=EXCLUDED.target_price,
                        trailing_pct=EXCLUDED.trailing_pct"""
@@ -833,6 +834,7 @@ class TradingDatabase:
                       expiry_date, partial_exit_enabled, created_at)
                      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
                      ON CONFLICT(plan_id) DO UPDATE SET
+                       quantity=excluded.quantity,
                        stop_loss_price=excluded.stop_loss_price,
                        target_price=excluded.target_price,
                        trailing_pct=excluded.trailing_pct"""

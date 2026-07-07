@@ -66,6 +66,7 @@ class ExecutionScheduler:
         charges_model: ChargesModel | None = None,
         final_gate: FinalGateFn | None = None,
         max_queue_size: int = 500,
+        get_execution_mode: Callable[[], str] | None = None,
     ) -> None:
         self.broker = broker
         self.oms = oms
@@ -79,15 +80,18 @@ class ExecutionScheduler:
         self.event_bus = event_bus
         self.charges_model = charges_model
         self.final_gate = final_gate
+        self.get_execution_mode = get_execution_mode
         self._queue: asyncio.PriorityQueue[PrioritizedOrderIntent] = asyncio.PriorityQueue(
             maxsize=max_queue_size
         )
         self._running = False
         self._worker_task: asyncio.Task | None = None
+        self._tracking_tasks: set[asyncio.Task] = set()
         self._fill_callbacks: list[FillCallback] = []
         self.kill_switch_active = False
         self._processed = 0
         self._rejected = 0
+        self._unresolved_orders = 0
         # Equity at session open — used to compute intraday P&L for the daily-loss circuit breaker.
         # Set once by the runtime at startup; resets each morning via set_session_start_equity().
         self._session_start_equity: float = 0.0
@@ -168,9 +172,34 @@ class ExecutionScheduler:
                 self._rejected += 1
                 return intent.idempotency_key
 
+        # Stamp the execution mode the intent was created under (audit fix H3):
+        # a hot mode switch (PAPER↔LIVE) swaps the broker while intents may
+        # still sit in the queue; the worker rejects any intent whose stamped
+        # mode no longer matches so a paper decision can never hit the real broker.
+        if self.get_execution_mode is not None:
+            intent.signal.metadata.setdefault("execution_mode", self.get_execution_mode())
+
         seq = next(_seq_counter)
         item = PrioritizedOrderIntent(priority=int(intent.priority), seq=seq, intent=intent)
-        await self._queue.put(item)
+        if intent.priority < OrderPriority.ENTRY:
+            # Exit/protective orders must never block the ExitManager's monitor
+            # loop behind a full queue (audit fix M4). Fail fast — the caller
+            # keeps the plan armed and retries next poll cycle.
+            try:
+                self._queue.put_nowait(item)
+            except asyncio.QueueFull:
+                self.oms.append(
+                    event_type="queue_full_exit_deferred",
+                    order_id=intent.idempotency_key,
+                    idempotency_key=intent.idempotency_key,
+                    symbol=intent.instrument.symbol,
+                    rejection_reason="queue_full",
+                )
+                raise RuntimeError(
+                    f"execution queue full ({self._queue.maxsize}) — exit intent deferred"
+                )
+        else:
+            await self._queue.put(item)
 
         event_id = self.oms.append(
             event_type="intent_queued",
@@ -214,6 +243,12 @@ class ExecutionScheduler:
                 await self._worker_task
             except asyncio.CancelledError:
                 pass
+        for task in list(self._tracking_tasks):
+            task.cancel()
+            try:
+                await task
+            except (asyncio.CancelledError, Exception):
+                pass
         logger.info("ExecutionScheduler stopped")
 
     async def _worker(self) -> None:
@@ -236,6 +271,31 @@ class ExecutionScheduler:
 
     async def _process_intent(self, intent: OrderIntent) -> None:
         symbol = intent.instrument.symbol
+
+        # Audit fix H3: refuse intents created under a different execution mode.
+        stamped_mode = intent.signal.metadata.get("execution_mode")
+        current_mode = self.get_execution_mode() if self.get_execution_mode is not None else None
+        if stamped_mode is not None and current_mode is not None and stamped_mode != current_mode:
+            self.oms.append(
+                event_type="mode_mismatch_rejected",
+                order_id=intent.idempotency_key,
+                idempotency_key=intent.idempotency_key,
+                symbol=symbol,
+                strategy_name=intent.signal.strategy_name,
+                rejection_reason=f"intent created in {stamped_mode}, runtime now in {current_mode}",
+            )
+            self._publish(
+                "order.mode_mismatch_rejected.v1",
+                {"idempotency_key": intent.idempotency_key, "symbol": symbol,
+                 "stamped_mode": stamped_mode, "current_mode": current_mode},
+                "risk",
+            )
+            logger.error(
+                "Mode-mismatch rejection: intent %s (%s) stamped %s but runtime is %s",
+                intent.idempotency_key, symbol, stamped_mode, current_mode,
+            )
+            self._rejected += 1
+            return
 
         # Capital protection check (requires live portfolio snapshot)
         opens_position = bool(intent.signal.metadata.get("opens_position", True))
@@ -314,6 +374,19 @@ class ExecutionScheduler:
             symbol=symbol,
         )
         try:
+            # Audit fix H5: re-check idempotency under the instrument lock.
+            # The enqueue-time check races: two intents with the same key can
+            # both pass it before either reaches the broker. This check runs
+            # serialized per instrument, immediately before submission.
+            if self.oms.is_duplicate(intent.idempotency_key):
+                self.oms.append(
+                    event_type="duplicate_suppressed",
+                    order_id=intent.idempotency_key,
+                    idempotency_key=intent.idempotency_key,
+                    symbol=symbol,
+                    rejection_reason="already_submitted_to_broker",
+                )
+                return
             await self.rate_limiter.acquire()
             await self._submit_to_broker(intent)
         finally:
@@ -362,39 +435,44 @@ class ExecutionScheduler:
             "execution",
         )
 
-        if result.status == OrderStatus.FILLED and result.average_price is not None:
-            order.filled_at = now
-            charges = self.charges_model.estimate(intent, result.average_price) if self.charges_model else 0.0
-            trade = self.fill_processor.process(order, result.average_price, intent.quantity, charges, now)
+        if result.status == OrderStatus.FILLED and result.average_price is None:
+            # Audit fix M2: a "filled" order with no price cannot be booked —
+            # surfacing it beats silently dropping the fill from the ledger.
+            logger.critical(
+                "Broker reported FILLED with no average price for %s (%s) — fill NOT booked; reconcile manually",
+                intent.idempotency_key, intent.instrument.symbol,
+            )
+            self._unresolved_orders += 1
             self.oms.append(
-                event_type="broker_filled",
+                event_type="fill_price_missing",
                 order_id=intent.idempotency_key,
+                idempotency_key=intent.idempotency_key,
                 symbol=intent.instrument.symbol,
-                fill_price=result.average_price,
-                fill_qty=intent.quantity,
                 broker_order_id=result.broker_order_id,
-                metadata={
-                    "trace_id": intent.signal.metadata.get("trace_id", ""),
-                    "raw": getattr(result, "raw", None),
-                },
+                rejection_reason="filled_without_average_price",
+                metadata={"raw": getattr(result, "raw", None)},
             )
             self._publish(
-                "order.filled.v1",
-                {
-                    "idempotency_key": intent.idempotency_key,
-                    "symbol": intent.instrument.symbol,
-                    "fill_price": result.average_price,
-                    "fill_qty": intent.quantity,
-                    "broker_order_id": result.broker_order_id,
-                },
-                "fills",
+                "order.fill_unresolved.v1",
+                {"idempotency_key": intent.idempotency_key, "symbol": intent.instrument.symbol,
+                 "broker_order_id": result.broker_order_id, "reason": "filled_without_average_price"},
+                "execution",
             )
-            self._processed += 1
-            for cb in self._fill_callbacks:
-                try:
-                    await cb(trade, intent)
-                except Exception as exc:
-                    logger.exception("Fill callback error: %s", exc)
+            return
+
+        if result.status == OrderStatus.FILLED:
+            await self._handle_fill(intent, order, result.average_price, intent.quantity, now)
+
+        elif result.status in {OrderStatus.ACKNOWLEDGED, OrderStatus.SUBMITTED} and result.broker_order_id:
+            # Audit fix C1: a live order acknowledged by the broker is NOT done.
+            # Track it until a terminal state so the fill reaches the ledger,
+            # exit plans get registered, and risk accounting stays truthful.
+            task = asyncio.create_task(
+                self._track_order_until_terminal(intent, order),
+                name=f"track-order-{result.broker_order_id}",
+            )
+            self._tracking_tasks.add(task)
+            task.add_done_callback(self._tracking_tasks.discard)
 
         elif result.status == OrderStatus.REJECTED:
             msg = result.message if hasattr(result, "message") else "broker_rejected"
@@ -418,6 +496,159 @@ class ExecutionScheduler:
                 "execution",
             )
             self._rejected += 1
+
+    async def _handle_fill(
+        self,
+        intent: OrderIntent,
+        order: Order,
+        fill_price: float,
+        fill_qty: int,
+        now: datetime,
+        partial: bool = False,
+    ) -> None:
+        """Book a confirmed fill: ledger, OMS, event bus, fill callbacks."""
+        order.filled_at = now
+        charges = self.charges_model.estimate(intent, fill_price) if self.charges_model else 0.0
+        if partial and fill_qty < intent.quantity:
+            trade = self.fill_processor.process_partial(order, fill_price, fill_qty, charges, now)
+        else:
+            trade = self.fill_processor.process(order, fill_price, fill_qty, charges, now)
+        self.oms.append(
+            event_type="broker_filled",
+            order_id=intent.idempotency_key,
+            symbol=intent.instrument.symbol,
+            fill_price=fill_price,
+            fill_qty=fill_qty,
+            broker_order_id=order.broker_order_id,
+            metadata={
+                "trace_id": intent.signal.metadata.get("trace_id", ""),
+                "partial": partial,
+            },
+        )
+        self._publish(
+            "order.filled.v1",
+            {
+                "idempotency_key": intent.idempotency_key,
+                "symbol": intent.instrument.symbol,
+                "fill_price": fill_price,
+                "fill_qty": fill_qty,
+                "broker_order_id": order.broker_order_id,
+                "partial": partial,
+            },
+            "fills",
+        )
+        self._processed += 1
+        for cb in self._fill_callbacks:
+            try:
+                await cb(trade, intent)
+            except Exception as exc:
+                logger.exception("Fill callback error: %s", exc)
+
+    # Polling cadence for acknowledged (live) orders.
+    _TRACK_POLL_SECONDS = 2.0
+    _TRACK_TIMEOUT_SECONDS = 120.0
+
+    async def _track_order_until_terminal(self, intent: OrderIntent, order: Order) -> None:
+        """Poll the broker until an acknowledged order reaches a terminal state.
+
+        Audit fix C1+M3. Runs on the event loop (broker calls via executor), so
+        all bookkeeping happens exactly like an immediate fill. Outcomes:
+          - complete  → book full fill (avg price, full quantity)
+          - rejected/cancelled → OMS broker_rejected
+          - partial fill at timeout → book the filled portion (fix M3)
+          - unknown at timeout → CRITICAL alarm + fill_unresolved OMS event;
+            the position may exist at the broker — reconcile before trading on.
+        """
+        broker_order_id = order.broker_order_id or ""
+        symbol = intent.instrument.symbol
+        lot_size = max(1, int(getattr(intent.instrument, "lot_size", 1) or 1))
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + self._TRACK_TIMEOUT_SECONDS
+        last_status: dict | None = None
+
+        while loop.time() < deadline:
+            await asyncio.sleep(self._TRACK_POLL_SECONDS)
+            status_fn = getattr(self.broker, "order_status", None)
+            if status_fn is None:
+                break
+            try:
+                last_status = await loop.run_in_executor(None, status_fn, broker_order_id)
+            except Exception as exc:
+                logger.warning("Order-status poll error for %s: %s", broker_order_id, exc)
+                continue
+            if not last_status:
+                continue
+            state = str(last_status.get("state", "")).lower()
+            if state == "complete":
+                avg_price = float(last_status.get("average_price") or 0.0)
+                filled_units = int(last_status.get("filled_units") or 0)
+                fill_lots = (filled_units // lot_size) if filled_units else intent.quantity
+                if avg_price <= 0:
+                    break  # falls through to unresolved alarm below
+                await self._handle_fill(
+                    intent, order, avg_price, max(fill_lots, 1),
+                    datetime.now(timezone.utc),
+                    partial=fill_lots < intent.quantity,
+                )
+                return
+            if state in {"rejected", "cancelled"}:
+                self.oms.append(
+                    event_type="broker_rejected",
+                    order_id=intent.idempotency_key,
+                    symbol=symbol,
+                    broker_order_id=broker_order_id,
+                    rejection_reason=str(last_status.get("message", state)),
+                )
+                self._publish(
+                    "order.rejected.v1",
+                    {"idempotency_key": intent.idempotency_key, "symbol": symbol,
+                     "broker_order_id": broker_order_id, "reason": state},
+                    "execution",
+                )
+                self._rejected += 1
+                return
+            # still open/pending — keep polling
+
+        # Timeout (or no order_status support / bad data): book whatever filled.
+        filled_units = int((last_status or {}).get("filled_units") or 0)
+        fill_lots = filled_units // lot_size
+        avg_price = float((last_status or {}).get("average_price") or 0.0)
+        if fill_lots >= intent.quantity and avg_price > 0:
+            # Fully filled — we just learned it late. Book normally, no alarm.
+            await self._handle_fill(
+                intent, order, avg_price, intent.quantity, datetime.now(timezone.utc)
+            )
+            return
+        if fill_lots > 0 and avg_price > 0:
+            logger.critical(
+                "Order %s (%s) PARTIALLY filled %d/%d lot(s) at timeout — booking partial, remainder unresolved",
+                broker_order_id, symbol, fill_lots, intent.quantity,
+            )
+            await self._handle_fill(
+                intent, order, avg_price, fill_lots,
+                datetime.now(timezone.utc), partial=True,
+            )
+        logger.critical(
+            "Order %s (%s) fill status UNRESOLVED after %.0fs — position may exist at broker "
+            "without ledger/exit tracking. Run POST /execution/reconcile before further trading.",
+            broker_order_id, symbol, self._TRACK_TIMEOUT_SECONDS,
+        )
+        self._unresolved_orders += 1
+        self.oms.append(
+            event_type="fill_unresolved",
+            order_id=intent.idempotency_key,
+            idempotency_key=intent.idempotency_key,
+            symbol=symbol,
+            broker_order_id=broker_order_id,
+            rejection_reason="no_terminal_state_within_timeout",
+            metadata={"last_status": last_status},
+        )
+        self._publish(
+            "order.fill_unresolved.v1",
+            {"idempotency_key": intent.idempotency_key, "symbol": symbol,
+             "broker_order_id": broker_order_id},
+            "execution",
+        )
 
     def set_session_start_equity(self, equity: float) -> None:
         """Record equity at market open so intraday P&L can be computed for the daily-loss circuit breaker."""
@@ -451,6 +682,8 @@ class ExecutionScheduler:
             "queue_depth": self.queue_depth,
             "processed": self._processed,
             "rejected": self._rejected,
+            "unresolved_orders": self._unresolved_orders,
+            "tracking_orders": len(self._tracking_tasks),
             "kill_switch_active": self.kill_switch_active,
             "locked_symbols": self.lock_manager.locked_symbols,
         }
