@@ -40,6 +40,10 @@ services:
     # docker compose up. See .env.example for the full list of required variables.
     environment:
       - PYTHONUNBUFFERED=1
+      # Peak-memory controls (see agent scan loop). Concurrency 2 keeps the
+      # orchestrated scan within ~2 GB; raise on larger hosts for faster sweeps.
+      - AGENT_SCAN_CONCURRENCY=${AGENT_SCAN_CONCURRENCY:-2}
+      - MALLOC_ARENA_MAX=${MALLOC_ARENA_MAX:-2}
       - EXECUTION_MODE=${EXECUTION_MODE:-BACKTEST}
       - BROKER=${BROKER:-ANGEL_ONE}
       - LIVE_TRADING_ENABLED=${LIVE_TRADING_ENABLED:-false}

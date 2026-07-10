@@ -659,11 +659,15 @@ class TradingAgent:
         self._sync_marks_to_exit_manager()
         open_positions = set(self._runtime.portfolio.position_symbols())
 
-        # Phase 1: run all orchestrator pipelines concurrently (semaphore caps at 8).
-        # orchestrator.run() contains CPU-heavy nodes (neural, quantum, crew) that
-        # internally use asyncio.to_thread, so running 60 underlyings serially would
-        # take 60× as long and block the event loop between awaits.
-        _sem = asyncio.Semaphore(8)
+        # Phase 1: run all orchestrator pipelines concurrently. The semaphore caps
+        # how many heavy pipelines (neural/quantum/crew nodes, each using
+        # asyncio.to_thread) run at once — this is the peak-memory lever. On a
+        # 2 GB host, 8 concurrent pipelines OOM-kill the process; AGENT_SCAN_CONCURRENCY
+        # (default 2) keeps peak RSS safe while still sweeping every underlying each
+        # cycle (coverage is unchanged — only fewer run simultaneously). Raise it on
+        # a larger host for faster sweeps.
+        import os as _os
+        _sem = asyncio.Semaphore(max(1, int(_os.getenv("AGENT_SCAN_CONCURRENCY", "2"))))
 
         async def _scan_one(underlying: str) -> dict:
             partial: dict = {
