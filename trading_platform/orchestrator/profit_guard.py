@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import logging
 import math
+import os
 from collections import deque
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
@@ -53,7 +54,7 @@ logger = logging.getLogger(__name__)
 EV_THRESHOLD = 0.0015          # minimum expected value per trade, NET of costs (0.15%)
 KELLY_MIN = 0.015              # minimum Kelly fraction (1.5% of capital)
 KELLY_MAX = 0.25               # Kelly cap — never bet more than 25% Kelly
-SHARPE_MIN = 0.15              # minimum signal-to-noise ratio (edge / uncertainty)
+SHARPE_MIN = float(os.getenv("PROFIT_GUARD_SHARPE_MIN", "0.15"))  # min signal-to-noise (edge/uncertainty), tunable
 WIN_RATE_MIN = 0.38            # rolling win rate must stay above 38%
 CONSECUTIVE_LOSS_LIMIT = 4     # halt after 4 consecutive losses per underlying
 ROLLING_WINDOW = 20            # rolling window for win-rate calc

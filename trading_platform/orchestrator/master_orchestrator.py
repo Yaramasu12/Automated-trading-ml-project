@@ -63,6 +63,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import time
 from dataclasses import replace
 from datetime import datetime, timezone
@@ -80,10 +81,13 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# ── Routing thresholds ────────────────────────────────────────────────────────
-NEURAL_UNCERTAINTY_VETO = 0.75
-FUSION_PROCEED_THRESHOLD = 0.48
-CREW_CONSENSUS_MIN = 0.52
+# ── Routing thresholds (env-tunable) ──────────────────────────────────────────
+# These stack in series with the crew HOLD band and ProfitGuard: valid setups
+# (e.g. RELIANCE passing ProfitGuard with +EV) were still killed here by a hair,
+# so they are tunable. Raise the veto / lower the fusion floor to trade more.
+NEURAL_UNCERTAINTY_VETO = float(os.getenv("NEURAL_UNCERTAINTY_VETO", "0.75"))
+FUSION_PROCEED_THRESHOLD = float(os.getenv("FUSION_PROCEED_THRESHOLD", "0.48"))
+CREW_CONSENSUS_MIN = float(os.getenv("CREW_CONSENSUS_MIN", "0.52"))
 
 
 class MasterOrchestrator:

@@ -20,6 +20,7 @@ Pattern references from the 500-AI-Agents repo:
 from __future__ import annotations
 
 import logging
+import os
 import statistics
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
@@ -34,6 +35,9 @@ logger = logging.getLogger(__name__)
 DEBATE_THRESHOLD = 0.55        # consensus below this triggers debate
 MIN_CONFIDENCE = 0.45          # agents below this vote HOLD by convention
 CREW_PROCEED_THRESHOLD = 0.52  # crew consensus must exceed this to proceed
+# |score| below this band = HOLD (no directional conviction). Tunable via env:
+# lower it to trade weaker directional signals, raise it to be more selective.
+HOLD_BAND = float(os.getenv("CREW_HOLD_BAND", "0.10"))
 
 
 # ── Agent role definitions ────────────────────────────────────────────────────
@@ -323,7 +327,7 @@ class SpecialistCrew:
             return "HOLD", max(0.4, 1.0 - abs(score))
 
         abs_score = abs(score)
-        if abs_score < 0.10:
+        if abs_score < HOLD_BAND:
             return "HOLD", max(MIN_CONFIDENCE, 0.50 - abs_score)
         if abs_score < 0.25:
             # weak signal

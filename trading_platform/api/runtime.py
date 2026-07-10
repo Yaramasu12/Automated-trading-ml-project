@@ -1736,7 +1736,10 @@ class TradingRuntime:
     def _intent_from_payload(self, payload: dict) -> OrderIntent:
         symbol = str(payload["symbol"]).upper()
         instrument = self.instrument_master.get(symbol)
-        side = Side(str(payload.get("side", "BUY")).upper())
+        # Accept side as a Side enum (Pydantic model_dump passes the enum) or a
+        # raw string; str(Side.BUY) yields "Side.BUY", so normalise via .value.
+        _raw_side = payload.get("side", "BUY")
+        side = _raw_side if isinstance(_raw_side, Side) else Side(str(_raw_side).upper())
         price = float(payload.get("price") or payload.get("limit_price") or 0)
         if price <= 0:
             raise ValueError("price must be positive")

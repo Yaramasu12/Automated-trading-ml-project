@@ -44,6 +44,11 @@ services:
       # orchestrated scan within ~2 GB; raise on larger hosts for faster sweeps.
       - AGENT_SCAN_CONCURRENCY=${AGENT_SCAN_CONCURRENCY:-2}
       - MALLOC_ARENA_MAX=${MALLOC_ARENA_MAX:-2}
+      # Trade-gate tuning (lower = trades weaker signals, higher = more selective).
+      - CREW_HOLD_BAND=${CREW_HOLD_BAND:-0.05}
+      - PROFIT_GUARD_SHARPE_MIN=${PROFIT_GUARD_SHARPE_MIN:-0.10}
+      - NEURAL_UNCERTAINTY_VETO=${NEURAL_UNCERTAINTY_VETO:-0.82}
+      - FUSION_PROCEED_THRESHOLD=${FUSION_PROCEED_THRESHOLD:-0.42}
       - EXECUTION_MODE=${EXECUTION_MODE:-BACKTEST}
       - BROKER=${BROKER:-ANGEL_ONE}
       - LIVE_TRADING_ENABLED=${LIVE_TRADING_ENABLED:-false}
