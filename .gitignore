@@ -56,3 +56,6 @@ hft_frontend/vite.config.ts.timestamp-*.mjs
 
 # Historical candle cache downloaded by scripts/train_return_forecaster.py
 data/historical/
+
+# Server deployment secrets — only the .example is committed
+deploy/trading.env
