@@ -115,3 +115,20 @@ Oracle Cloud free tier, or buy a 1-yr t4g.small savings plan (~40% off).
 - Angel One secrets exist only in `/opt/trading/deploy/trading.env` (chmod 600).
 - This deployment stays in PAPER mode; going LIVE still requires every gate
   (arming, confirmation phrase, readiness) — nothing here weakens that.
+
+## Frontend dependency advisories (Dependabot)
+
+GitHub reports advisories on the frontend **dev/build** dependencies
+(`@babel/core`, `brace-expansion`, `esbuild`, `vite`, `vitest`, `vite-node`).
+None are exploitable in the deployed app: production serves the pre-built
+static bundle via nginx and never runs the Vite dev server, Vitest UI, or Babel
+at runtime. The critical/high items specifically require running the Vitest UI
+server or Vite dev server, which this deployment does not do.
+
+Remediation:
+- Safe, non-breaking (clears the two low-risk transitive advisories):
+  `cd hft_frontend && npm audit fix`
+- Full clear needs a **planned** major upgrade (Vite 5 → 8, Vitest 2 → 3). It is
+  NOT a drop-in: `vite-plugin-pwa` and `@vitejs/plugin-react` must move to
+  Vite-8-compatible versions first, or the production build hangs. Do this as a
+  deliberate migration with a build + test pass, not `npm audit fix --force`.
