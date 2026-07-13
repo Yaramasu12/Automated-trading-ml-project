@@ -51,8 +51,11 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 # ── Thresholds ────────────────────────────────────────────────────────────────
-EV_THRESHOLD = 0.0015          # minimum expected value per trade, NET of costs (0.15%)
-KELLY_MIN = 0.015              # minimum Kelly fraction (1.5% of capital)
+# EV_THRESHOLD is NET of the round-trip cost drag (already subtracted), so a
+# positive value here is a genuine after-cost edge, however thin. Tunable to
+# admit marginal-but-positive setups for data collection.
+EV_THRESHOLD = float(os.getenv("PROFIT_GUARD_EV_MIN", "0.0015"))   # min after-cost EV
+KELLY_MIN = float(os.getenv("PROFIT_GUARD_KELLY_MIN", "0.015"))    # min Kelly fraction
 KELLY_MAX = 0.25               # Kelly cap — never bet more than 25% Kelly
 SHARPE_MIN = float(os.getenv("PROFIT_GUARD_SHARPE_MIN", "0.15"))  # min signal-to-noise (edge/uncertainty), tunable
 WIN_RATE_MIN = 0.38            # rolling win rate must stay above 38%

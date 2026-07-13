@@ -88,6 +88,10 @@ logger = logging.getLogger(__name__)
 NEURAL_UNCERTAINTY_VETO = float(os.getenv("NEURAL_UNCERTAINTY_VETO", "0.75"))
 FUSION_PROCEED_THRESHOLD = float(os.getenv("FUSION_PROCEED_THRESHOLD", "0.48"))
 CREW_CONSENSUS_MIN = float(os.getenv("CREW_CONSENSUS_MIN", "0.52"))
+# Advisory crew: when true, a crew HOLD/low-consensus does not hard-veto — it is
+# replaced by a regime/news directional lean and ProfitGuard's EV gate decides.
+CREW_ADVISORY = os.getenv("CREW_ADVISORY", "false").lower() in ("1", "true", "yes")
+CREW_ADVISORY_MIN_LEAN = float(os.getenv("CREW_ADVISORY_MIN_LEAN", "0.10"))
 
 
 class MasterOrchestrator:
@@ -430,6 +434,20 @@ class MasterOrchestrator:
             logger.debug("AI council blend failed (non-critical): %s", e)
 
         if crew_action == "HOLD" or crew_consensus < CREW_CONSENSUS_MIN:
+            # Advisory mode (CREW_ADVISORY=true): the rule-based crew is a weak
+            # signal, so instead of hard-vetoing we assign a direction from the
+            # regime/news lean and let the downstream ProfitGuard EV gate be the
+            # real decider. Only proceed when the lean is non-trivial; a flat
+            # lean genuinely has no edge, so still hold.
+            if CREW_ADVISORY:
+                lean = _directional_lean(state)
+                if abs(lean) >= CREW_ADVISORY_MIN_LEAN:
+                    # NOTE: updates keys must be OrchestratorState fields — the
+                    # merge passes them as dataclass kwargs (unknown keys raise).
+                    result.updates["crew_action"] = "BUY" if lean > 0 else "SELL"
+                    result.updates["crew_confidence"] = round(max(crew_confidence, 0.45), 4)
+                    result.updates["crew_consensus"] = round(max(crew_consensus, CREW_CONSENSUS_MIN), 4)
+                    return NodeResult(updates=result.updates)
             reason = (
                 f"crew action=HOLD (no directional conviction, consensus={crew_consensus:.2f})"
                 if crew_action == "HOLD"

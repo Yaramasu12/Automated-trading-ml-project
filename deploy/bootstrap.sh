@@ -50,7 +50,13 @@ if ! tailscale status >/dev/null 2>&1; then
   exit 0
 fi
 
-# ── 4. Build & start the stack ────────────────────────────────────────────────
+# ── 4. Data ownership: the API container runs as uid 1000 (trader). Root-owned
+# SQLite files make every DB write fail ("attempt to write a readonly database")
+# and crash the trading agent — seen in production 2026-07-13. Enforce on every run.
+mkdir -p "$REPO_DIR/data" "$REPO_DIR/models" "$REPO_DIR/backtest_results"
+chown -R 1000:1000 "$REPO_DIR/data" "$REPO_DIR/models" "$REPO_DIR/backtest_results"
+
+# ── 5. Build & start the stack ────────────────────────────────────────────────
 echo "── Starting stack"
 cd "$REPO_DIR"
 set -a
