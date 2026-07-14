@@ -237,6 +237,17 @@ class TradingAgent:
                 pass
             return
 
+        # ── Feed watchdog: the tick feed does not survive container restarts
+        # (it lives in-process) and a dead feed silently starves every decision
+        # of prices. If a session is open and the feed is not running, restart
+        # it here instead of waiting for a human to notice.
+        try:
+            if not bool(self._runtime.live_feed.snapshot().get("running", False)):
+                self._runtime.start_live_feed()
+                self._log_activity("FEED WATCHDOG: live feed was down — restarted")
+        except Exception as _feed_err:
+            logger.warning("Feed watchdog error: %s", _feed_err)
+
         # Filter underlyings to whichever session(s) are active
         active_underlyings = []
         if equity_open:

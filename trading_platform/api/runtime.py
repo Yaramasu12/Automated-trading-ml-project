@@ -231,7 +231,13 @@ class TradingRuntime:
             portfolio=self.portfolio,
         )
         self.multi_leg_manager = MultiLegOrderManager(self.scheduler.enqueue)
-        self.square_off_manager = EmergencySquareOff(self.portfolio, self.scheduler.enqueue)
+        self.square_off_manager = EmergencySquareOff(
+            self.portfolio,
+            self.scheduler.enqueue,
+            # Exit pricing: live tick first, then exit-manager sticky mark.
+            # Never price a square-off at entry price when the market is known.
+            mark_source=self._best_mark_for_symbol,
+        )
 
         # Register fill callbacks
         self.scheduler.register_fill_callback(self._on_fill)
@@ -831,7 +837,7 @@ class TradingRuntime:
                 #    MarketRAG win rates + ProfitGuard rolling window ─────────
                 orch_state = (
                     self._orchestrator_trade_states.pop(symbol, None)
-                    or self._orchestrator_trade_states.pop(underlying if 'underlying' in dir() else "", None)
+                    or self._orchestrator_trade_states.pop(ctx.get("underlying", ""), None)
                 )
                 if orch_state is not None and hasattr(self, "master_orchestrator"):
                     import asyncio as _asyncio
@@ -2345,6 +2351,24 @@ class TradingRuntime:
             )
         except Exception as exc:
             note_swallowed("final_gate_rejection.save_risk_event", exc)
+
+    def _best_mark_for_symbol(self, symbol: str) -> float | None:
+        """Best available market price: live tick → exit-manager sticky mark.
+
+        Used by EmergencySquareOff so exits are priced at market, not entry.
+        Returns None when no genuine price exists (caller decides fallback).
+        """
+        try:
+            tick = self.live_feed.latest_tick(symbol)
+            if tick is not None and tick.last_price and tick.last_price > 0:
+                return float(tick.last_price)
+        except Exception as exc:
+            note_swallowed("best_mark.live_tick", exc)
+        try:
+            return self.exit_manager.current_mark(symbol)
+        except Exception as exc:
+            note_swallowed("best_mark.exit_manager", exc)
+        return None
 
     def _can_submit_live_orders(self) -> bool:
         return (

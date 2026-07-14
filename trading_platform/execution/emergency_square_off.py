@@ -24,9 +24,18 @@ class EmergencySquareOff:
     position matching the requested scope.
     """
 
-    def __init__(self, portfolio: PortfolioLedger, enqueue_fn: EnqueueFn) -> None:
+    def __init__(
+        self,
+        portfolio: PortfolioLedger,
+        enqueue_fn: EnqueueFn,
+        mark_source: Callable[[str], float | None] | None = None,
+    ) -> None:
         self._portfolio = portfolio
         self._enqueue = enqueue_fn
+        # Best-available market price per symbol (live tick → exit-manager mark).
+        # Without it exits were priced at pos.average_price — the ENTRY price —
+        # so square-offs booked fake zero P&L (or 0.00 for unpriced options).
+        self._mark_source = mark_source
 
     async def square_off(
         self,
@@ -74,7 +83,23 @@ class EmergencySquareOff:
 
         for pos in targets:
             close_side = Side.SELL if pos.quantity > 0 else Side.BUY
-            mark_price = pos.average_price
+            mark_price = 0.0
+            if self._mark_source is not None:
+                try:
+                    mark_price = float(self._mark_source(pos.instrument.symbol) or 0.0)
+                except Exception:
+                    mark_price = 0.0
+            if mark_price <= 0:
+                mark_price = pos.average_price
+            if mark_price <= 0:
+                # No market price AND no entry price — a fill would be pure
+                # fiction. Surface loudly instead of booking garbage.
+                errors.append(f"{pos.instrument.symbol}: no price available for square-off")
+                logger.critical(
+                    "EmergencySquareOff: NO price for %s — position left open, close manually",
+                    pos.instrument.symbol,
+                )
+                continue
             signal = Signal(
                 strategy_name=strategy_name or f"emergency_square_off:{scope.value.lower()}",
                 symbol=pos.instrument.symbol,
