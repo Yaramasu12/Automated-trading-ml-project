@@ -162,7 +162,13 @@ class MasterOrchestrator:
         ]
 
         # CPU-heavy nodes run in a thread pool so they don't block the event loop.
-        _HEAVY_NODES = frozenset({"specialist_crew", "neural_forecast", "quantum_portfolio"})
+        # market_intelligence is here because it does blocking Angel One candle
+        # I/O + rate-limit sleeps; run on the event loop it starved the API and
+        # tick feed (health checks spiking to ~7s). Threading it keeps the loop
+        # responsive during scans.
+        _HEAVY_NODES = frozenset(
+            {"market_intelligence", "specialist_crew", "neural_forecast", "quantum_portfolio"}
+        )
 
         for node_name, node_fn in pipeline:
             if state.halted:
