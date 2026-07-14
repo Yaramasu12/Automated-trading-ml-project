@@ -295,8 +295,58 @@ class DecisionPipeline:
     }
     # Minimum trading days the feature engine needs (LOOKBACK 20 + margin).
     _MIN_FEATURE_BARS = 22
-    # Seconds between Angel One candle calls (historical API rate limit ~3/s).
-    _CANDLE_CALL_SPACING = 0.6
+    # Seconds between Angel One candle calls. Generous on purpose: candles are
+    # fetched once per symbol per day (disk-cached across restarts), so a slow
+    # first sweep beats tripping the rate limiter and losing real data.
+    _CANDLE_CALL_SPACING = 1.2
+    # On-disk daily candle cache — survives container restarts, which used to
+    # refetch all ~63 symbols in a burst and trigger rate-limit lockouts.
+    _CSV_CACHE_DIR = "data/historical"
+
+    def _csv_cache_path(self, underlying: str):
+        from pathlib import Path
+        return Path(self._CSV_CACHE_DIR) / f"{underlying}__ONE_DAY_pipeline.csv"
+
+    def _load_bars_from_disk(self, underlying: str, today: date) -> list[MarketBar] | None:
+        """Return today's cached bars from disk, or None when absent/stale."""
+        try:
+            path = self._csv_cache_path(underlying)
+            if not path.exists():
+                return None
+            from zoneinfo import ZoneInfo
+            mtime_date = datetime.fromtimestamp(path.stat().st_mtime, ZoneInfo("Asia/Kolkata")).date()
+            if mtime_date != today:
+                return None
+            import csv as _csv
+            bars: list[MarketBar] = []
+            with path.open() as fh:
+                for row in _csv.DictReader(fh):
+                    bars.append(MarketBar(
+                        timestamp=datetime.fromisoformat(row["timestamp"]),
+                        symbol=underlying,
+                        open=float(row["open"]), high=float(row["high"]),
+                        low=float(row["low"]), close=float(row["close"]),
+                        volume=int(float(row["volume"] or 0)),
+                    ))
+            return bars if len(bars) >= self._MIN_FEATURE_BARS else None
+        except Exception as exc:
+            note_swallowed("pipeline.candle_csv_read", exc)
+            return None
+
+    def _save_bars_to_disk(self, underlying: str, bars: list[MarketBar]) -> None:
+        try:
+            from pathlib import Path
+            import csv as _csv
+            Path(self._CSV_CACHE_DIR).mkdir(parents=True, exist_ok=True)
+            path = self._csv_cache_path(underlying)
+            with path.open("w", newline="") as fh:
+                w = _csv.DictWriter(fh, fieldnames=["timestamp", "open", "high", "low", "close", "volume"])
+                w.writeheader()
+                for b in bars:
+                    w.writerow({"timestamp": b.timestamp.isoformat(), "open": b.open,
+                                "high": b.high, "low": b.low, "close": b.close, "volume": b.volume})
+        except Exception as exc:
+            note_swallowed("pipeline.candle_csv_write", exc)
 
     def _fetch_bars(self, underlying: str, start: date, days: int) -> list[MarketBar]:
         """Real Angel One daily bars (cached per day); synthetic only as a LOUD last resort.
@@ -321,9 +371,17 @@ class DecisionPipeline:
                 if cached is not None and cached[0] == today_ist and len(cached[1]) >= self._MIN_FEATURE_BARS:
                     bars = cached[1]
                     return bars[-min_bars:] if len(bars) > min_bars else list(bars)
+                disk_bars = self._load_bars_from_disk(underlying, today_ist)
+                if disk_bars is not None:
+                    self._real_bars_cache[underlying] = (today_ist, disk_bars)
+                    return disk_bars[-min_bars:] if len(disk_bars) > min_bars else list(disk_bars)
                 if time.monotonic() >= self._candle_cooldown_until:
                     try:
-                        instrument = self.instrument_master.get(underlying)
+                        try:
+                            instrument = self.instrument_master.get(underlying)
+                        except Exception:
+                            # Cash equities live under SYMBOL-EQ in the Angel master
+                            instrument = self.instrument_master.get(f"{underlying}-EQ")
                         index_override = self._INDEX_CANDLE_TOKENS.get(underlying.upper())
                         if index_override is not None:
                             from trading_platform.domain.enums import Exchange as _Exch
@@ -343,6 +401,7 @@ class DecisionPipeline:
                         bars = self.history_provider.get_candles(instrument, from_dt, to_dt, interval="ONE_DAY")
                         if len(bars) >= self._MIN_FEATURE_BARS:
                             self._real_bars_cache[underlying] = (today_ist, bars)
+                            self._save_bars_to_disk(underlying, bars)
                             if underlying not in self._bars_source_logged:
                                 self._bars_source_logged.add(underlying)
                                 logger.info(

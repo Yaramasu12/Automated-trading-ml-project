@@ -32,7 +32,10 @@ class AngelOneHistoricalDataProvider:
             "fromdate": from_dt.strftime("%Y-%m-%d %H:%M"),
             "todate": to_dt.strftime("%Y-%m-%d %H:%M"),
         }
-        # Try with cached session first; on any failure re-authenticate once.
+        # Try with cached session first; re-authenticate once ONLY for auth-like
+        # failures. Rate-limit responses must NOT reset the session: the login
+        # endpoint has a far stricter quota, so re-login on every rate-limited
+        # candle call snowballs into a full API lockout (observed 2026-07-14).
         last_response = None
         last_exc: Exception | None = None
         for attempt in range(2):
@@ -45,6 +48,9 @@ class AngelOneHistoricalDataProvider:
                 last_exc = exc
             if last_response and last_response.get("status"):
                 return [_parse_candle(instrument.symbol, candle) for candle in last_response.get("data") or []]
+            err_text = str(last_exc or last_response or "").lower()
+            if "access rate" in err_text or "exceeding" in err_text:
+                raise RuntimeError(f"rate_limited: {str(last_exc or last_response)[:100]}")
             # Session likely expired — force re-login on next attempt
             self._smart_api = None
         if last_exc is not None:
