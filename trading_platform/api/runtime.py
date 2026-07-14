@@ -2139,6 +2139,20 @@ class TradingRuntime:
             "protection": protection,
         }
 
+        # ALL MODES: an entry without a positive price has no price source
+        # (e.g. option premium unavailable). Filling at 0.00 pollutes the
+        # ledger, fabricates P&L and can cascade into circuit breakers —
+        # 50 zero-price paper fills observed 2026-07-14 before this gate.
+        if opens_position and (intent.limit_price or intent.signal.price or 0) <= 0:
+            decision = FinalGateDecision.reject(
+                "no_valid_price",
+                stage=gate_phase,
+                details={**common_details, "reason": "entry price is zero/unknown (premium source missing)"},
+            )
+            if trace_side_effects:
+                self._record_trace_final_gate(intent, decision)
+            return decision
+
         if self.execution_mode.value.startswith("LIVE"):
             if not self.live_armed:
                 decision = FinalGateDecision.reject(

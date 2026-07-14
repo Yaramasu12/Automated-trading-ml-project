@@ -133,6 +133,10 @@ class DecisionPipeline:
         self._real_bars_cache: dict[str, tuple[date, list[MarketBar]]] = {}
         self._real_bars_lock = threading.Lock()
         self._candle_last_call = 0.0
+        # When Angel One answers "exceeding access rate", stop calling for a
+        # cooldown window — repeated retries trigger re-login storms that make
+        # the lockout worse and starve every symbol of real data.
+        self._candle_cooldown_until = 0.0
         self._bars_source_logged: set[str] = set()
 
     def scan(
@@ -292,7 +296,7 @@ class DecisionPipeline:
     # Minimum trading days the feature engine needs (LOOKBACK 20 + margin).
     _MIN_FEATURE_BARS = 22
     # Seconds between Angel One candle calls (historical API rate limit ~3/s).
-    _CANDLE_CALL_SPACING = 0.4
+    _CANDLE_CALL_SPACING = 0.6
 
     def _fetch_bars(self, underlying: str, start: date, days: int) -> list[MarketBar]:
         """Real Angel One daily bars (cached per day); synthetic only as a LOUD last resort.
@@ -307,49 +311,60 @@ class DecisionPipeline:
         today_ist = now_ist().date()
 
         if self.history_provider is not None:
+            # The whole fetch is serialized under one lock: Angel One's candle
+            # API rate-limits aggressively, and two in-flight calls (plus the
+            # re-login each failure triggers) escalate into a full lockout.
+            # Real fetches happen once per symbol per day, so serialization
+            # costs ~0.5s per symbol on the first sweep only.
             with self._real_bars_lock:
                 cached = self._real_bars_cache.get(underlying)
                 if cached is not None and cached[0] == today_ist and len(cached[1]) >= self._MIN_FEATURE_BARS:
                     bars = cached[1]
                     return bars[-min_bars:] if len(bars) > min_bars else list(bars)
-            try:
-                instrument = self.instrument_master.get(underlying)
-                index_override = self._INDEX_CANDLE_TOKENS.get(underlying.upper())
-                if index_override is not None:
-                    from trading_platform.domain.enums import Exchange as _Exch
-                    instrument = dataclasses.replace(
-                        instrument, token=index_override[0], exchange=_Exch(index_override[1])
-                    )
-                from datetime import datetime as _dt, timedelta as _td
-                # Window sized in CALENDAR days to guarantee >= min_bars TRADING
-                # days (~0.69 trading days per calendar day, plus holiday slack).
-                fetch_start = today_ist - _td(days=int(min_bars * 1.8) + 12)
-                from_dt = _dt.combine(fetch_start, _dt.min.time())
-                to_dt = _dt.combine(today_ist, _dt.max.time().replace(microsecond=0))
-                # Rate-limit spacing across concurrent scan threads.
-                with self._real_bars_lock:
-                    wait = self._CANDLE_CALL_SPACING - (time.monotonic() - self._candle_last_call)
-                    if wait > 0:
-                        time.sleep(wait)
-                    self._candle_last_call = time.monotonic()
-                bars = self.history_provider.get_candles(instrument, from_dt, to_dt, interval="ONE_DAY")
-                if len(bars) >= self._MIN_FEATURE_BARS:
-                    with self._real_bars_lock:
-                        self._real_bars_cache[underlying] = (today_ist, bars)
-                    if underlying not in self._bars_source_logged:
-                        self._bars_source_logged.add(underlying)
-                        logger.info(
-                            "REAL market data for %s: %d daily bars, last close %.2f",
-                            underlying, len(bars), bars[-1].close,
+                if time.monotonic() >= self._candle_cooldown_until:
+                    try:
+                        instrument = self.instrument_master.get(underlying)
+                        index_override = self._INDEX_CANDLE_TOKENS.get(underlying.upper())
+                        if index_override is not None:
+                            from trading_platform.domain.enums import Exchange as _Exch
+                            instrument = dataclasses.replace(
+                                instrument, token=index_override[0], exchange=_Exch(index_override[1])
+                            )
+                        from datetime import datetime as _dt, timedelta as _td
+                        # Window sized in CALENDAR days to guarantee >= min_bars
+                        # TRADING days (~0.69 trading days/calendar day + slack).
+                        fetch_start = today_ist - _td(days=int(min_bars * 1.8) + 12)
+                        from_dt = _dt.combine(fetch_start, _dt.min.time())
+                        to_dt = _dt.combine(today_ist, _dt.max.time().replace(microsecond=0))
+                        wait = self._CANDLE_CALL_SPACING - (time.monotonic() - self._candle_last_call)
+                        if wait > 0:
+                            time.sleep(wait)
+                        self._candle_last_call = time.monotonic()
+                        bars = self.history_provider.get_candles(instrument, from_dt, to_dt, interval="ONE_DAY")
+                        if len(bars) >= self._MIN_FEATURE_BARS:
+                            self._real_bars_cache[underlying] = (today_ist, bars)
+                            if underlying not in self._bars_source_logged:
+                                self._bars_source_logged.add(underlying)
+                                logger.info(
+                                    "REAL market data for %s: %d daily bars, last close %.2f",
+                                    underlying, len(bars), bars[-1].close,
+                                )
+                            return bars[-min_bars:] if len(bars) > min_bars else list(bars)
+                        raise RuntimeError(
+                            f"only {len(bars)} candles returned (need >= {self._MIN_FEATURE_BARS})"
                         )
-                    return bars[-min_bars:] if len(bars) > min_bars else list(bars)
-                raise RuntimeError(f"only {len(bars)} candles returned (need >= {self._MIN_FEATURE_BARS})")
-            except Exception as exc:
-                note_swallowed("pipeline.real_bars_fallback", exc)
-                logger.warning(
-                    "SYNTHETIC-DATA FALLBACK for %s (%s) — decisions for this symbol are NOT "
-                    "based on the real market this scan", underlying, str(exc)[:120],
-                )
+                    except Exception as exc:
+                        msg = str(exc)
+                        if "access rate" in msg.lower() or "exceeding" in msg.lower():
+                            self._candle_cooldown_until = time.monotonic() + 60.0
+                            logger.warning(
+                                "Angel One candle rate-limit hit — backing off ALL candle calls 60s"
+                            )
+                        note_swallowed("pipeline.real_bars_fallback", exc)
+                        logger.warning(
+                            "SYNTHETIC-DATA FALLBACK for %s (%s) — decisions for this symbol are NOT "
+                            "based on the real market this scan", underlying, msg[:120],
+                        )
         return self.data_provider.generate_daily_bars(underlying, start, min_bars, self._base_price(underlying))
 
     # Minimum signal confidence to proceed to risk evaluation

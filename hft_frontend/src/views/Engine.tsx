@@ -727,17 +727,19 @@ export function Engine() {
               columns={[
                 { key: 'order_id', label: 'Order ID', render: (v) => <span className="text-xs font-mono text-gray-400">{String(v).slice(0, 12)}</span> },
                 { key: 'symbol', label: 'Symbol', render: (v) => <span className="text-brand-blue">{String(v)}</span> },
-                { key: 'event_type', label: 'Type' },
-                { key: 'status', label: 'Status', render: (v) => (
+                // OMS events carry event_type + occurred_at; there is no
+                // separate "status" field — the event type IS the status.
+                { key: 'event_type', label: 'Event', render: (v) => (
                   <Tag
                     label={String(v)}
-                    color={String(v) === 'FILLED' ? 'green' : String(v) === 'REJECTED' ? 'red' : 'yellow'}
+                    color={String(v).includes('filled') || String(v).includes('approved') ? 'green'
+                      : String(v).includes('reject') ? 'red' : 'yellow'}
                   />
                 )},
-                { key: 'timestamp', label: 'Time', render: (v) => <span className="text-xs text-gray-500">{fmtDateTime(String(v))}</span> },
+                { key: 'occurred_at', label: 'Time', render: (v) => <span className="text-xs text-gray-500">{fmtDateTime(String(v))}</span> },
               ]}
               rows={omsEvents.slice(0, 20)}
-              keyFn={(r) => String(r.order_id ?? Math.random())}
+              keyFn={(r) => String(r.event_id ?? `${r.order_id}-${r.event_type}-${r.occurred_at}`)}
               emptyMessage="No OMS events"
               compact
             />
@@ -749,7 +751,7 @@ export function Engine() {
               columns={[
                 { key: 'symbol', label: 'Symbol', render: (v) => <span className="text-brand-blue">{String(v)}</span> },
                 { key: 'reason', label: 'Reason' },
-                { key: 'timestamp', label: 'Time', render: (v) => <span className="text-xs text-gray-500">{fmtDateTime(String(v))}</span> },
+                { key: 'occurred_at', label: 'Time', render: (v) => <span className="text-xs text-gray-500">{fmtDateTime(String(v))}</span> },
               ]}
               rows={riskRejections.slice(0, 20)}
               keyFn={(r) => String(r.id ?? Math.random())}

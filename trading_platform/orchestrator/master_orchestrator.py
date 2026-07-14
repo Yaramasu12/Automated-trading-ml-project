@@ -81,6 +81,9 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+from zoneinfo import ZoneInfo
+_IST = ZoneInfo("Asia/Kolkata")
+
 # ── Routing thresholds (env-tunable) ──────────────────────────────────────────
 # These stack in series with the crew HOLD band and ProfitGuard: valid setups
 # (e.g. RELIANCE passing ProfitGuard with +EV) were still killed here by a hair,
@@ -235,31 +238,56 @@ class MasterOrchestrator:
     # ── Market-data population (feeds the crew/neural with real features) ──────
 
     def _ensure_market_features(self, underlying: str, regime: str) -> dict:
-        """Return market features for `underlying`, computing & persisting them
-        when the feature store has none yet.
+        """Fresh market features for `underlying`, recomputed EVERY scan.
 
-        Replicates what the old decision pipeline did (fetch candles →
-        FeatureEngine.compute → feature_store.append) so the autonomous loop is
-        no longer blind. Cheap on subsequent scans: once a snapshot is stored,
-        get_features() returns it and no re-fetch happens.
+        Bars come from the decision pipeline's real-candle path (one Angel One
+        API call per symbol per day, cached, rate-limited) and the last bar is
+        overridden with the live tick — so regime/EV inputs move with the
+        actual market intraday.
+
+        The previous version returned the first stored snapshot forever
+        ("no re-fetch"), which froze every downstream EV on stale — originally
+        synthetic — data: the frozen-EV bug. One snapshot per day is persisted
+        to the feature store for history/training.
         """
         rt = self._runtime
+        today = datetime.now(timezone.utc).astimezone(_IST).date()
+        bars: list = []
         try:
-            existing = rt.feature_store.get_features(underlying)
-            if existing:
-                return existing
-        except Exception:
-            return {}
-
-        bars = self._fetch_recent_bars(underlying)
+            from datetime import timedelta as _td
+            bars = rt.decision_pipeline._fetch_bars(underlying, today - _td(days=60), 30)
+        except Exception as exc:
+            note_swallowed("orchestrator.ensure_features_bars", exc)
         if not bars or len(bars) < 5:
-            return {}
+            try:
+                return rt.feature_store.get_features(underlying) or {}
+            except Exception:
+                return {}
+        # Live-tick override on the last bar (mirrors DecisionPipeline.scan).
+        try:
+            tick = rt.live_feed.latest_tick(underlying) if rt.live_feed is not None else None
+            if tick is not None and tick.last_price > 0:
+                from trading_platform.domain.models import MarketBar as _MB
+                last = bars[-1]
+                bars = list(bars[:-1]) + [_MB(
+                    timestamp=last.timestamp,
+                    symbol=last.symbol,
+                    open=last.open,
+                    high=max(last.high, tick.last_price),
+                    low=min(last.low, tick.last_price),
+                    close=tick.last_price,
+                    volume=last.volume,
+                )]
+        except Exception as exc:
+            note_swallowed("orchestrator.ensure_features_tick", exc)
         try:
             from dataclasses import asdict
             from trading_platform.ai.features import FeatureEngine
             snapshot = FeatureEngine().compute(bars)
             try:
-                rt.feature_store.append(underlying, datetime.now(timezone.utc).date(), snapshot, regime)
+                existing = rt.feature_store.get_features(underlying)
+                if not existing or str(existing.get("date", "")) != today.isoformat():
+                    rt.feature_store.append(underlying, today, snapshot, regime)
             except Exception as exc:
                 logger.debug("feature_store.append failed for %s: %s", underlying, exc)
             return asdict(snapshot)
