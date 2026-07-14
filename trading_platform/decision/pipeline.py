@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import dataclasses
 import logging
+import threading
+import time
 from dataclasses import asdict, dataclass
 from datetime import date, datetime, timezone
 from typing import TYPE_CHECKING
@@ -124,6 +127,13 @@ class DecisionPipeline:
         self.regime_agent = MarketRegimeAgent()
         self.strategy_agent = StrategySelectionAgent()
         self.volatility_forecaster = VolatilityForecaster()
+        # Real-candle daily cache: {underlying: (ist_date_fetched, bars)}. One
+        # Angel One API call per symbol per day; the last bar is overridden with
+        # the live tick at scan time, so intraday freshness is preserved.
+        self._real_bars_cache: dict[str, tuple[date, list[MarketBar]]] = {}
+        self._real_bars_lock = threading.Lock()
+        self._candle_last_call = 0.0
+        self._bars_source_logged: set[str] = set()
 
     def scan(
         self,
@@ -267,21 +277,79 @@ class DecisionPipeline:
             logger.debug("get_regime failed for %s: %s", underlying, exc)
             return {"regime": "unknown", "confidence": 0.5}
 
+    # Angel One candle-API tokens for index SPOT history. The WebSocket feed
+    # uses the exchange index tokens (26000, …) but getCandleData needs the
+    # scrip-master AMXIDX tokens — with the feed tokens it returns 0 candles,
+    # which used to silently flip every index to synthetic data.
+    _INDEX_CANDLE_TOKENS: dict[str, tuple[str, str]] = {
+        "NIFTY":      ("99926000", "NSE"),
+        "BANKNIFTY":  ("99926009", "NSE"),
+        "FINNIFTY":   ("99926037", "NSE"),
+        "MIDCPNIFTY": ("99926074", "NSE"),
+        "SENSEX":     ("99919000", "BSE"),
+        "BANKEX":     ("99919012", "BSE"),
+    }
+    # Minimum trading days the feature engine needs (LOOKBACK 20 + margin).
+    _MIN_FEATURE_BARS = 22
+    # Seconds between Angel One candle calls (historical API rate limit ~3/s).
+    _CANDLE_CALL_SPACING = 0.4
+
     def _fetch_bars(self, underlying: str, start: date, days: int) -> list[MarketBar]:
-        """Fetch historical bars from Angel One; fall back to synthetic if unavailable."""
-        min_bars = max(days, 22)
+        """Real Angel One daily bars (cached per day); synthetic only as a LOUD last resort.
+
+        This function is the single source of the platform's market view — the
+        features, regime, win-probability and EV all derive from these bars. A
+        silent synthetic fallback here means every downstream decision is made
+        on fake data, so real data is cached per day and failures are logged at
+        WARNING with note_swallowed (surfaced in health output).
+        """
+        min_bars = max(days, self._MIN_FEATURE_BARS)
+        today_ist = now_ist().date()
+
         if self.history_provider is not None:
+            with self._real_bars_lock:
+                cached = self._real_bars_cache.get(underlying)
+                if cached is not None and cached[0] == today_ist and len(cached[1]) >= self._MIN_FEATURE_BARS:
+                    bars = cached[1]
+                    return bars[-min_bars:] if len(bars) > min_bars else list(bars)
             try:
                 instrument = self.instrument_master.get(underlying)
-                from datetime import datetime as _dt
-                from_dt = _dt.combine(start, _dt.min.time())
-                to_dt = _dt.combine(now_ist().date(), _dt.min.time())
+                index_override = self._INDEX_CANDLE_TOKENS.get(underlying.upper())
+                if index_override is not None:
+                    from trading_platform.domain.enums import Exchange as _Exch
+                    instrument = dataclasses.replace(
+                        instrument, token=index_override[0], exchange=_Exch(index_override[1])
+                    )
+                from datetime import datetime as _dt, timedelta as _td
+                # Window sized in CALENDAR days to guarantee >= min_bars TRADING
+                # days (~0.69 trading days per calendar day, plus holiday slack).
+                fetch_start = today_ist - _td(days=int(min_bars * 1.8) + 12)
+                from_dt = _dt.combine(fetch_start, _dt.min.time())
+                to_dt = _dt.combine(today_ist, _dt.max.time().replace(microsecond=0))
+                # Rate-limit spacing across concurrent scan threads.
+                with self._real_bars_lock:
+                    wait = self._CANDLE_CALL_SPACING - (time.monotonic() - self._candle_last_call)
+                    if wait > 0:
+                        time.sleep(wait)
+                    self._candle_last_call = time.monotonic()
                 bars = self.history_provider.get_candles(instrument, from_dt, to_dt, interval="ONE_DAY")
-                if len(bars) >= min_bars:
-                    return bars[-min_bars:]
-                logger.debug("Angel One returned only %d bars for %s, using synthetic", len(bars), underlying)
+                if len(bars) >= self._MIN_FEATURE_BARS:
+                    with self._real_bars_lock:
+                        self._real_bars_cache[underlying] = (today_ist, bars)
+                    if underlying not in self._bars_source_logged:
+                        self._bars_source_logged.add(underlying)
+                        logger.info(
+                            "REAL market data for %s: %d daily bars, last close %.2f",
+                            underlying, len(bars), bars[-1].close,
+                        )
+                    return bars[-min_bars:] if len(bars) > min_bars else list(bars)
+                raise RuntimeError(f"only {len(bars)} candles returned (need >= {self._MIN_FEATURE_BARS})")
             except Exception as exc:
-                logger.debug("Angel One historical fetch failed for %s: %s — using synthetic", underlying, exc)
+                note_swallowed("pipeline.real_bars_fallback", exc)
+                logger.warning(
+                    "SYNTHETIC-DATA FALLBACK for %s (%s) — decisions for this symbol are NOT "
+                    "based on the real market this scan", underlying, str(exc)[:120],
+                )
         return self.data_provider.generate_daily_bars(underlying, start, min_bars, self._base_price(underlying))
 
     # Minimum signal confidence to proceed to risk evaluation

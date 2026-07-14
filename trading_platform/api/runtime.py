@@ -1077,7 +1077,15 @@ class TradingRuntime:
                 except Exception as exc:
                     note_swallowed("restore_state.delete_stale_exit_plans", exc)
                 continue
-            expiry = date.fromisoformat(plan_data["expiry_date"]) if plan_data.get("expiry_date") else None
+            # SQLite returns DATE columns as ISO strings; Postgres returns date
+            # objects. Handle both — a str-only parse crash-loops startup.
+            _raw_expiry = plan_data.get("expiry_date")
+            if not _raw_expiry:
+                expiry = None
+            elif isinstance(_raw_expiry, date):
+                expiry = _raw_expiry
+            else:
+                expiry = date.fromisoformat(str(_raw_expiry)[:10])
             plan = ExitPlan(
                 plan_id=plan_data["plan_id"],
                 instrument=instrument,
