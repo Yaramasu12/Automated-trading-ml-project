@@ -754,16 +754,29 @@ class TradingAgent:
             }
             async with _sem:
                 try:
-                    symbol_universe = [underlying]
+                    # Tradable instruments for THIS underlying only — its real
+                    # near-month future and its cash/equity. The old code matched
+                    # by 4-char name prefix, which traded unrelated instruments
+                    # (GOLD -> GOLDBEES/GOLDTECH ETFs, SILVER -> SILVERBND, etc.).
+                    symbol_universe = []
+                    im = self._runtime.instrument_master
+                    today = now_ist().date()
                     try:
-                        extra = [
-                            s for s in self._runtime.instrument_master.instruments
-                            if s.startswith(underlying[:4])
-                        ][:8]
-                        if extra:
-                            symbol_universe = list(dict.fromkeys([underlying] + extra))
+                        fut = im.select_future(underlying, today)
+                        if fut:
+                            symbol_universe.append(fut.symbol)
                     except Exception:
                         pass
+                    for cash in (underlying, f"{underlying}-EQ"):
+                        try:
+                            inst = im.get(cash)
+                            if inst and inst.symbol not in symbol_universe:
+                                symbol_universe.append(inst.symbol)
+                                break
+                        except Exception:
+                            continue
+                    if not symbol_universe:
+                        symbol_universe = [underlying]
 
                     state = await orchestrator.run(
                         underlying=underlying,
