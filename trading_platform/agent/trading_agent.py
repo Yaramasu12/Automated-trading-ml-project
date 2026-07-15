@@ -485,19 +485,31 @@ class TradingAgent:
             logger.warning("Agent: instrument %s not found in master — skipping", symbol)
             return False
 
-        # Guard: if the current mark price is significantly below the signal price,
-        # the position would trigger a stop-loss immediately after entry.
-        # This catches stale/synthetic prices that diverge from real market prices.
+        # Resolve the REAL entry price. The orchestrator's execution_plan node
+        # emits candidates with price=0.0 (placeholder), so without this every
+        # orchestrated order was rejected by the zero-price gate (no_valid_price).
+        # Live tick → Black-Scholes premium (options) → last real bar close.
+        from trading_platform.domain.enums import InstrumentType
+        is_option = instrument.instrument_type == InstrumentType.OPTION
         signal_price = float(sig_d.get("price", 0) or 0)
-        if signal_price > 0:
+        if signal_price <= 0:
+            signal_price = self._resolve_entry_price(instrument, symbol)
+            if signal_price <= 0:
+                self._log_activity(f"SKIP {symbol}: could not resolve a real entry price")
+                return False
+
+        # Stale-price guard: only meaningful for equity/index/futures, where the
+        # signal price and the underlying mark are the same scale. Skip for
+        # options — an option premium (~50) vs the underlying spot (~24000) is
+        # not a valid comparison and would wrongly reject every option.
+        if signal_price > 0 and not is_option:
             current_mark = self._runtime.exit_manager.current_mark(symbol)
             if current_mark is None:
-                # No mark at all — try the underlying name too
                 underlying = inst_d.get("underlying") or symbol
                 current_mark = self._runtime.exit_manager.current_mark(underlying)
             if current_mark and current_mark > 0:
                 entry_mark_gap = (signal_price - current_mark) / signal_price
-                if abs(entry_mark_gap) > 0.05:  # signal price differs >5% from current mark
+                if abs(entry_mark_gap) > 0.05:
                     self._log_activity(
                         f"SKIP {symbol}: signal {signal_price:.0f} vs mark {current_mark:.0f} "
                         f"({entry_mark_gap:.1%} gap) — would immediate-stop"
@@ -518,7 +530,7 @@ class TradingAgent:
             symbol=symbol,
             side=Side(sig_d.get("side", "BUY")),
             confidence=float(sig_d.get("confidence", 0.5)),
-            price=float(sig_d.get("price", 0)),
+            price=signal_price,
             reason=sig_d.get("reason", "agent_auto"),
             created_at=datetime.now(timezone.utc),
             metadata=metadata,
@@ -533,6 +545,61 @@ class TradingAgent:
         )
         result = await self._runtime._enqueue_intent_with_controls(intent)
         return result.get("enqueued", False)
+
+    def _spot_for(self, underlying: str) -> float:
+        """Best spot/last price for an underlying: live tick → last real bar close."""
+        rt = self._runtime
+        try:
+            tick = rt.live_feed.latest_tick(underlying)
+            if tick and getattr(tick, "last_price", 0) and tick.last_price > 0:
+                return float(tick.last_price)
+        except Exception:
+            pass
+        try:
+            bars = rt.decision_pipeline._fetch_bars(underlying, date.today() - timedelta(days=10), 5)
+            if bars:
+                return float(bars[-1].close)
+        except Exception:
+            pass
+        return 0.0
+
+    def _resolve_entry_price(self, instrument, symbol: str) -> float:
+        """Resolve a real entry price for an order whose candidate price is 0.
+
+        Priority: live tick for the exact symbol (equity/futures/subscribed
+        options) → Black-Scholes premium for options → underlying last close.
+        """
+        from trading_platform.domain.enums import InstrumentType
+        rt = self._runtime
+        # 1. Live tick for the exact tradable symbol.
+        try:
+            tick = rt.live_feed.latest_tick(symbol)
+            if tick and getattr(tick, "last_price", 0) and tick.last_price > 0:
+                return float(tick.last_price)
+        except Exception:
+            pass
+        underlying = getattr(instrument, "underlying", None) or symbol
+        # 2. Options with no live premium: theoretical Black-Scholes value.
+        if (instrument.instrument_type == InstrumentType.OPTION
+                and getattr(instrument, "strike", 0) and getattr(instrument, "expiry", None)
+                and getattr(instrument, "option_type", None)):
+            spot = self._spot_for(underlying)
+            if spot > 0:
+                try:
+                    from trading_platform.derivatives.engine import ImpliedVolatilityCalculator
+                    t = max((instrument.expiry - date.today()).days, 1) / 365.0
+                    # Default IV by underlying class; index vols run lower than single stocks.
+                    sigma = 0.15 if underlying in {"NIFTY", "BANKNIFTY", "FINNIFTY", "SENSEX"} else 0.28
+                    premium = ImpliedVolatilityCalculator()._bs_price(
+                        spot, float(instrument.strike), t, sigma, instrument.option_type, 0.065
+                    )
+                    if premium and premium > 0:
+                        return float(premium)
+                except Exception as exc:
+                    logger.debug("option BS pricing failed for %s: %s", symbol, exc)
+            return 0.0
+        # 3. Equity / index / futures: underlying last price.
+        return self._spot_for(underlying)
 
     # ──────────────────────────────────────────────────────────────── helpers
 
