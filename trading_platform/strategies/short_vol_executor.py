@@ -13,8 +13,10 @@ real order flows.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
+import time
 from datetime import date, datetime, timedelta
 from typing import Any
 
@@ -38,6 +40,11 @@ class ShortVolExecutor:
     def __init__(self, runtime: Any, strategy: ShortVolStrategy | None = None) -> None:
         self._rt = runtime
         self.strategy = strategy or ShortVolStrategy()
+        # Per-day cache of option last-prices keyed by (symbol, date). The Angel One
+        # candle API is aggressively rate-limited; caching means each ATM contract is
+        # fetched at most once per day (shared by previews and the daily auto-entry),
+        # so we don't re-hammer it and trip "exceeding access rate".
+        self._price_cache: dict[tuple[str, date], float] = {}
 
     # ── market data ─────────────────────────────────────────────────────────
 
@@ -95,14 +102,30 @@ class ShortVolExecutor:
         return int(min(gaps)) if gaps else 50
 
     def _option_last_price(self, inst) -> float:
-        """Most recent traded price of an option contract (daily candle close)."""
-        try:
-            to_dt = datetime.now(); from_dt = to_dt - timedelta(days=10)
-            bars = self._rt.angel_one_history.get_candles(inst, from_dt, to_dt, "ONE_DAY")
-            if bars:
-                return float(bars[-1].close)
-        except Exception as exc:
-            logger.warning("short-vol: option price fetch failed for %s: %s", getattr(inst, "symbol", "?"), exc)
+        """Most recent traded price of an option contract (daily candle close).
+
+        Cached per (symbol, day) and retried with backoff on rate-limit, because
+        the candle API throttles hard when several strikes are fetched in a burst."""
+        sym = getattr(inst, "symbol", "?")
+        key = (sym, date.today())
+        cached = self._price_cache.get(key)
+        if cached is not None:
+            return cached
+        to_dt = datetime.now(); from_dt = to_dt - timedelta(days=10)
+        for attempt in range(3):
+            try:
+                bars = self._rt.angel_one_history.get_candles(inst, from_dt, to_dt, "ONE_DAY")
+                if bars:
+                    price = float(bars[-1].close)
+                    self._price_cache[key] = price
+                    return price
+                return 0.0
+            except Exception as exc:
+                if "rate" in str(exc).lower() and attempt < 2:
+                    time.sleep(0.6 * (attempt + 1))   # 0.6s, 1.2s backoff
+                    continue
+                logger.warning("short-vol: option price fetch failed for %s: %s", sym, exc)
+                return 0.0
         return 0.0
 
     def _atm_iv_and_lot(self, underlying: str, spot: float, expiry: date) -> tuple[float, int]:
@@ -284,7 +307,11 @@ class ShortVolExecutor:
         if not _env_flag("SHORTVOL_AUTO_ENABLED", False):
             return {"ran": False, "reason": "SHORTVOL_AUTO_ENABLED=false"}
         results: list[dict] = []
-        for underlying in self.auto_underlyings:
+        for idx, underlying in enumerate(self.auto_underlyings):
+            if idx > 0:
+                # Non-blocking spacing so the per-index candle fetches don't burst
+                # into the Angel One rate limit (see _option_last_price).
+                await asyncio.sleep(1.0)
             if self.has_open_condor(underlying):
                 results.append({"underlying": underlying, "submitted": False,
                                 "reason": "condor already open"})
