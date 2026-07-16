@@ -115,6 +115,22 @@ class ShortVolExecutor:
                 "is_wing": leg.is_wing, "price": round(float(premium), 2), "quantity": qty,
             })
         out["expiry"] = expiry.isoformat()
+
+        # SAFETY: a valid iron condor needs 4 DISTINCT strikes with the wings
+        # strictly beyond the shorts (real protection). When the option chain is
+        # too narrow, _resolve_option snaps the short and wing to the same strike,
+        # collapsing the condor into an unprotected/zero-width position. Never
+        # execute that — decline and say why (the chain must be wider).
+        by = {(l["option_type"], l["side"]): l["strike"] for l in out["legs"]}
+        cs, cw = by.get(("CE", "SELL")), by.get(("CE", "BUY"))
+        ps, pw = by.get(("PE", "SELL")), by.get(("PE", "BUY"))
+        if None in (cs, cw, ps, pw) or not (cw > cs and pw < ps):
+            out["enter"] = False
+            out["reason"] = (
+                f"option chain too narrow at {underlying} {expiry}: condor legs "
+                f"collapsed (CE {cs}/{cw}, PE {ps}/{pw}) — need wider strikes"
+            )
+            out["legs"] = []
         return out
 
     def preview(self, underlying: str = "NIFTY") -> dict:
