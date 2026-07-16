@@ -101,6 +101,7 @@ class AgentState:
     premarket_date: date | None = None
     eod_done: bool = False
     mcx_eod_done: bool = False
+    shortvol_entry_date: date | None = None
     started_at: str | None = None
     activity_log: list[dict] = field(default_factory=list)
 
@@ -272,8 +273,41 @@ class TradingAgent:
             self._log_activity("No fresh live ticks available for active session — scan skipped", level="error")
             return
 
+        # Weekly short-vol condor auto-entry (opt-in; VRP + chain-width gated).
+        # Runs at most once per trading day when the entry window is open.
+        if equity_open:
+            await self._maybe_enter_short_vol(now)
+
         # Main trading cycle — orchestrated (profit-first) path
         await self._orchestrated_scan_and_execute(active_underlyings)
+
+    async def _maybe_enter_short_vol(self, now: datetime) -> None:
+        executor = getattr(self._runtime, "short_vol_executor", None)
+        if executor is None:
+            return
+        today = now.date()
+        if self._state.shortvol_entry_date == today:
+            return
+        if not executor.is_entry_window(now):
+            return
+        try:
+            result = await executor.auto_enter(now)
+        except Exception as exc:
+            logger.warning("short-vol auto-entry error: %s", exc)
+            return
+        if not result.get("ran"):
+            return
+        # Mark done for the day only once we've actually attempted (auto enabled +
+        # window open), so a disabled flag doesn't burn the daily slot.
+        self._state.shortvol_entry_date = today
+        submitted = [r for r in result.get("results", []) if r.get("submitted")]
+        self._log_activity(
+            f"SHORT-VOL auto-entry: {len(submitted)} condor(s) submitted "
+            f"of {len(result.get('results', []))} underlying(s)"
+        )
+        self._publish("agent.short_vol_auto_entry", {
+            "ts": now_ist().isoformat(), "result": result,
+        })
 
     # ──────────────────────────────────────────────────────────────── routines
 

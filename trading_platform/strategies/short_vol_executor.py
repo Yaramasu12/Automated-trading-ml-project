@@ -14,6 +14,7 @@ real order flows.
 from __future__ import annotations
 
 import logging
+import os
 from datetime import date, datetime, timedelta
 from typing import Any
 
@@ -24,6 +25,10 @@ logger = logging.getLogger(__name__)
 
 # India VIX candle token (verified fetchable 2026-07-16).
 _INDIA_VIX_TOKEN = "99926017"
+
+
+def _env_flag(name: str, default: bool) -> bool:
+    return os.getenv(name, str(default)).strip().lower() in {"1", "true", "yes", "on"}
 
 
 class ShortVolExecutor:
@@ -153,3 +158,56 @@ class ShortVolExecutor:
             "legs": legs_payload, "strategy_name": "short_vol_condor",
         })
         return {"submitted": True, "plan": plan, "execution": result}
+
+    # ── weekly auto-entry ─────────────────────────────────────────────────────
+
+    def has_open_condor(self, underlying: str) -> bool:
+        """True if we already hold an open option position on this underlying —
+        used to avoid stacking a second condor on top of a live one."""
+        u = underlying.strip().upper()
+        try:
+            for pos in self._rt.portfolio.positions.values():
+                inst = pos.instrument
+                if (
+                    pos.quantity != 0
+                    and inst.segment == Segment.OPTIONS
+                    and (inst.underlying or "").strip().upper() == u
+                ):
+                    return True
+        except Exception as exc:
+            logger.warning("short-vol: open-condor check failed for %s: %s", underlying, exc)
+        return False
+
+    @property
+    def auto_underlyings(self) -> list[str]:
+        raw = os.getenv("SHORTVOL_AUTO_UNDERLYINGS", "NIFTY")
+        return [u.strip().upper() for u in raw.split(",") if u.strip()]
+
+    def is_entry_window(self, now_ist: datetime) -> bool:
+        """Weekly entry cadence: enter on the configured weekday once the market
+        has settled (default Monday, from 10:00 IST). VRP/chain checks still gate
+        the actual order inside build()."""
+        weekday = int(os.getenv("SHORTVOL_ENTRY_WEEKDAY", "0"))   # 0 = Monday
+        hour = int(os.getenv("SHORTVOL_ENTRY_HOUR", "10"))
+        return now_ist.weekday() == weekday and now_ist.hour >= hour
+
+    async def auto_enter(self, now_ist: datetime) -> dict:
+        """Attempt a condor entry on each configured underlying if we don't
+        already hold one. Honours SHORTVOL_AUTO_ENABLED (default off). VRP and
+        chain-width gates live in build(); this only decides *when* to look."""
+        if not _env_flag("SHORTVOL_AUTO_ENABLED", False):
+            return {"ran": False, "reason": "SHORTVOL_AUTO_ENABLED=false"}
+        results: list[dict] = []
+        for underlying in self.auto_underlyings:
+            if self.has_open_condor(underlying):
+                results.append({"underlying": underlying, "submitted": False,
+                                "reason": "condor already open"})
+                continue
+            try:
+                res = await self.enter(underlying)
+            except Exception as exc:
+                logger.warning("short-vol auto-enter failed for %s: %s", underlying, exc)
+                res = {"submitted": False, "reason": f"error: {exc}", "underlying": underlying}
+            res.setdefault("underlying", underlying)
+            results.append(res)
+        return {"ran": True, "results": results}

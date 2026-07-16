@@ -1,13 +1,27 @@
 """Unit tests for the defined-risk short-vol strategy logic."""
 from __future__ import annotations
 
+import asyncio
 import math
+import os
 import unittest
+from datetime import datetime
+from types import SimpleNamespace
+from unittest import mock
 
 import numpy as np
 
-from trading_platform.domain.enums import OptionType, Side
+from trading_platform.domain.enums import (
+    AssetClass,
+    Exchange,
+    InstrumentType,
+    OptionType,
+    Segment,
+    Side,
+)
+from trading_platform.domain.models import Instrument, Position
 from trading_platform.strategies.short_vol import ShortVolStrategy
+from trading_platform.strategies.short_vol_executor import ShortVolExecutor
 
 
 def _flat_closes(price=24000.0, n=40, daily_vol=0.006, seed=1):
@@ -68,6 +82,55 @@ class ShortVolTests(unittest.TestCase):
                             capital=2_000_000, lot_size=50)
         if small.enter and big.enter:
             self.assertLess(small.lots, big.lots)
+
+
+def _option(underlying="NIFTY", strike=24000.0, ot=OptionType.CE):
+    return Instrument(
+        symbol=f"{underlying}{int(strike)}{ot.value}", name=underlying,
+        exchange=Exchange.NFO,
+        segment=Segment.OPTIONS, asset_class=AssetClass.INDEX,
+        instrument_type=InstrumentType.OPTION, token="1", lot_size=50, tick_size=0.05,
+        expiry=None, strike=strike, option_type=ot, underlying=underlying,
+    )
+
+
+class ShortVolAutoEntryTests(unittest.TestCase):
+    def _executor(self, positions):
+        rt = SimpleNamespace(portfolio=SimpleNamespace(positions=positions))
+        return ShortVolExecutor(rt)
+
+    def test_has_open_condor_true_when_option_position_open(self):
+        pos = {"NIFTY24000CE": Position(instrument=_option(), quantity=-50)}
+        ex = self._executor(pos)
+        self.assertTrue(ex.has_open_condor("NIFTY"))
+        self.assertFalse(ex.has_open_condor("BANKNIFTY"))
+
+    def test_has_open_condor_false_when_flat(self):
+        pos = {"NIFTY24000CE": Position(instrument=_option(), quantity=0)}
+        self.assertFalse(self._executor(pos).has_open_condor("NIFTY"))
+
+    def test_is_entry_window(self):
+        ex = self._executor({})
+        with mock.patch.dict(os.environ, {"SHORTVOL_ENTRY_WEEKDAY": "0", "SHORTVOL_ENTRY_HOUR": "10"}):
+            self.assertTrue(ex.is_entry_window(datetime(2026, 7, 13, 10, 30)))   # Monday 10:30
+            self.assertFalse(ex.is_entry_window(datetime(2026, 7, 13, 9, 30)))   # Monday 09:30 (too early)
+            self.assertFalse(ex.is_entry_window(datetime(2026, 7, 14, 10, 30)))  # Tuesday
+
+    def test_auto_enter_disabled_by_default(self):
+        ex = self._executor({})
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("SHORTVOL_AUTO_ENABLED", None)
+            out = asyncio.run(ex.auto_enter(datetime(2026, 7, 13, 10, 30)))
+        self.assertFalse(out["ran"])
+
+    def test_auto_enter_skips_when_condor_open(self):
+        pos = {"NIFTY24000CE": Position(instrument=_option(), quantity=-50)}
+        ex = self._executor(pos)
+        with mock.patch.dict(os.environ, {"SHORTVOL_AUTO_ENABLED": "true", "SHORTVOL_AUTO_UNDERLYINGS": "NIFTY"}):
+            out = asyncio.run(ex.auto_enter(datetime(2026, 7, 13, 10, 30)))
+        self.assertTrue(out["ran"])
+        self.assertEqual(out["results"][0]["reason"], "condor already open")
+        self.assertFalse(out["results"][0]["submitted"])
 
 
 if __name__ == "__main__":
