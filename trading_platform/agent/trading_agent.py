@@ -330,22 +330,41 @@ class TradingAgent:
     async def _eod_routine(self) -> None:
         self._log_activity("EOD: squaring off all equity positions (15:25 IST)")
         try:
-            positions = self._runtime.portfolio.position_symbols()
-            # Only square off equity positions; MCX commodities close at 23:25 IST.
-            equity_positions = [s for s in positions if s not in COMMODITY_SET]
-            if equity_positions:
+            # Retry until flat (or attempts exhausted). A single square-off can
+            # leave positions open if a close order is rejected/interrupted;
+            # carrying an intraday position overnight is the failure we must avoid.
+            squared_total = 0
+            for attempt in range(1, 4):
+                positions = self._runtime.portfolio.position_symbols()
+                equity_positions = [s for s in positions if s not in COMMODITY_SET]
+                if not equity_positions:
+                    break
                 result = await self._runtime.square_off_manager.square_off(
                     symbols=equity_positions,
-                    reason="eod_squareoff_15:25_ist",
+                    reason=f"eod_squareoff_15:25_ist_attempt{attempt}",
+                )
+                enq = int(result.get("intents_enqueued", 0))
+                squared_total += enq
+                self._log_activity(
+                    f"EOD square-off attempt {attempt}: {result.get('positions_targeted', 0)} targeted, "
+                    f"{enq} enqueued, {len(result.get('errors', []))} unpriced"
+                )
+                # Give the closes time to fill before re-checking.
+                await asyncio.sleep(6)
+            remaining = [s for s in self._runtime.portfolio.position_symbols() if s not in COMMODITY_SET]
+            if remaining:
+                logger.critical(
+                    "EOD: %d equity position(s) STILL OPEN after 3 square-off attempts: %s "
+                    "— will carry overnight unless closed manually", len(remaining), remaining[:20],
                 )
                 self._log_activity(
-                    f"EOD square-off issued for {result.get('positions_targeted', 0)} positions "
-                    f"({result.get('intents_enqueued', 0)} enqueued)"
+                    f"EOD WARNING: {len(remaining)} position(s) could not be flattened — {remaining[:8]}",
+                    level="error",
                 )
             else:
-                self._log_activity("EOD: no open equity positions to square off")
-                result = {}
-            self._publish("agent.eod_done", {"positions_squared": len(equity_positions)})
+                self._log_activity("EOD: all equity positions flat")
+            self._publish("agent.eod_done", {"positions_squared": squared_total,
+                                              "remaining": len(remaining)})
         except Exception as exc:
             logger.error("EOD routine error: %s", exc)
             self._log_activity(f"EOD error: {exc}", level="error")
