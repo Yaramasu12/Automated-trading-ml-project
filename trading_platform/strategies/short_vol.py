@@ -110,8 +110,17 @@ class ShortVolStrategy:
         closes: list[float] | np.ndarray,
         capital: float,
         lot_size: int,
+        strike_step: int | None = None,
+        wing_width: float | None = None,
     ) -> ShortVolDecision:
-        """The full entry decision: signal → strikes → sizing. Pure/deterministic."""
+        """The full entry decision: signal → strikes → sizing. Pure/deterministic.
+
+        `vix` is the underlying's own implied vol in vol-points (%) — for NIFTY
+        this is India VIX; for other indices it must be that index's ATM IV, NOT
+        India VIX (which would miscompute VRP). `strike_step`/`wing_width` let the
+        caller pass the index's real strike spacing and a price-scaled wing so the
+        same logic works across NIFTY/BANKNIFTY/SENSEX etc.; both fall back to the
+        NIFTY-tuned defaults when omitted."""
         vrp = self.vrp(vix, closes)
         if spot <= 0 or vix <= 0:
             return ShortVolDecision(False, "no spot/vix", vrp)
@@ -121,18 +130,19 @@ class ShortVolStrategy:
         iv = vix / 100.0
         T = self.hold_days / 252.0
         move = spot * iv * math.sqrt(T)                      # 1-SD expected move
-        step = self.strike_step
+        step = int(strike_step) if strike_step else self.strike_step
+        wing = float(wing_width) if wing_width else self.wing_width
         call_short = round((spot + self.sd * move) / step) * step
         put_short = round((spot - self.sd * move) / step) * step
-        call_wing = call_short + self.wing_width
-        put_wing = put_short - self.wing_width
+        call_wing = call_short + wing
+        put_wing = put_short - wing
 
         # per-lot credit (index points) from BS at the current IV
         credit = (
             self._bs(spot, call_short, T, iv, True) - self._bs(spot, call_wing, T, iv, True)
             + self._bs(spot, put_short, T, iv, False) - self._bs(spot, put_wing, T, iv, False)
         )
-        max_loss = self.wing_width - credit
+        max_loss = wing - credit
         if credit <= 0 or max_loss <= 0:
             return ShortVolDecision(False, "no net credit / non-positive risk", vrp)
 

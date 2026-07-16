@@ -84,13 +84,13 @@ class ShortVolTests(unittest.TestCase):
             self.assertLess(small.lots, big.lots)
 
 
-def _option(underlying="NIFTY", strike=24000.0, ot=OptionType.CE):
+def _option(underlying="NIFTY", strike=24000.0, ot=OptionType.CE, expiry=None):
     return Instrument(
         symbol=f"{underlying}{int(strike)}{ot.value}", name=underlying,
         exchange=Exchange.NFO,
         segment=Segment.OPTIONS, asset_class=AssetClass.INDEX,
         instrument_type=InstrumentType.OPTION, token="1", lot_size=50, tick_size=0.05,
-        expiry=None, strike=strike, option_type=ot, underlying=underlying,
+        expiry=expiry, strike=strike, option_type=ot, underlying=underlying,
     )
 
 
@@ -131,6 +131,49 @@ class ShortVolAutoEntryTests(unittest.TestCase):
         self.assertTrue(out["ran"])
         self.assertEqual(out["results"][0]["reason"], "condor already open")
         self.assertFalse(out["results"][0]["submitted"])
+
+
+class MultiIndexTests(unittest.TestCase):
+    """The same path must be correct across indices with very different price
+    levels and strike steps — using each index's OWN implied vol, not India VIX."""
+
+    def _executor(self, master=None):
+        rt = SimpleNamespace(
+            portfolio=SimpleNamespace(positions={}, cash=1_000_000, equity=1_000_000),
+            instrument_master=master,
+        )
+        return ShortVolExecutor(rt)
+
+    def test_wing_width_scales_with_price_level(self):
+        ex = self._executor()
+        # NIFTY-tuned default (1.25%): ~300 on 24000 with a 50 step
+        self.assertEqual(ex._wing_width(24000, 50), 300.0)
+        # BANKNIFTY ~51000 / step 100 -> ~640 rounded to a 100 grid
+        self.assertGreater(ex._wing_width(51000, 100), 500.0)
+        # SENSEX ~82000 / step 100 -> ~1000, far wider than NIFTY's 300
+        self.assertGreater(ex._wing_width(82000, 100), 900.0)
+        # never narrower than two strike steps
+        self.assertGreaterEqual(ex._wing_width(1000, 100), 200.0)
+
+    def test_infer_strike_step_from_chain(self):
+        from datetime import date as _date
+        exp = _date(2026, 7, 23)
+        opts = [_option(strike=float(s), ot=OptionType.CE, expiry=exp) for s in range(50000, 51000, 100)]
+        master = SimpleNamespace(by_underlying=lambda u, seg: opts)
+        ex = self._executor(master)
+        self.assertEqual(ex._infer_strike_step("BANKNIFTY", exp), 100)
+
+    def test_decide_uses_passed_step_and_wing(self):
+        # A high-priced index (spot 51000) with its own step/wing produces a
+        # defined-risk condor whose max loss is capped by the passed wing width.
+        s = ShortVolStrategy(sd=1.25, min_vrp=2.0)
+        d = s.decide(spot=51000, vix=18.0, closes=[51000 * 1.0004 ** i for i in range(40)],
+                     capital=2_000_000, lot_size=15, strike_step=100, wing_width=700)
+        if d.enter:
+            self.assertLessEqual(d.max_loss, 700)
+            # strikes must land on the 100 grid
+            for leg in d.legs:
+                self.assertEqual(leg.strike % 100, 0)
 
 
 class CondorExitContractTests(unittest.TestCase):

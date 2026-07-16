@@ -6,7 +6,7 @@ import { getShortVolPreview } from '../api'
 import { num } from '../utils'
 import type { ShortVolPreview } from '../types'
 
-const UNDERLYINGS = ['NIFTY', 'BANKNIFTY', 'FINNIFTY', 'MIDCPNIFTY', 'RELIANCE', 'TCS']
+const UNDERLYINGS = ['NIFTY', 'BANKNIFTY', 'FINNIFTY', 'MIDCPNIFTY', 'SENSEX']
 
 /**
  * Read-only view of the volatility-risk-premium short-vol strategy: live spot,

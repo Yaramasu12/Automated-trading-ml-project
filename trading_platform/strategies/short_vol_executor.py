@@ -18,12 +18,15 @@ import os
 from datetime import date, datetime, timedelta
 from typing import Any
 
-from trading_platform.domain.enums import Segment, Side
+from trading_platform.derivatives.engine import ImpliedVolatilityCalculator
+from trading_platform.domain.enums import OptionType, Segment, Side
 from trading_platform.strategies.short_vol import ShortVolStrategy
 
 logger = logging.getLogger(__name__)
 
-# India VIX candle token (verified fetchable 2026-07-16).
+# India VIX candle token (verified fetchable 2026-07-16). India VIX IS NIFTY's
+# implied-vol index, so it is only used as the IV source/fallback for NIFTY;
+# every other index uses its OWN ATM implied vol (see _atm_iv_and_lot).
 _INDIA_VIX_TOKEN = "99926017"
 
 
@@ -78,30 +81,113 @@ class ShortVolExecutor:
             return None
         return min(opts, key=lambda i: abs((i.strike or 0) - strike))
 
+    # ── per-underlying market structure (works for any index) ────────────────
+
+    def _infer_strike_step(self, underlying: str, expiry: date) -> int:
+        """Smallest gap between adjacent listed strikes = the index's strike step
+        (NIFTY 50, BANKNIFTY/SENSEX 100, …). Inferred from the live chain so it is
+        correct for any underlying without a hardcoded table."""
+        strikes = sorted({
+            i.strike for i in self._rt.instrument_master.by_underlying(underlying, Segment.OPTIONS)
+            if i.expiry == expiry and i.option_type == OptionType.CE and i.strike
+        })
+        gaps = [b - a for a, b in zip(strikes, strikes[1:]) if b > a]
+        return int(min(gaps)) if gaps else 50
+
+    def _option_last_price(self, inst) -> float:
+        """Most recent traded price of an option contract (daily candle close)."""
+        try:
+            to_dt = datetime.now(); from_dt = to_dt - timedelta(days=10)
+            bars = self._rt.angel_one_history.get_candles(inst, from_dt, to_dt, "ONE_DAY")
+            if bars:
+                return float(bars[-1].close)
+        except Exception as exc:
+            logger.warning("short-vol: option price fetch failed for %s: %s", getattr(inst, "symbol", "?"), exc)
+        return 0.0
+
+    def _atm_iv_and_lot(self, underlying: str, spot: float, expiry: date) -> tuple[float, int]:
+        """The underlying's OWN implied vol (%) from its ATM call+put market prices
+        (Black-Scholes inversion), plus the option lot size. Returns (0.0, lot) if
+        prices can't be recovered — the caller then declines to trade rather than
+        guess. This is what makes multi-index correct: each index is priced off its
+        own vol surface, never India VIX."""
+        calc = ImpliedVolatilityCalculator()
+        dte = max((expiry - date.today()).days, 1)
+        ivs: list[float] = []
+        lot: int | None = None
+        for ot in (OptionType.CE, OptionType.PE):
+            inst = self._resolve_option(underlying, spot, ot, expiry)   # ATM = nearest to spot
+            if inst is None:
+                continue
+            lot = int(getattr(inst, "lot_size", 0) or 0) or lot
+            price = self._option_last_price(inst)
+            if price <= 0 or not inst.strike:
+                continue
+            try:
+                iv = calc.calculate(price, spot, float(inst.strike), dte, ot)   # annualised fraction
+                if 0.01 < iv < 3.0:
+                    ivs.append(iv * 100.0)
+            except Exception as exc:
+                logger.warning("short-vol: IV inversion failed for %s: %s", inst.symbol, exc)
+        iv_pct = sum(ivs) / len(ivs) if ivs else 0.0
+        return iv_pct, int(lot or 50)
+
+    def _wing_width(self, spot: float, step: int) -> float:
+        """Protective-wing width scaled to the index price level (default 1.25% of
+        spot, matching the NIFTY 300pt/24000 tuning), rounded to the strike step and
+        never narrower than two steps. Keeps the condor's risk profile comparable
+        across NIFTY (~300), BANKNIFTY (~640), SENSEX (~1025)."""
+        pct = float(os.getenv("SHORTVOL_WING_PCT", "0.0125"))
+        w = round((pct * spot) / step) * step
+        return float(max(w, 2 * step))
+
     # ── decision + leg resolution ───────────────────────────────────────────
 
     def build(self, underlying: str = "NIFTY") -> dict:
         """Compute the full short-vol decision with resolved contracts & prices.
-        Does NOT execute. Returns a dict describing what WOULD be traded."""
+        Does NOT execute. Returns a dict describing what WOULD be traded.
+
+        Prices every input off the underlying's OWN option chain — its ATM implied
+        vol, strike step, price-scaled wing, and option lot size — so the exact
+        same path is correct for NIFTY and every other index."""
         closes, spot = self._closes_and_spot(underlying)
-        vix = self._current_vix()
         capital = float(getattr(self._rt.portfolio, "equity", 0) or self._rt.portfolio.cash)
-        lot_size = int(getattr(self._rt.instrument_master.get(underlying), "lot_size", 50) or 50)
+        base = {
+            "underlying": underlying, "spot": round(spot, 2),
+            "realized_vol": round(self.strategy.realized_vol(closes), 2),
+            "enter": False, "lots": 0, "net_credit_pts": 0.0, "max_loss_pts": 0.0, "legs": [],
+        }
+        if spot <= 0:
+            return {**base, "vix": 0.0, "vrp": 0.0, "reason": "no spot price"}
+
+        expiry = self._rt.instrument_master.nearest_expiry(underlying, date.today(), segment=Segment.OPTIONS)
+        if expiry is None:
+            return {**base, "vix": 0.0, "vrp": 0.0, "reason": f"no listed options/expiry for {underlying}"}
+
+        step = self._infer_strike_step(underlying, expiry)
+        iv, lot_size = self._atm_iv_and_lot(underlying, spot, expiry)
+        # India VIX is a valid IV source only for NIFTY; other indices must use
+        # their own ATM IV and are declined if it can't be recovered.
+        if iv <= 0 and underlying.upper() == "NIFTY":
+            iv = self._current_vix()
+        if iv <= 0:
+            return {**base, "vix": 0.0, "vrp": 0.0,
+                    "reason": f"could not compute {underlying} implied vol (illiquid ATM?)"}
+        wing = self._wing_width(spot, step)
 
         decision = self.strategy.decide(
-            spot=spot, vix=vix, closes=closes, capital=capital, lot_size=lot_size,
+            spot=spot, vix=iv, closes=closes, capital=capital, lot_size=lot_size,
+            strike_step=step, wing_width=wing,
         )
         out: dict = {
-            "underlying": underlying, "spot": round(spot, 2), "vix": round(vix, 2),
-            "realized_vol": round(self.strategy.realized_vol(closes), 2),
-            "vrp": round(decision.vrp, 2), "enter": decision.enter, "reason": decision.reason,
-            "lots": decision.lots, "net_credit_pts": decision.net_credit,
-            "max_loss_pts": decision.max_loss, "legs": [],
+            **base, "vix": round(iv, 2), "vrp": round(decision.vrp, 2),
+            "enter": decision.enter, "reason": decision.reason, "lots": decision.lots,
+            "net_credit_pts": decision.net_credit, "max_loss_pts": decision.max_loss,
         }
         if not decision.enter:
             return out
 
-        expiry = self._rt.instrument_master.nearest_expiry(underlying, date.today(), segment=Segment.OPTIONS)
+        vix = iv
         qty = decision.lots * lot_size
         for leg in decision.legs:
             inst = self._resolve_option(underlying, leg.strike, leg.option_type, expiry)
