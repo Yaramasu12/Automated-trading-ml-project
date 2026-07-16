@@ -1264,6 +1264,22 @@ class TradingRuntime:
 
     def refresh_angel_one_instruments(self) -> dict:
         result = self.angel_one_instruments.refresh()
+        # Guard against a partial/truncated download silently replacing a good
+        # chain (the full Angel One master is ~120k instruments). A tiny parse
+        # means the download was cut short — keep the existing master.
+        if result.parsed_count < 50_000:
+            logger.critical(
+                "Instrument refresh returned only %d parsed (<50k) — likely a truncated "
+                "download; keeping existing master (%d instruments).",
+                result.parsed_count, len(self.instrument_master.instruments),
+            )
+            self.monitor.record_event(
+                "instrument_refresh_truncated",
+                f"Refresh parsed only {result.parsed_count}; kept existing master",
+                severity="CRITICAL",
+            )
+            return {"source": result.source, "parsed_count": result.parsed_count,
+                    "kept_existing": True}
         self.instrument_master = self.angel_one_instruments.load_cached()
         self._rebuild_market_engines()
         # Record this as a real refresh so the readiness gate flips

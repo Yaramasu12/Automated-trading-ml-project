@@ -41,7 +41,12 @@ class AngelOneInstrumentMasterProvider:
         self.settings = settings
         self.cache_path = Path(settings.angel_one_instrument_cache_path)
 
-    def refresh(self, timeout_seconds: int = 30) -> InstrumentMasterRefreshResult:
+    def refresh(self, timeout_seconds: int = 120) -> InstrumentMasterRefreshResult:
+        # The Angel One master is a large file (~164k rows). A short timeout
+        # intermittently truncated the read on slow hosts, silently yielding a
+        # partial option chain (11 NIFTY strikes instead of ~93) — which broke
+        # every option strategy. 120s tolerates a slow link; it returns as soon
+        # as the download completes (typically a few seconds).
         self.cache_path.parent.mkdir(parents=True, exist_ok=True)
         ssl_ctx = ssl.create_default_context(cafile=certifi.where())
         with urlopen(self.settings.angel_one_instrument_master_url, timeout=timeout_seconds, context=ssl_ctx) as response:
