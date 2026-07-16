@@ -231,6 +231,10 @@ class TradingRuntime:
             portfolio=self.portfolio,
         )
         self.multi_leg_manager = MultiLegOrderManager(self.scheduler.enqueue)
+        # Short-vol strategy executor (the one validated-edge strategy). Built here
+        # because it uses submit_multi_leg + decision_pipeline + instrument_master.
+        from trading_platform.strategies.short_vol_executor import ShortVolExecutor
+        self.short_vol_executor = ShortVolExecutor(self)
         self.square_off_manager = EmergencySquareOff(
             self.portfolio,
             self.scheduler.enqueue,

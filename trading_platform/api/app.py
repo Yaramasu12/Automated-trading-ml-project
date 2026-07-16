@@ -654,6 +654,26 @@ def multi_leg_orders():
     return {"orders": runtime.multi_leg_manager.all_orders()}
 
 
+@app.get("/short-vol/preview")
+def short_vol_preview(underlying: str = "NIFTY"):
+    """Read-only: the current short-vol decision (VRP, would-enter, condor legs).
+    Places NO order — used to observe the validated-edge strategy before enabling it."""
+    try:
+        return runtime.short_vol_executor.preview(underlying)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/short-vol/enter", dependencies=[_AuthDep])
+async def short_vol_enter(payload: dict | None = None):
+    """Submit the defined-risk iron condor IF the VRP signal says enter. Gated."""
+    underlying = str((payload or {}).get("underlying", "NIFTY"))
+    try:
+        return await runtime.short_vol_executor.enter(underlying)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 @app.post("/execution/square-off", dependencies=[_AuthDep])
 async def square_off(req: SquareOffRequest):
     try:
