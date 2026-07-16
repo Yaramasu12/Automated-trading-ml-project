@@ -15,6 +15,7 @@ EOD (15:25 IST):         square-off all open positions
 
 import asyncio
 import logging
+import os
 from dataclasses import dataclass, field
 from datetime import date, datetime, timezone, timedelta
 from typing import TYPE_CHECKING
@@ -65,6 +66,19 @@ COMMODITY_UNDERLYINGS = [
     "NATURALGAS",
     "COPPER", "ZINC", "NICKEL", # base metals
 ]
+
+# Optional env override to narrow the scan universe (comma-separated symbols).
+# Focuses the agent where the edge actually is (index options) and slashes the
+# Angel One candle rate-limit pressure that otherwise forces synthetic-data
+# fallbacks. Unset => full default universe (backward compatible). Symbols are
+# partitioned into equity/commodity by the known commodity set so session hours
+# still apply correctly; a symbol not in the commodity set is treated as equity.
+_scan_override = os.getenv("AGENT_SCAN_UNDERLYINGS", "").strip()
+if _scan_override:
+    _wanted = [s.strip().upper() for s in _scan_override.split(",") if s.strip()]
+    _commodity_set = set(COMMODITY_UNDERLYINGS)
+    COMMODITY_UNDERLYINGS = [s for s in _wanted if s in _commodity_set]
+    EQUITY_UNDERLYINGS = [s for s in _wanted if s not in _commodity_set]
 
 SCAN_UNDERLYINGS = EQUITY_UNDERLYINGS + COMMODITY_UNDERLYINGS
 COMMODITY_SET = set(COMMODITY_UNDERLYINGS)

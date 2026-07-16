@@ -43,6 +43,8 @@ services:
       # Peak-memory controls (see agent scan loop). Concurrency 2 keeps the
       # orchestrated scan within ~2 GB; raise on larger hosts for faster sweeps.
       - AGENT_SCAN_CONCURRENCY=${AGENT_SCAN_CONCURRENCY:-2}
+      # Narrow the scan universe (comma list). Empty = full default universe.
+      - AGENT_SCAN_UNDERLYINGS=${AGENT_SCAN_UNDERLYINGS:-}
       - MALLOC_ARENA_MAX=${MALLOC_ARENA_MAX:-2}
       # Trade-gate tuning (lower = trades weaker signals, higher = more selective).
       - CREW_HOLD_BAND=${CREW_HOLD_BAND:-0.05}
