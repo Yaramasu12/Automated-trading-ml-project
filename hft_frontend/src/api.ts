@@ -10,6 +10,7 @@ import type {
   EventBusSummary,
   ManualApprovalStatus,
   RuntimeState,
+  ShortVolPreview,
   SignalScanResult,
   StrategyEvaluationResult,
   TargetProgress,
@@ -71,6 +72,11 @@ export const runWalkForward = (payload: Record<string, unknown>) =>
   post<WalkForwardResult>('/backtests/walk-forward', payload)
 
 // ─── Models ───────────────────────────────────────────────────────────────────
+export const getShortVolPreview = (underlying = 'NIFTY') =>
+  get<ShortVolPreview>(`/short-vol/preview?underlying=${encodeURIComponent(underlying)}`)
+export const enterShortVol = (underlying = 'NIFTY') =>
+  post<{ submitted: boolean } & Record<string, unknown>>('/short-vol/enter', { underlying })
+
 export const getModelCatalog = () => get<{ count: number; models: ModelCatalogEntry[] }>('/models/catalog')
 export const getVolatilityForecast = (payload: Record<string, unknown>) =>
   post<{ forecast: VolatilityForecast; interval_evaluation: { coverage: number; healthy: boolean } }>('/models/volatility-forecast', payload)

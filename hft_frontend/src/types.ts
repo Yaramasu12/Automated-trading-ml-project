@@ -565,3 +565,29 @@ export interface TraceReplayResponse {
   events?: Record<string, unknown>[]
   [key: string]: unknown
 }
+
+export interface ShortVolLeg {
+  symbol: string
+  strike: number
+  option_type: string
+  side: string
+  is_wing: boolean
+  price: number
+  quantity: number
+}
+
+export interface ShortVolPreview {
+  mode: string
+  underlying: string
+  spot: number
+  vix: number
+  realized_vol: number
+  vrp: number
+  enter: boolean
+  reason: string
+  lots: number
+  net_credit_pts: number
+  max_loss_pts: number
+  legs: ShortVolLeg[]
+  expiry?: string
+}

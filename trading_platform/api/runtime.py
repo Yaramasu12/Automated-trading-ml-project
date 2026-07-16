@@ -974,6 +974,17 @@ class TradingRuntime:
             partial_exit=True,   # book 50% at target, trail the rest for extended gains
         )
         plan.trace_id = trace_id
+        # Defined-risk multi-leg structures (e.g. the short-vol iron condor) must
+        # be held as a whole to expiry — a per-leg SL/TP would stop out one leg on
+        # a normal premium swing and unbalance the condor into naked risk. For
+        # these legs, disable price-based exits and rely on expiry only (the wings
+        # cap the loss by construction).
+        _is_multi_leg = bool(intent.signal.metadata.get("multi_leg_group")) or "condor" in strategy_name_raw.lower()
+        if _is_multi_leg and expiry_date is not None:
+            plan.stop_loss_price = None
+            plan.target_price = None
+            plan.trailing_pct = None
+            plan.partial_exit_enabled = False
         self.exit_manager.register(plan)
         self._append_trace_event_for_intent(
             intent,

@@ -4,6 +4,7 @@ import { clsx } from 'clsx'
 import { Card, CardBody, CardHeader } from '../components/shared/Card'
 import { Table } from '../components/shared/Table'
 import { Tag } from '../components/shared/Badge'
+import { ShortVolPanel } from '../components/ShortVolPanel'
 import { useStore } from '../store'
 import { evaluateStrategies, runWalkForward } from '../api'
 import { pct, num } from '../utils'
@@ -117,6 +118,9 @@ export function Strategies() {
           <p className="text-xs text-gray-500 mt-0.5">Leaderboard across instruments and lookback periods</p>
         </div>
       </div>
+
+      {/* Live short-vol (VRP) strategy status */}
+      <ShortVolPanel />
 
       {/* Form */}
       <Card>

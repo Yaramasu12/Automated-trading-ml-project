@@ -133,5 +133,43 @@ class ShortVolAutoEntryTests(unittest.TestCase):
         self.assertFalse(out["results"][0]["submitted"])
 
 
+class CondorExitContractTests(unittest.TestCase):
+    """Locks in the invariant: a defined-risk condor leg is held to expiry —
+    a premium swing must NOT stop it out (that would unbalance the structure)."""
+
+    def _expiry_only_plan(self, side=Side.SELL, expiry_days=3):
+        from datetime import date as _date, timedelta as _td
+        from trading_platform.domain.models import Trade
+        from trading_platform.exit.exit_plan import ExitPlan
+        trade = Trade(
+            trade_id="t1", order_id="o1", symbol="NIFTY24000CE", side=side,
+            quantity=50, price=100.0, charges=0.0, timestamp=datetime(2026, 7, 13, 10, 0),
+            strategy_name="short_vol_condor",
+        )
+        plan = ExitPlan.from_trade(trade, instrument=_option(ot=OptionType.CE),
+                                   expiry_date=_date.today() + _td(days=expiry_days))
+        # Same nulling on_fill applies to multi-leg condor legs:
+        plan.stop_loss_price = None
+        plan.target_price = None
+        plan.trailing_pct = None
+        plan.partial_exit_enabled = False
+        return plan
+
+    def test_premium_swing_does_not_trigger(self):
+        from trading_platform.exit.exit_plan import ExitTrigger
+        plan = self._expiry_only_plan()
+        # Short premium doubling (a big adverse move) must NOT exit the leg.
+        self.assertIsNone(plan.check_trigger(200.0, datetime(2026, 7, 14, 11, 0)))
+        # Premium collapsing to near zero (a big favourable move) also holds.
+        self.assertIsNone(plan.check_trigger(5.0, datetime(2026, 7, 14, 11, 0)))
+
+    def test_exits_at_expiry(self):
+        from datetime import date as _date, timedelta as _td
+        from trading_platform.exit.exit_plan import ExitTrigger
+        plan = self._expiry_only_plan(expiry_days=0)
+        trig = plan.check_trigger(120.0, datetime.combine(_date.today() + _td(days=0), datetime.min.time()))
+        self.assertEqual(trig, ExitTrigger.EXPIRY)
+
+
 if __name__ == "__main__":
     unittest.main()
