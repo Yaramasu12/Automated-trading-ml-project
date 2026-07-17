@@ -117,5 +117,42 @@ class RiskEngineTests(unittest.TestCase):
         return OrderIntent(signal, instrument, quantity, OrderType.MARKET, ProductType.INTRADAY)
 
 
+class CapitalProtectionMarginTests(unittest.TestCase):
+    """A held futures position drives paper CASH negative (full notional deducted
+    on entry) while EQUITY stays intact. The margin check must measure against
+    equity, else every subsequent order — incl. the short-vol condor — is blocked."""
+
+    def setUp(self):
+        from trading_platform.risk.capital_protection import CapitalProtection
+        self.master = build_default_universe(date(2026, 1, 5))
+        self.cap = CapitalProtection()
+
+    def _intent(self, instrument, side, quantity, price):
+        signal = Signal("test", instrument.symbol, side, 0.9, price, "unit test", datetime.now(timezone.utc))
+        return OrderIntent(signal, instrument, quantity, OrderType.MARKET, ProductType.INTRADAY)
+
+    def test_order_approved_when_cash_negative_but_equity_solvent(self):
+        # Reproduces the live bug: cash = -596,964 (a futures notional deducted),
+        # equity still ~1,000,000. A small new order must NOT be rejected.
+        snap = PortfolioSnapshot(
+            cash=-596_964, equity=999_900, realized_pnl=0, unrealized_pnl=0,
+            drawdown=0.0, peak_equity=1_000_000, open_positions=1,
+        )
+        intent = self._intent(self.master.get("RELIANCE"), Side.BUY, 1, 2800)
+        result = self.cap.check(intent, snap, daily_pnl=0.0)
+        self.assertTrue(result.approved, result.reason)
+        self.assertNotIn("Insufficient margin", result.reason)
+
+    def test_still_rejects_when_equity_truly_insufficient(self):
+        # Genuinely broke account (equity ~0) must still be rejected.
+        snap = PortfolioSnapshot(
+            cash=50, equity=50, realized_pnl=0, unrealized_pnl=0,
+            drawdown=0.0, peak_equity=1_000_000, open_positions=0,
+        )
+        intent = self._intent(self.master.get("RELIANCE"), Side.BUY, 1, 2800)
+        result = self.cap.check(intent, snap, daily_pnl=0.0)
+        self.assertFalse(result.approved)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -119,13 +119,21 @@ class CapitalProtection:
             )
 
         margin_required = effective_exposure if is_future else intent.notional_value / self.margin_multiplier
-        if margin_required > snapshot.cash:
+        # Available margin is measured against EQUITY (true solvency), not raw
+        # cash. The paper ledger deducts a futures contract's FULL notional from
+        # cash on entry, so cash can go deeply negative while a future is held
+        # even though equity is intact (cash + position value ≈ unchanged). Using
+        # cash here wrongly rejected every order — futures, equities, AND the
+        # short-vol option condor — the moment any futures position was open.
+        # Per-order size is still capped by the equity-exposure check above.
+        available_margin = max(equity, 0.0)
+        if margin_required > available_margin:
             return CapitalCheckResult(
                 approved=False,
-                reason=f"Insufficient margin: need {margin_required:,.0f}, available {snapshot.cash:,.0f}",
-                available_capital=snapshot.cash,
+                reason=f"Insufficient margin: need {margin_required:,.0f}, available {available_margin:,.0f}",
+                available_capital=available_margin,
                 required_capital=margin_required,
-                utilization_pct=margin_required / max(snapshot.cash, 1),
+                utilization_pct=margin_required / max(available_margin, 1),
                 checked_at=now,
             )
 
