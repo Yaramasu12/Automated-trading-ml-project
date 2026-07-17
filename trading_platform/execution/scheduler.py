@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import itertools
 import logging
 from dataclasses import dataclass
@@ -540,7 +541,12 @@ class ExecutionScheduler:
         self._processed += 1
         for cb in self._fill_callbacks:
             try:
-                await cb(trade, intent)
+                # Callbacks may be sync or async. Only await a coroutine —
+                # awaiting a sync callback's None result threw on every fill
+                # ("object NoneType can't be used in 'await' expression").
+                result = cb(trade, intent)
+                if inspect.isawaitable(result):
+                    await result
             except Exception as exc:
                 logger.exception("Fill callback error: %s", exc)
 
