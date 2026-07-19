@@ -168,7 +168,8 @@ class ShortVolExecutor:
 
     # ── decision + leg resolution ───────────────────────────────────────────
 
-    def build(self, underlying: str = "NIFTY", expiry: date | None = None) -> dict:
+    def build(self, underlying: str = "NIFTY", expiry: date | None = None,
+              structure: str = "condor") -> dict:
         """Compute the full short-vol decision with resolved contracts & prices.
         Does NOT execute. Returns a dict describing what WOULD be traded.
 
@@ -214,10 +215,11 @@ class ShortVolExecutor:
         decision = self.strategy.decide(
             spot=spot, vix=iv, closes=closes, capital=capital, lot_size=lot_size,
             strike_step=step, wing_width=wing, forecast_vol=forecast_vol, hold_days=dte,
+            structure=structure,
         )
         out: dict = {
             **base, "vix": round(iv, 2), "vrp": round(decision.vrp, 2),
-            "expiry": expiry.isoformat(), "dte": dte,
+            "structure": structure, "expiry": expiry.isoformat(), "dte": dte,
             "forecast_vol": round(forecast_vol, 2) if forecast_vol else None,
             "vol_reference": "garch_forecast" if forecast_vol else "trailing_realized",
             "enter": decision.enter, "reason": decision.reason, "lots": decision.lots,
@@ -246,25 +248,29 @@ class ShortVolExecutor:
             })
         out["expiry"] = expiry.isoformat()
 
-        # SAFETY: a valid iron condor needs 4 DISTINCT strikes with the wings
-        # strictly beyond the shorts (real protection). When the option chain is
-        # too narrow, _resolve_option snaps the short and wing to the same strike,
-        # collapsing the condor into an unprotected/zero-width position. Never
-        # execute that — decline and say why (the chain must be wider).
+        # SAFETY: defined-risk structures need the wing strictly beyond the short
+        # (real protection). A too-narrow chain snaps short and wing to the same
+        # strike, collapsing into unprotected/zero-width risk — never execute that.
         by = {(l["option_type"], l["side"]): l["strike"] for l in out["legs"]}
-        cs, cw = by.get(("CE", "SELL")), by.get(("CE", "BUY"))
         ps, pw = by.get(("PE", "SELL")), by.get(("PE", "BUY"))
-        if None in (cs, cw, ps, pw) or not (cw > cs and pw < ps):
+        ok = ps is not None and pw is not None and pw < ps   # put wing below short
+        if structure == "condor":
+            cs, cw = by.get(("CE", "SELL")), by.get(("CE", "BUY"))
+            ok = ok and cs is not None and cw is not None and cw > cs
+            detail = f"(CE {by.get(('CE','SELL'))}/{by.get(('CE','BUY'))}, PE {ps}/{pw})"
+        else:
+            detail = f"(PE {ps}/{pw})"
+        if not ok:
             out["enter"] = False
             out["reason"] = (
-                f"option chain too narrow at {underlying} {expiry}: condor legs "
-                f"collapsed (CE {cs}/{cw}, PE {ps}/{pw}) — need wider strikes"
+                f"option chain too narrow at {underlying} {expiry}: {structure} legs "
+                f"collapsed {detail} — need wider strikes"
             )
             out["legs"] = []
         return out
 
-    def preview(self, underlying: str = "NIFTY") -> dict:
-        return {"mode": "preview", **self.build(underlying)}
+    def preview(self, underlying: str = "NIFTY", structure: str = "condor") -> dict:
+        return {"mode": "preview", **self.build(underlying, structure=structure)}
 
     def validate_vol_forecast(self, underlying: str = "NIFTY", days: int = 1000) -> dict:
         """Walk-forward test on REAL history: does GARCH predict future realized
@@ -284,23 +290,25 @@ class ShortVolExecutor:
                         else "keep trailing-realized (GARCH did not beat baseline)"),
         }
 
-    async def enter(self, underlying: str = "NIFTY", expiry: date | None = None) -> dict:
-        """Build then SUBMIT the iron condor as a multi-leg order for one expiry."""
-        plan = self.build(underlying, expiry)
+    async def enter(self, underlying: str = "NIFTY", expiry: date | None = None,
+                    structure: str = "condor") -> dict:
+        """Build then SUBMIT the defined-risk structure as a multi-leg order."""
+        plan = self.build(underlying, expiry, structure)
         if not plan.get("enter") or not plan.get("legs"):
             return {"submitted": False, **plan}
         exp = plan.get("expiry", "")
-        group_id = f"condor_{underlying}_{exp}"
+        group_id = f"{structure}_{underlying}_{exp}"
         legs_payload = [
             {
                 "symbol": l["symbol"], "side": l["side"], "price": l["price"],
-                "quantity": l["quantity"], "strategy_name": "short_vol_condor",
-                "metadata": {"is_wing": l["is_wing"], "vrp": plan["vrp"], "expiry": exp},
+                "quantity": l["quantity"], "strategy_name": f"short_vol_{structure}",
+                "metadata": {"is_wing": l["is_wing"], "vrp": plan["vrp"],
+                             "expiry": exp, "structure": structure},
             }
             for l in plan["legs"]
         ]
         result = await self._rt.submit_multi_leg({
-            "legs": legs_payload, "strategy_name": "short_vol_condor", "group_id": group_id,
+            "legs": legs_payload, "strategy_name": f"short_vol_{structure}", "group_id": group_id,
         })
         return {"submitted": True, "plan": plan, "execution": result}
 
@@ -343,6 +351,16 @@ class ShortVolExecutor:
         raw = os.getenv("SHORTVOL_AUTO_UNDERLYINGS", "NIFTY")
         return [u.strip().upper() for u in raw.split(",") if u.strip()]
 
+    @property
+    def structures(self) -> list[str]:
+        """Which defined-risk structures to run: condor (symmetric vol premium)
+        and/or put_spread (downside skew premium). One structure per (underlying,
+        expiry) — they don't stack, to avoid concentrating downside risk."""
+        raw = os.getenv("SHORTVOL_STRUCTURES", "condor")
+        valid = {"condor", "put_spread"}
+        out = [s.strip().lower() for s in raw.split(",") if s.strip().lower() in valid]
+        return out or ["condor"]
+
     def is_entry_window(self, now_ist: datetime) -> bool:
         """Weekly entry cadence: enter on the configured weekday once the market
         has settled (default Monday, from 10:00 IST). VRP/chain checks still gate
@@ -361,19 +379,28 @@ class ShortVolExecutor:
         first = True
         for underlying in self.auto_underlyings:
             for expiry in self.target_expiries(underlying):
-                if not first:
-                    # Non-blocking spacing so the per-leg candle fetches don't burst
-                    # into the Angel One rate limit (see _option_last_price).
-                    await asyncio.sleep(1.0)
-                first = False
-                tag = {"underlying": underlying, "expiry": expiry.isoformat()}
+                # One structure per (underlying, expiry) — first configured that
+                # isn't already open — so put_spread and condor never stack their
+                # downside on the same expiry.
                 if self.has_open_condor(underlying, expiry):
-                    results.append({**tag, "submitted": False, "reason": "condor already open"})
+                    results.append({"underlying": underlying, "expiry": expiry.isoformat(),
+                                    "submitted": False, "reason": "position already open"})
                     continue
-                try:
-                    res = await self.enter(underlying, expiry)
-                except Exception as exc:
-                    logger.warning("short-vol auto-enter failed for %s %s: %s", underlying, expiry, exc)
-                    res = {"submitted": False, "reason": f"error: {exc}"}
-                results.append({**tag, **res})
+                for structure in self.structures:
+                    if not first:
+                        # Non-blocking spacing so the per-leg candle fetches don't
+                        # burst into the Angel One rate limit (see _option_last_price).
+                        await asyncio.sleep(1.0)
+                    first = False
+                    tag = {"underlying": underlying, "expiry": expiry.isoformat(),
+                           "structure": structure}
+                    try:
+                        res = await self.enter(underlying, expiry, structure)
+                    except Exception as exc:
+                        logger.warning("short-vol auto-enter failed for %s %s %s: %s",
+                                       underlying, expiry, structure, exc)
+                        res = {"submitted": False, "reason": f"error: {exc}"}
+                    results.append({**tag, **res})
+                    if res.get("submitted"):
+                        break   # one structure filled for this expiry — done
         return {"ran": True, "results": results}

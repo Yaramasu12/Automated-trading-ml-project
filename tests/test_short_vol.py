@@ -138,7 +138,7 @@ class ShortVolAutoEntryTests(unittest.TestCase):
                                           "SHORTVOL_MAX_EXPIRIES": "1"}):
             out = asyncio.run(ex.auto_enter(datetime(2026, 7, 13, 10, 30)))
         self.assertTrue(out["ran"])
-        self.assertEqual(out["results"][0]["reason"], "condor already open")
+        self.assertIn("already open", out["results"][0]["reason"])
         self.assertFalse(out["results"][0]["submitted"])
 
     def test_multi_expiry_targets_two(self):

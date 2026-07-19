@@ -655,11 +655,12 @@ def multi_leg_orders():
 
 
 @app.get("/short-vol/preview")
-def short_vol_preview(underlying: str = "NIFTY"):
-    """Read-only: the current short-vol decision (VRP, would-enter, condor legs).
-    Places NO order — used to observe the validated-edge strategy before enabling it."""
+def short_vol_preview(underlying: str = "NIFTY", structure: str = "condor"):
+    """Read-only: the current short-vol decision (VRP, would-enter, legs) for a
+    structure (condor = symmetric vol premium, put_spread = downside skew premium).
+    Places NO order — used to observe the validated edge before enabling it."""
     try:
-        return runtime.short_vol_executor.preview(underlying)
+        return runtime.short_vol_executor.preview(underlying, structure)
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 

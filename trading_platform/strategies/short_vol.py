@@ -98,6 +98,16 @@ class ShortVolStrategy:
         z = self.sd * (vix / ref)           # short-strike distance in forecast-σ units
         return max(0.0, min(0.999, 2.0 * self._norm_cdf(z) - 1.0))
 
+    def win_probability_one_sided(self, vix: float, forecast_vol: float) -> float:
+        """P(underlying stays ABOVE the short put) — the win condition for a bull
+        put spread. One-sided version of `win_probability`; harvests the downside
+        skew/crash-risk premium (index puts are systematically overpriced)."""
+        ref = forecast_vol if forecast_vol and forecast_vol > 0 else vix
+        if ref <= 0:
+            return 0.0
+        z = self.sd * (vix / ref)
+        return max(0.0, min(0.999, self._norm_cdf(z)))
+
     def kelly_lots(self, *, credit: float, max_loss: float, win_prob: float,
                    capital: float, lot_size: int, risk_cap_lots: int) -> int:
         """Fractional-Kelly position size, capped by the risk-budget lots.
@@ -161,6 +171,7 @@ class ShortVolStrategy:
         wing_width: float | None = None,
         forecast_vol: float | None = None,
         hold_days: int | None = None,
+        structure: str = "condor",
     ) -> ShortVolDecision:
         """The full entry decision: signal → strikes → sizing. Pure/deterministic.
 
@@ -189,24 +200,45 @@ class ShortVolStrategy:
         call_wing = call_short + wing
         put_wing = put_short - wing
 
-        # per-lot credit (index points) from BS at the current IV
-        credit = (
-            self._bs(spot, call_short, T, iv, True) - self._bs(spot, call_wing, T, iv, True)
-            + self._bs(spot, put_short, T, iv, False) - self._bs(spot, put_wing, T, iv, False)
-        )
+        ref_vol = forecast_vol or self.expected_realized(closes)
+        struct = (structure or "condor").lower()
+        if struct == "put_spread":
+            # Bull put spread — harvests the DOWNSIDE skew/crash-risk premium (OTM
+            # index puts are systematically overpriced). One-sided: wins unless the
+            # index falls through the short put.
+            credit = self._bs(spot, put_short, T, iv, False) - self._bs(spot, put_wing, T, iv, False)
+            win_prob = self.win_probability_one_sided(vix, ref_vol)
+            legs = (
+                CondorLegSpec(OptionType.PE, float(put_short), Side.SELL, False),
+                CondorLegSpec(OptionType.PE, float(put_wing), Side.BUY, True),
+            )
+            label = f"put-spread {put_wing:.0f}/{put_short:.0f}"
+        else:
+            # Symmetric iron condor — harvests the (two-sided) volatility premium.
+            credit = (
+                self._bs(spot, call_short, T, iv, True) - self._bs(spot, call_wing, T, iv, True)
+                + self._bs(spot, put_short, T, iv, False) - self._bs(spot, put_wing, T, iv, False)
+            )
+            win_prob = self.win_probability(vix, ref_vol)
+            legs = (
+                CondorLegSpec(OptionType.CE, float(call_short), Side.SELL, False),
+                CondorLegSpec(OptionType.CE, float(call_wing), Side.BUY, True),
+                CondorLegSpec(OptionType.PE, float(put_short), Side.SELL, False),
+                CondorLegSpec(OptionType.PE, float(put_wing), Side.BUY, True),
+            )
+            label = f"condor {put_wing:.0f}/{put_short:.0f}-{call_short:.0f}/{call_wing:.0f}"
+
         max_loss = wing - credit
         if credit <= 0 or max_loss <= 0:
             return ShortVolDecision(False, "no net credit / non-positive risk", vrp)
 
         # Risk-budget cap (fixed-fractional): never risk more than risk_budget of
-        # capital on one condor. This is the hard ceiling on any sizing method.
+        # capital on one position. Hard ceiling on any sizing method.
         risk_cap_lots = int((capital * self.risk_budget) / (max_loss * lot_size))
         if risk_cap_lots < 1:
             return ShortVolDecision(False, "risk budget too small for one lot", vrp)
 
         # Kelly sizing (capped by the risk budget): size grows with the real edge.
-        # When kelly_fraction is 0, fall back to the risk-budget size.
-        win_prob = self.win_probability(vix, forecast_vol or self.expected_realized(closes))
         if self.kelly_fraction > 0:
             lots = self.kelly_lots(
                 credit=credit, max_loss=max_loss, win_prob=win_prob,
@@ -219,15 +251,8 @@ class ShortVolStrategy:
             return ShortVolDecision(
                 False, f"kelly size < 1 lot (p_win {win_prob:.2f}, edge too thin)", vrp)
 
-        legs = (
-            CondorLegSpec(OptionType.CE, float(call_short), Side.SELL, False),
-            CondorLegSpec(OptionType.CE, float(call_wing), Side.BUY, True),
-            CondorLegSpec(OptionType.PE, float(put_short), Side.SELL, False),
-            CondorLegSpec(OptionType.PE, float(put_wing), Side.BUY, True),
-        )
         return ShortVolDecision(
             True,
-            f"VRP {vrp:.1f}>={self.min_vrp:.1f}; condor {put_wing:.0f}/{put_short:.0f}-"
-            f"{call_short:.0f}/{call_wing:.0f} x{lots} [{sizing}]",
+            f"VRP {vrp:.1f}>={self.min_vrp:.1f}; {label} x{lots} [{sizing}]",
             vrp, legs=legs, lots=lots, net_credit=round(credit, 2), max_loss=round(max_loss, 2),
         )
