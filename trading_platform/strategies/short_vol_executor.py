@@ -376,31 +376,28 @@ class ShortVolExecutor:
         if not _env_flag("SHORTVOL_AUTO_ENABLED", False):
             return {"ran": False, "reason": "SHORTVOL_AUTO_ENABLED=false"}
         results: list[dict] = []
+        structures = self.structures
         first = True
         for underlying in self.auto_underlyings:
-            for expiry in self.target_expiries(underlying):
-                # One structure per (underlying, expiry) — first configured that
-                # isn't already open — so put_spread and condor never stack their
-                # downside on the same expiry.
+            for i, expiry in enumerate(self.target_expiries(underlying)):
+                if not first:
+                    # Non-blocking spacing so the per-leg candle fetches don't burst
+                    # into the Angel One rate limit (see _option_last_price).
+                    await asyncio.sleep(1.0)
+                first = False
+                # One structure per expiry SLOT (condor on the near expiry,
+                # put_spread on the next, …) so both edges trade on DIFFERENT
+                # expiries and their downside never stacks on the same one.
+                structure = structures[i % len(structures)]
+                tag = {"underlying": underlying, "expiry": expiry.isoformat(), "structure": structure}
                 if self.has_open_condor(underlying, expiry):
-                    results.append({"underlying": underlying, "expiry": expiry.isoformat(),
-                                    "submitted": False, "reason": "position already open"})
+                    results.append({**tag, "submitted": False, "reason": "position already open"})
                     continue
-                for structure in self.structures:
-                    if not first:
-                        # Non-blocking spacing so the per-leg candle fetches don't
-                        # burst into the Angel One rate limit (see _option_last_price).
-                        await asyncio.sleep(1.0)
-                    first = False
-                    tag = {"underlying": underlying, "expiry": expiry.isoformat(),
-                           "structure": structure}
-                    try:
-                        res = await self.enter(underlying, expiry, structure)
-                    except Exception as exc:
-                        logger.warning("short-vol auto-enter failed for %s %s %s: %s",
-                                       underlying, expiry, structure, exc)
-                        res = {"submitted": False, "reason": f"error: {exc}"}
-                    results.append({**tag, **res})
-                    if res.get("submitted"):
-                        break   # one structure filled for this expiry — done
+                try:
+                    res = await self.enter(underlying, expiry, structure)
+                except Exception as exc:
+                    logger.warning("short-vol auto-enter failed for %s %s %s: %s",
+                                   underlying, expiry, structure, exc)
+                    res = {"submitted": False, "reason": f"error: {exc}"}
+                results.append({**tag, **res})
         return {"ran": True, "results": results}
