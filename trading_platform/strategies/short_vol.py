@@ -86,9 +86,20 @@ class ShortVolStrategy:
         logret = np.diff(np.log(c[-(window + 1):]))
         return float(logret.std() * math.sqrt(252) * 100.0)
 
-    def vrp(self, vix: float, closes: list[float] | np.ndarray) -> float:
-        """Volatility risk premium in vol points: implied (VIX) minus realized."""
-        return float(vix) - self.realized_vol(closes)
+    def expected_realized(self, closes: list[float] | np.ndarray, forecast_vol: float | None = None) -> float:
+        """Best estimate of the volatility that WILL be realized over the hold.
+
+        VRP is implied vol minus *future* realized vol. Trailing 20-day realized
+        is only a proxy; when a validated forward forecast is supplied (e.g. GARCH
+        conditional vol, which captures mean-reversion), use it instead — this is
+        the correct reference for the premium and sharpens every entry."""
+        if forecast_vol is not None and forecast_vol > 0:
+            return float(forecast_vol)
+        return self.realized_vol(closes)
+
+    def vrp(self, vix: float, closes: list[float] | np.ndarray, forecast_vol: float | None = None) -> float:
+        """Volatility risk premium in vol points: implied (VIX) minus expected realized."""
+        return float(vix) - self.expected_realized(closes, forecast_vol)
 
     # ── construction + sizing ──────────────────────────────────────────────────
 
@@ -112,6 +123,7 @@ class ShortVolStrategy:
         lot_size: int,
         strike_step: int | None = None,
         wing_width: float | None = None,
+        forecast_vol: float | None = None,
     ) -> ShortVolDecision:
         """The full entry decision: signal → strikes → sizing. Pure/deterministic.
 
@@ -121,7 +133,7 @@ class ShortVolStrategy:
         caller pass the index's real strike spacing and a price-scaled wing so the
         same logic works across NIFTY/BANKNIFTY/SENSEX etc.; both fall back to the
         NIFTY-tuned defaults when omitted."""
-        vrp = self.vrp(vix, closes)
+        vrp = self.vrp(vix, closes, forecast_vol)
         if spot <= 0 or vix <= 0:
             return ShortVolDecision(False, "no spot/vix", vrp)
         if vrp < self.min_vrp:
