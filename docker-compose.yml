@@ -60,6 +60,9 @@ services:
       - SHORTVOL_ENTRY_HOUR=${SHORTVOL_ENTRY_HOUR:-10}
       # GARCH vol forecast for VRP (validated: beats naive on all indices).
       - SHORTVOL_USE_VOL_FORECAST=${SHORTVOL_USE_VOL_FORECAST:-false}
+      # Fractional-Kelly sizing (0 = risk-budget only) + multi-expiry (1 = nearest).
+      - SHORTVOL_KELLY_FRACTION=${SHORTVOL_KELLY_FRACTION:-0.30}
+      - SHORTVOL_MAX_EXPIRIES=${SHORTVOL_MAX_EXPIRIES:-1}
       - EXIT_TARGET_PCT=${EXIT_TARGET_PCT:-0.008}
       - EXIT_STOP_PCT=${EXIT_STOP_PCT:-0.005}
       - EXIT_TRAIL_PCT=${EXIT_TRAIL_PCT:-0.004}

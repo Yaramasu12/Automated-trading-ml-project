@@ -95,8 +95,14 @@ def _option(underlying="NIFTY", strike=24000.0, ot=OptionType.CE, expiry=None):
 
 
 class ShortVolAutoEntryTests(unittest.TestCase):
-    def _executor(self, positions):
-        rt = SimpleNamespace(portfolio=SimpleNamespace(positions=positions))
+    def _executor(self, positions, expiries=None):
+        from datetime import date as _date
+        exps = expiries if expiries is not None else [_date(2100, 1, 7)]
+        master = SimpleNamespace(expiries=lambda u, seg=None: list(exps))
+        rt = SimpleNamespace(
+            portfolio=SimpleNamespace(positions=positions),
+            instrument_master=master,
+        )
         return ShortVolExecutor(rt)
 
     def test_has_open_condor_true_when_option_position_open(self):
@@ -124,13 +130,25 @@ class ShortVolAutoEntryTests(unittest.TestCase):
         self.assertFalse(out["ran"])
 
     def test_auto_enter_skips_when_condor_open(self):
-        pos = {"NIFTY24000CE": Position(instrument=_option(), quantity=-50)}
-        ex = self._executor(pos)
-        with mock.patch.dict(os.environ, {"SHORTVOL_AUTO_ENABLED": "true", "SHORTVOL_AUTO_UNDERLYINGS": "NIFTY"}):
+        from datetime import date as _date
+        exp = _date(2100, 1, 7)
+        pos = {"NIFTY24000CE": Position(instrument=_option(expiry=exp), quantity=-50)}
+        ex = self._executor(pos, expiries=[exp])
+        with mock.patch.dict(os.environ, {"SHORTVOL_AUTO_ENABLED": "true", "SHORTVOL_AUTO_UNDERLYINGS": "NIFTY",
+                                          "SHORTVOL_MAX_EXPIRIES": "1"}):
             out = asyncio.run(ex.auto_enter(datetime(2026, 7, 13, 10, 30)))
         self.assertTrue(out["ran"])
         self.assertEqual(out["results"][0]["reason"], "condor already open")
         self.assertFalse(out["results"][0]["submitted"])
+
+    def test_multi_expiry_targets_two(self):
+        from datetime import date as _date
+        exps = [_date(2100, 1, 7), _date(2100, 1, 28)]
+        ex = self._executor({}, expiries=exps)
+        with mock.patch.dict(os.environ, {"SHORTVOL_MAX_EXPIRIES": "2"}):
+            self.assertEqual(len(ex.target_expiries("NIFTY")), 2)
+        with mock.patch.dict(os.environ, {"SHORTVOL_MAX_EXPIRIES": "1"}):
+            self.assertEqual(len(ex.target_expiries("NIFTY")), 1)
 
 
 class MultiIndexTests(unittest.TestCase):
