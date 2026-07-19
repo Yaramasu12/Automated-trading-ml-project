@@ -20,7 +20,6 @@ import {
   X,
   MoreHorizontal,
   Waypoints,
-  AtomIcon,
   Target,
   ScrollText,
   Trophy,
@@ -58,7 +57,6 @@ const NAV: NavItem[] = [
   { id: 'ai-lab',       label: 'AI Lab',       shortLabel: 'AI Lab',   icon: <Sparkles size={16} />,        group: 'AI Labs' },
   { id: 'ai-council',   label: 'AI Council',   shortLabel: 'Council',  icon: <Users size={16} />,           group: 'AI Labs' },
   { id: 'neural',       label: 'Neural Lab',   shortLabel: 'Neural',   icon: <Brain size={16} />,           group: 'AI Labs' },
-  { id: 'quantum',      label: 'Quantum Lab',  shortLabel: 'Quantum',  icon: <AtomIcon size={16} />,        group: 'AI Labs' },
   // ── Governance ────────────────────────────────────────────────────────────
   { id: 'goal-governor',label: 'Goal Gov.',    shortLabel: 'Goal',     icon: <Target size={16} />,          group: 'Governance' },
   { id: 'policies',     label: 'Policies',     shortLabel: 'Policies', icon: <ScrollText size={16} />,      group: 'Governance' },
@@ -74,7 +72,6 @@ const TOP_RAIL_NAV: NavItem[] = [
   findNav('ai-lab'),
   findNav('ai-council'),
   findNav('neural'),
-  findNav('quantum'),
   findNav('engine'),
   findNav('signals'),
   findNav('strategies'),
@@ -95,7 +92,6 @@ const BOTTOM_TABS: NavItem[] = [
   findNav('dashboard'),
   findNav('ai-lab'),
   findNav('neural'),
-  findNav('quantum'),
 ]
 
 // Group labels for sidebar sections

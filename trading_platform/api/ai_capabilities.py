@@ -42,14 +42,6 @@ def ai_capabilities(runtime: Any) -> dict:
         "role": "advisory",
     }
 
-    # ── Quantum portfolio optimisation ────────────────────────────────────────
-    backend = str(getattr(s, "quantum_backend", "classical") or "classical").lower()
-    layers["quantum"] = {
-        "status": "real" if backend in ("qiskit", "dwave") else "classical_fallback",
-        "detail": f"backend={backend}",
-        "role": "advisory",
-    }
-
     # ── Neural forecaster ─────────────────────────────────────────────────────
     neural = None
     try:

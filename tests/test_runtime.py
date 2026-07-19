@@ -282,7 +282,6 @@ class RuntimeTests(unittest.TestCase):
             base_settings,
             enable_ai_council=False,
             enable_neural_lab=False,
-            enable_quantum_lab=False,
             enable_marl_lab=False,
         )
         runtime = TradingRuntime(settings)
@@ -304,7 +303,6 @@ class RuntimeTests(unittest.TestCase):
         self.assertGreaterEqual(result["blackboard"]["n_pipeline_candidates"], 0)
         self.assertIsNone(result["ai_council"])
         self.assertIsNone(result["neural"])
-        self.assertIsNone(result["quantum"])
         self.assertIsNone(result["ensemble"])
         replay = runtime.trace_replay(result["trace_id"])
         self.assertIsNotNone(replay)

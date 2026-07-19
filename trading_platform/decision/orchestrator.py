@@ -24,11 +24,9 @@ from trading_platform.agent.trading_agent import SCAN_UNDERLYINGS
 from trading_platform.agents.schemas import AgentInputContext
 from trading_platform.decision_fusion.schemas import DecisionBlackboard
 from trading_platform.domain.enums import ExecutionMode
-from trading_platform.quantum.schemas import PortfolioOptimizationRequest, QuantumCandidate
 from trading_platform.streaming.topics import (
     publish_agent_vote,
     publish_model_prediction,
-    publish_quantum_result,
     publish_risk_veto,
 )
 from trading_platform.trace.ids import new_trace_id
@@ -292,7 +290,6 @@ class DecisionCycleOrchestrator:
             "baseline": baseline_payload,
             "ai_council": None,
             "neural": None,
-            "quantum": None,
             "marl": None,
             "ensemble": None,
             "goal_governor": None,
@@ -307,23 +304,6 @@ class DecisionCycleOrchestrator:
         regime = self._regime_for(symbols)
 
         kernel_result = None
-        if self._rt.settings.enable_quantum_lab:
-            try:
-                kernel_features = [
-                    float(portfolio_state.get("drawdown", 0.0)),
-                    float(portfolio_state.get("equity", self._rt.settings.initial_capital))
-                    / max(float(self._rt.settings.initial_capital), 1.0),
-                    float(portfolio_state.get("open_positions", 0)) / 10.0,
-                ]
-                kernel_result = self._rt._quantum_kernel_service.classify_regime(
-                    trace_id=trace_id,
-                    features=kernel_features,
-                    classical_regime=regime,
-                )
-                result["quantum_kernel"] = kernel_result.to_dict()
-            except Exception as exc:
-                logger.warning("decision cycle: quantum kernel error: %s", exc)
-
         council_decision = None
         if self._rt.settings.enable_ai_council:
             try:
@@ -379,35 +359,6 @@ class DecisionCycleOrchestrator:
                 logger.warning("decision cycle: neural service error: %s", exc)
 
         quantum_result = None
-        if self._rt.settings.enable_quantum_lab and council_decision:
-            try:
-                candidates = [
-                    QuantumCandidate(
-                        symbol=proposal.symbol,
-                        side=proposal.side,
-                        expected_edge=max(0.0, proposal.edge_estimate),
-                        risk_estimate=max(0.01, proposal.risk_estimate),
-                        liquidity_score=1.0,
-                    )
-                    for proposal in council_decision.strategy_proposals[
-                        : self._rt.settings.quantum_max_candidates
-                    ]
-                ]
-                if candidates:
-                    req = PortfolioOptimizationRequest(
-                        trace_id=trace_id,
-                        candidates=candidates,
-                        risk_aversion=self._rt.settings.quantum_risk_aversion,
-                        cardinality_limit=self._rt.settings.quantum_cardinality_limit,
-                    )
-                    quantum_result = self._rt._quantum_service.optimize(req)
-                    result["quantum"] = quantum_result.to_dict()
-                    try:
-                        publish_quantum_result(self._rt.typed_bus, quantum_result.to_dict())
-                    except Exception:
-                        pass
-            except Exception as exc:
-                logger.warning("decision cycle: quantum service error: %s", exc)
 
         rl_advisory = self._run_marl_advisory(portfolio_state) if self._rt.settings.enable_marl_lab else {}
         if rl_advisory:
@@ -420,8 +371,6 @@ class DecisionCycleOrchestrator:
             pipeline_candidates=self._pipeline_candidates(baseline_payload),
             agent_council_decision=council_decision,
             neural_bundle=neural_bundle,
-            quantum_result=quantum_result,
-            quantum_kernel_result=kernel_result,
             rl_advisory=rl_advisory,
             portfolio_state=portfolio_state,
             market_regime=regime,
@@ -457,7 +406,6 @@ class DecisionCycleOrchestrator:
             "components_active": {
                 "ai_council": self._rt.settings.enable_ai_council,
                 "neural_lab": self._rt.settings.enable_neural_lab,
-                "quantum_lab": self._rt.settings.enable_quantum_lab,
                 "marl_lab": self._rt.settings.enable_marl_lab,
                 "goal_governor": self._rt.settings.enable_goal_governor,
             },

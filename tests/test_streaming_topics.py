@@ -17,7 +17,6 @@ from trading_platform.streaming.topics import (
     publish_features,
     publish_model_prediction,
     publish_order_event,
-    publish_quantum_result,
     publish_risk_veto,
     publish_tick,
 )
@@ -33,7 +32,6 @@ class TestBusTopic:
         assert BusTopic.FEATURES.value == "features"
         assert BusTopic.AGENT_VOTE.value == "agent.vote"
         assert BusTopic.MODEL_PREDICTION.value == "model.prediction"
-        assert BusTopic.QUANTUM_RESULT.value == "quantum.result"
         assert BusTopic.RISK_VETO.value == "risk.veto"
         assert BusTopic.ORDER_EVENT.value == "order.event"
 
@@ -45,7 +43,7 @@ class TestBusTopic:
         values = {t.value for t in BusTopic}
         required = {
             "tick.raw", "bar.closed", "option.chain", "features",
-            "agent.vote", "model.prediction", "quantum.result",
+            "agent.vote", "model.prediction",
             "risk.veto", "order.event",
         }
         assert required.issubset(values)
@@ -297,14 +295,6 @@ class TestPublishHelpers:
         publish_model_prediction(bus, {"return_q50": 0.02})
         assert len(received) == 1
         assert received[0].source == "neural_service"
-
-    def test_publish_quantum_result(self):
-        bus = self._bus()
-        received = []
-        bus.subscribe(BusTopic.QUANTUM_RESULT, lambda msg: received.append(msg))
-        publish_quantum_result(bus, {"optimal_weights": [0.5, 0.3, 0.2]})
-        assert len(received) == 1
-        assert received[0].source == "quantum_service"
 
     def test_publish_risk_veto(self):
         bus = self._bus()

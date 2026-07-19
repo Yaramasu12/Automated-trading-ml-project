@@ -85,13 +85,6 @@ class OrchestratorState:
     neural_model_versions: dict[str, str] = field(default_factory=dict)
     neural_passed: bool = False
 
-    # ── Node 4: Quantum Portfolio ─────────────────────────────────────────────
-    quantum_selected_symbols: list[str] = field(default_factory=list)
-    quantum_improvement: float = 0.0
-    quantum_backend: str = "classical"
-    quantum_beats_baseline: bool = False
-    quantum_objective: float = 0.0
-
     # ── Node 5: Risk Critic (hard gates) ─────────────────────────────────────
     risk_approved: bool = False
     risk_score: float = 0.0

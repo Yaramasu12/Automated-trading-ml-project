@@ -14,8 +14,6 @@ from trading_platform.agents.model_gateway import LocalModelGateway
 from trading_platform.agents.schemas import AgentInputContext
 from trading_platform.agents.supervisor import AgentCouncilSupervisor
 from trading_platform.neural.serving import NeuralPredictionService
-from trading_platform.quantum.service import QuantumOptimizationService
-from trading_platform.quantum.schemas import PortfolioOptimizationRequest, QuantumCandidate
 from trading_platform.decision_fusion.schemas import DecisionBlackboard
 from trading_platform.decision_fusion.fusion import EnsembleDecisionEngine
 from trading_platform.decision_fusion.goal_governor import GoalGovernor
@@ -108,32 +106,6 @@ class TestIntegrationNeuralEnabled(unittest.TestCase):
         from trading_platform.neural.schemas import NeuralPredictionBundle
         bundle = NeuralPredictionBundle(trace_id="t", overall_uncertainty=0.90)
         self.assertFalse(self._neural.should_trade(bundle))
-
-
-class TestIntegrationQuantumEnabled(unittest.TestCase):
-    def setUp(self):
-        self._svc = QuantumOptimizationService(backend="classical", timeout=2)
-
-    def test_enabled_path_returns_trace_metadata(self):
-        req = PortfolioOptimizationRequest(
-            trace_id=new_trace_id(),
-            candidates=[
-                QuantumCandidate("NIFTY", "BUY", 0.01, 0.3),
-                QuantumCandidate("BANKNIFTY", "BUY", 0.015, 0.4),
-            ],
-            cardinality_limit=1,
-        )
-        result = self._svc.optimize(req)
-        self.assertIn("trace_id", result.to_dict())
-        self.assertLessEqual(len(result.selected_symbols), 1)
-
-    def test_optimizer_cannot_bypass_risk_engine(self):
-        """Optimizer returns advisory result, not orders."""
-        req = PortfolioOptimizationRequest(
-            trace_id="t", candidates=[QuantumCandidate("X", "BUY", 0.01, 0.3)]
-        )
-        result = self._svc.optimize(req)
-        self.assertNotIn("order_id", str(result.to_dict()))
 
 
 class TestIntegrationEnsemble(unittest.TestCase):

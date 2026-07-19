@@ -78,7 +78,6 @@ from trading_platform.api.news_service import NewsService
 from trading_platform.api.policy_service import PolicyService
 from trading_platform.api.options_service import OptionsService
 from trading_platform.api.regime_meta_service import RegimeMetaService
-from trading_platform.api.quantum_lab_service import QuantumLabService
 from trading_platform.api.live_feed_service import LiveFeedService
 from trading_platform.api.ai_capabilities import ai_capabilities, log_capabilities_at_startup
 from trading_platform.logging_safety import note_swallowed, swallowed_error_count
@@ -88,9 +87,6 @@ from trading_platform.agents.supervisor import AgentCouncilSupervisor
 from trading_platform.agents.schemas import AgentInputContext
 from trading_platform.agents.vector_memory import RAGRetriever, VectorMemoryStore
 from trading_platform.neural.serving import NeuralPredictionService
-from trading_platform.quantum.service import QuantumOptimizationService
-from trading_platform.quantum.schemas import PortfolioOptimizationRequest, QuantumCandidate
-from trading_platform.quantum.quantum_kernel import QuantumKernelResearchService
 from trading_platform.decision_fusion.fusion import EnsembleDecisionEngine
 from trading_platform.decision_fusion.goal_governor import GoalGovernor
 from trading_platform.rl.policies import MockPolicy, PolicyRecord, PolicyRegistry, SimpleMomentumPolicy
@@ -341,18 +337,6 @@ class TradingRuntime:
         else:
             self._neural_service = None
 
-        if self.settings.enable_quantum_lab:
-            self._quantum_service = QuantumOptimizationService(
-                backend=self.settings.quantum_backend,
-                timeout=self.settings.quantum_timeout_seconds,
-                min_baseline_improvement=self.settings.quantum_min_baseline_improvement,
-                trace_store=self.trace_store,
-            )
-        else:
-            self._quantum_service = None
-        # Kernel service is shadow-only and has no external deps — always instantiate.
-        self._quantum_kernel_service = QuantumKernelResearchService()
-
         # Ensemble engine and goal governor are lightweight; always instantiate.
         self._ensemble_engine = EnsembleDecisionEngine()
         self._goal_governor = GoalGovernor(
@@ -436,13 +420,6 @@ class TradingRuntime:
             meta_model=self.meta_model,
             strategy_factory=self.strategy_factory,
         )
-        self._quantum_lab_service = QuantumLabService(
-            quantum_service=self._quantum_service,
-            quantum_kernel_service=self._quantum_kernel_service,
-            settings=self.settings,
-            trace_store=self.trace_store,
-        )
-
         # Honest startup banner: which "advanced" AI layers are inert/advisory.
         log_capabilities_at_startup(self)
 
@@ -484,10 +461,6 @@ class TradingRuntime:
     @property
     def neural_service(self):
         return self._neural_service
-
-    @property
-    def quantum_service(self):
-        return self._quantum_service
 
     @property
     def goal_governor(self):
@@ -3216,19 +3189,6 @@ class TradingRuntime:
         return decision.to_dict()
 
     # ------------------------------------------------------------------
-    # Phase 4: Quantum API helpers
-    # ------------------------------------------------------------------
-
-    def quantum_status(self) -> dict:
-        return self._quantum_lab_service.quantum_status()
-
-    def quantum_kernel_status(self) -> dict:
-        return self._quantum_lab_service.quantum_kernel_status()
-
-    def quantum_optimize_preview(self, payload: dict) -> dict:
-        return self._quantum_lab_service.quantum_optimize_preview(payload)
-
-
     # ------------------------------------------------------------------
     # Phase 6: Goal governor API helpers
     # ------------------------------------------------------------------
