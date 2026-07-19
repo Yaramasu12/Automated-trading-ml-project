@@ -213,6 +213,18 @@ class ShortVolStrategy:
                 CondorLegSpec(OptionType.PE, float(put_wing), Side.BUY, True),
             )
             label = f"put-spread {put_wing:.0f}/{put_short:.0f}"
+        elif struct == "call_spread":
+            # Bear call spread — harvests the UPSIDE vol premium. One-sided: wins
+            # unless the index rallies through the short call. (Index call skew is
+            # thinner than put skew, so credit is usually smaller — the VRP gate
+            # and Kelly sizing handle that automatically.)
+            credit = self._bs(spot, call_short, T, iv, True) - self._bs(spot, call_wing, T, iv, True)
+            win_prob = self.win_probability_one_sided(vix, ref_vol)   # P(below short call)
+            legs = (
+                CondorLegSpec(OptionType.CE, float(call_short), Side.SELL, False),
+                CondorLegSpec(OptionType.CE, float(call_wing), Side.BUY, True),
+            )
+            label = f"call-spread {call_short:.0f}/{call_wing:.0f}"
         else:
             # Symmetric iron condor — harvests the (two-sided) volatility premium.
             credit = (

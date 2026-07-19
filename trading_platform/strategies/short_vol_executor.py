@@ -252,14 +252,16 @@ class ShortVolExecutor:
         # (real protection). A too-narrow chain snaps short and wing to the same
         # strike, collapsing into unprotected/zero-width risk — never execute that.
         by = {(l["option_type"], l["side"]): l["strike"] for l in out["legs"]}
+        cs, cw = by.get(("CE", "SELL")), by.get(("CE", "BUY"))
         ps, pw = by.get(("PE", "SELL")), by.get(("PE", "BUY"))
-        ok = ps is not None and pw is not None and pw < ps   # put wing below short
-        if structure == "condor":
-            cs, cw = by.get(("CE", "SELL")), by.get(("CE", "BUY"))
-            ok = ok and cs is not None and cw is not None and cw > cs
-            detail = f"(CE {by.get(('CE','SELL'))}/{by.get(('CE','BUY'))}, PE {ps}/{pw})"
-        else:
-            detail = f"(PE {ps}/{pw})"
+        put_ok = ps is not None and pw is not None and pw < ps    # put wing below short
+        call_ok = cs is not None and cw is not None and cw > cs   # call wing above short
+        if structure == "put_spread":
+            ok, detail = put_ok, f"(PE {ps}/{pw})"
+        elif structure == "call_spread":
+            ok, detail = call_ok, f"(CE {cs}/{cw})"
+        else:  # condor needs both
+            ok, detail = (put_ok and call_ok), f"(CE {cs}/{cw}, PE {ps}/{pw})"
         if not ok:
             out["enter"] = False
             out["reason"] = (
@@ -319,9 +321,13 @@ class ShortVolExecutor:
         (SHORTVOL_MAX_EXPIRIES, default 1). Setting 2 adds the next expiry
         (e.g. weekly + monthly) → more condors on the same VRP edge."""
         n = max(1, int(os.getenv("SHORTVOL_MAX_EXPIRIES", "1")))
+        # Skip expiries too close to expiry — near-expiry short-vol is thin premium
+        # and high gamma. Continuous entry relies on this to keep quality.
+        min_dte = max(0, int(os.getenv("SHORTVOL_MIN_DTE", "1")))
         today = date.today()
         try:
-            exps = sorted(e for e in self._rt.instrument_master.expiries(underlying, Segment.OPTIONS) if e >= today)
+            exps = sorted(e for e in self._rt.instrument_master.expiries(underlying, Segment.OPTIONS)
+                          if (e - today).days >= min_dte)
         except Exception as exc:
             logger.warning("short-vol: expiry list failed for %s: %s", underlying, exc)
             exps = []
@@ -357,7 +363,7 @@ class ShortVolExecutor:
         and/or put_spread (downside skew premium). One structure per (underlying,
         expiry) — they don't stack, to avoid concentrating downside risk."""
         raw = os.getenv("SHORTVOL_STRUCTURES", "condor")
-        valid = {"condor", "put_spread"}
+        valid = {"condor", "put_spread", "call_spread"}
         out = [s.strip().lower() for s in raw.split(",") if s.strip().lower() in valid]
         return out or ["condor"]
 
