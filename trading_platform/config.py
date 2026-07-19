@@ -69,7 +69,6 @@ class Settings:
     # ── Phase 1–9 feature flags ──────────────────────────────────────────────────
     enable_ai_council: bool = True
     enable_neural_lab: bool = True    # MA forecaster is always available; safe to enable by default
-    enable_quantum_lab: bool = True
     enable_marl_lab: bool = True
     enable_goal_governor: bool = True
 
@@ -82,14 +81,6 @@ class Settings:
     local_llm_base_url: str = "http://localhost:11434"
     local_llm_timeout_seconds: int = 15
     local_llm_max_output_tokens: int = 2048
-
-    # Quantum lab
-    quantum_backend: str = "classical"           # classical | qiskit | dwave
-    quantum_timeout_seconds: int = 3
-    quantum_max_candidates: int = 12
-    quantum_risk_aversion: float = 1.0
-    quantum_cardinality_limit: int = 4
-    quantum_min_baseline_improvement: float = 0.0
 
     # Goal governor
     yearly_profit_target: float = 50_000_000.0   # 5 crore INR aspirational target
@@ -201,7 +192,6 @@ def load_settings() -> Settings:
         # Phase 1-9 flags
         enable_ai_council=_bool_env("ENABLE_AI_COUNCIL", True),
         enable_neural_lab=_bool_env("ENABLE_NEURAL_LAB", True),
-        enable_quantum_lab=_bool_env("ENABLE_QUANTUM_LAB", True),
         enable_marl_lab=_bool_env("ENABLE_MARL_LAB", True),
         enable_goal_governor=_bool_env("ENABLE_GOAL_GOVERNOR", True),
         local_llm_gateway=os.getenv("LOCAL_LLM_GATEWAY", "disabled"),
@@ -212,12 +202,6 @@ def load_settings() -> Settings:
         local_llm_base_url=os.getenv("LOCAL_LLM_BASE_URL", "http://localhost:11434"),
         local_llm_timeout_seconds=int(os.getenv("LOCAL_LLM_TIMEOUT_SECONDS", "15")),
         local_llm_max_output_tokens=int(os.getenv("LOCAL_LLM_MAX_OUTPUT_TOKENS", "2048")),
-        quantum_backend=os.getenv("QUANTUM_BACKEND", "classical"),
-        quantum_timeout_seconds=int(os.getenv("QUANTUM_TIMEOUT_SECONDS", "3")),
-        quantum_max_candidates=int(os.getenv("QUANTUM_MAX_CANDIDATES", "12")),
-        quantum_risk_aversion=float(os.getenv("QUANTUM_RISK_AVERSION", "1.0")),
-        quantum_cardinality_limit=int(os.getenv("QUANTUM_CARDINALITY_LIMIT", "4")),
-        quantum_min_baseline_improvement=float(os.getenv("QUANTUM_MIN_BASELINE_IMPROVEMENT", "0.0")),
         yearly_profit_target=float(os.getenv("YEARLY_PROFIT_TARGET", "50000000")),
         database_url=os.getenv("DATABASE_URL", ""),
     )

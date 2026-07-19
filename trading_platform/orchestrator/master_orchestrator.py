@@ -153,7 +153,6 @@ class MasterOrchestrator:
             ("market_intelligence", self._node_market_intelligence),
             ("specialist_crew",     self._node_specialist_crew),
             ("neural_forecast",     self._node_neural_forecast),
-            ("quantum_portfolio",   self._node_quantum_portfolio),
             ("risk_critic",         self._node_risk_critic),
             ("profit_guard",        self._node_profit_guard),
             ("consensus_fusion",    self._node_consensus_fusion),
@@ -167,7 +166,7 @@ class MasterOrchestrator:
         # tick feed (health checks spiking to ~7s). Threading it keeps the loop
         # responsive during scans.
         _HEAVY_NODES = frozenset(
-            {"market_intelligence", "specialist_crew", "neural_forecast", "quantum_portfolio"}
+            {"market_intelligence", "specialist_crew", "neural_forecast"}
         )
 
         for node_name, node_fn in pipeline:
@@ -571,50 +570,6 @@ class MasterOrchestrator:
 
     # ── Node 4: Quantum Portfolio ──────────────────────────────────────────────
 
-    def _node_quantum_portfolio(self, state: OrchestratorState) -> NodeResult:
-        updates: dict[str, Any] = {
-            "quantum_selected_symbols": state.symbol_universe,
-            "quantum_backend": "classical",
-            "quantum_beats_baseline": False,
-            "quantum_improvement": 0.0,
-        }
-        try:
-            from trading_platform.quantum.schemas import PortfolioOptimizationRequest, QuantumCandidate
-            # QuantumOptimizationService.optimize(req: PortfolioOptimizationRequest) — not keyword args
-            # NOTE: Node 4 runs BEFORE ConsensusFusion (Node 7), so state.fusion_action is not
-            # populated yet. Use the crew's decided side, which IS available from Node 2.
-            fusion_side = state.crew_action if state.crew_action in ("BUY", "SELL") else "BUY"
-            q_candidates = [
-                QuantumCandidate(
-                    symbol=sym,
-                    side=fusion_side,
-                    expected_edge=max(0.001, state.neural_expected_return),
-                    risk_estimate=max(0.01, state.neural_uncertainty * 0.5),
-                    liquidity_score=1.0,
-                )
-                for sym in (state.symbol_universe or [state.underlying])[:10]
-            ]
-            req = PortfolioOptimizationRequest(
-                trace_id=state.trace_id,
-                candidates=q_candidates,
-                cardinality_limit=getattr(
-                    self._runtime.settings, "quantum_cardinality_limit", 5
-                ),
-            )
-            result = self._runtime.quantum_service.optimize(req)
-            if result:
-                updates["quantum_selected_symbols"] = list(
-                    getattr(result, "selected_symbols", state.symbol_universe)
-                )
-                updates["quantum_backend"] = getattr(result, "backend_used", "classical")
-                updates["quantum_beats_baseline"] = bool(getattr(result, "beats_baseline", False))
-                improvement = getattr(result, "improvement_over_classical", None)
-                updates["quantum_improvement"] = float(improvement) if improvement is not None else 0.0
-                updates["quantum_objective"] = float(getattr(result, "objective_value", 0.0))
-        except Exception as e:
-            logger.debug("Quantum portfolio failed (non-critical): %s", e)
-        return NodeResult(updates=updates)
-
     # ── Node 5: Risk Critic ────────────────────────────────────────────────────
 
     def _node_risk_critic(self, state: OrchestratorState) -> NodeResult:
@@ -879,12 +834,7 @@ class MasterOrchestrator:
         action = state.fusion_action.upper()
         multiplier = state.position_size_multiplier
 
-        # Use quantum-selected symbols if available and better than baseline
-        symbols_to_trade = (
-            state.quantum_selected_symbols
-            if state.quantum_beats_baseline and state.quantum_selected_symbols
-            else state.symbol_universe[:5]   # cap at 5 symbols per cycle
-        )
+        symbols_to_trade = state.symbol_universe[:5]   # cap at 5 symbols per cycle
 
         for symbol in symbols_to_trade:
             candidates.append({

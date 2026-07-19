@@ -7,7 +7,6 @@ from typing import Any, TYPE_CHECKING
 if TYPE_CHECKING:
     from trading_platform.agents.schemas import AgentCouncilDecision
     from trading_platform.neural.schemas import NeuralPredictionBundle
-    from trading_platform.quantum.schemas import QuantumKernelResult, QuantumOptimizationResult
 
 
 @dataclass
@@ -26,8 +25,6 @@ class DecisionBlackboard:
     # From new layers (all optional / advisory)
     agent_council_decision: AgentCouncilDecision | None = None
     neural_bundle: NeuralPredictionBundle | None = None
-    quantum_result: QuantumOptimizationResult | None = None
-    quantum_kernel_result: QuantumKernelResult | None = None   # shadow research only
     rl_advisory: dict[str, Any] = field(default_factory=dict)
 
     # Context
@@ -42,7 +39,6 @@ class DecisionBlackboard:
     ts: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
     def to_dict(self) -> dict:
-        qk = self.quantum_kernel_result
         return {
             "trace_id": self.trace_id,
             "execution_mode": self.execution_mode,
@@ -50,8 +46,6 @@ class DecisionBlackboard:
             "n_pipeline_candidates": len(self.pipeline_candidates),
             "agent_council_action": self.agent_council_decision.action if self.agent_council_decision else None,
             "neural_uncertainty": self.neural_bundle.overall_uncertainty if self.neural_bundle else None,
-            "quantum_backend": self.quantum_result.backend_used if self.quantum_result else None,
-            "quantum_kernel": qk.to_dict() if qk else None,
             "market_regime": self.market_regime,
             "risk_precheck_ok": self.risk_precheck_ok,
             "ts": self.ts.isoformat(),

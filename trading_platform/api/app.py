@@ -1010,34 +1010,6 @@ def neural_predict_preview(payload: dict):
     return runtime.neural_predict_preview(payload)
 
 
-# ── Quantum Lab ────────────────────────────────────────────────────────────────
-
-@app.get("/quantum/status")
-def quantum_status():
-    return runtime.quantum_status()
-
-
-@app.get("/quantum/kernel/status")
-def quantum_kernel_status():
-    return runtime.quantum_kernel_status()
-
-
-@app.post("/quantum/optimize-preview", dependencies=[_AuthDep])
-def quantum_optimize_preview(payload: dict):
-    return runtime.quantum_optimize_preview(payload)
-
-
-@app.get("/quantum/results", dependencies=[_AuthDep])
-def quantum_results(limit: int = 20):
-    traces = list(runtime.trace_store.iter_recent(limit))
-    results = [
-        {"trace_id": t.get("trace_id"), "quantum_result_id": t.get("quantum_result_id")}
-        for t in traces
-        if t.get("quantum_result_id")
-    ]
-    return {"count": len(results), "results": results}
-
-
 # ── Goal Governor ──────────────────────────────────────────────────────────────
 
 @app.get("/goal-governor/status")

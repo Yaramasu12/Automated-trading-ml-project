@@ -12,7 +12,6 @@ import { Execution } from './views/Execution'
 import { Intelligence } from './views/Intelligence'
 import { AICouncil } from './views/AICouncil'
 import { NeuralLab } from './views/NeuralLab'
-import { QuantumLab } from './views/QuantumLab'
 import { GoalGovernor } from './views/GoalGovernor'
 import { Policies } from './views/Policies'
 import { TraceReplay } from './views/TraceReplay'
@@ -38,7 +37,6 @@ export function App() {
       case 'account':      return <Account />
       case 'ai-council':   return <AICouncil />
       case 'neural':       return <NeuralLab />
-      case 'quantum':      return <QuantumLab />
       case 'goal-governor':return <GoalGovernor />
       case 'policies':     return <Policies />
       case 'traces':       return <TraceReplay />

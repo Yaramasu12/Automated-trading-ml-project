@@ -17,7 +17,6 @@ Canvas topics implemented
   features        - feature vectors from FeatureStore.append()
   agent.vote      - AgentCouncilDecision from AgentCouncilSupervisor
   model.prediction - NeuralPredictionBundle from NeuralPredictionService
-  quantum.result  - QuantumOptimizationResult from QuantumOptimizationService
   risk.veto       - RiskEngine / ComplianceGuard rejection event
   order.event     - order lifecycle: submitted | filled | rejected | cancelled
 
@@ -48,7 +47,6 @@ class BusTopic(str, Enum):
     FEATURES          = "features"
     AGENT_VOTE        = "agent.vote"
     MODEL_PREDICTION  = "model.prediction"
-    QUANTUM_RESULT    = "quantum.result"
     RISK_VETO         = "risk.veto"
     ORDER_EVENT       = "order.event"
 
@@ -230,11 +228,6 @@ def publish_agent_vote(bus: TypedTopicBus, decision: dict[str, Any]) -> None:
 def publish_model_prediction(bus: TypedTopicBus, bundle: dict[str, Any]) -> None:
     """Shorthand for MODEL_PREDICTION messages from NeuralPredictionService."""
     bus.publish(BusTopic.MODEL_PREDICTION, bundle, source="neural_service")
-
-
-def publish_quantum_result(bus: TypedTopicBus, result: dict[str, Any]) -> None:
-    """Shorthand for QUANTUM_RESULT messages from QuantumOptimizationService."""
-    bus.publish(BusTopic.QUANTUM_RESULT, result, source="quantum_service")
 
 
 def publish_risk_veto(
