@@ -4,6 +4,7 @@ import collections
 import json
 import logging
 import math
+import os
 from dataclasses import asdict, dataclass
 from datetime import date, datetime, timedelta, timezone
 
@@ -985,6 +986,27 @@ class TradingRuntime:
             plan.target_price = None
             plan.trailing_pct = None
             plan.partial_exit_enabled = False
+        elif intent.instrument.option_type is None and plan.entry_price > 0:
+            # Realistic intraday profit-taking. The default ATR/3.8% targets are
+            # far too wide for index/futures intraday moves, so positions never
+            # hit target and got dumped at the EOD square-off at a random price
+            # (Friday: FINNIFTY was +0.9% intraday but only booked at EOD). Cap
+            # target/stop/trail to achievable intraday distances so winners are
+            # booked green and losers are cut during the session. Env-tunable;
+            # options are skipped (premium scale differs). This improves exit
+            # QUALITY — it does not manufacture edge on a no-edge signal.
+            ep = plan.entry_price
+            tgt = ep * float(os.getenv("EXIT_TARGET_PCT", "0.008"))   # 0.8%
+            stp = ep * float(os.getenv("EXIT_STOP_PCT", "0.005"))     # 0.5%
+            trail = float(os.getenv("EXIT_TRAIL_PCT", "0.004"))       # 0.4%
+            if plan.side == "BUY":
+                plan.target_price = min(plan.target_price or (ep + tgt), ep + tgt)
+                plan.stop_loss_price = max(plan.stop_loss_price or (ep - stp), ep - stp)
+            else:  # short
+                plan.target_price = max(plan.target_price or (ep - tgt), ep - tgt)
+                plan.stop_loss_price = min(plan.stop_loss_price or (ep + stp), ep + stp)
+            plan.trailing_pct = min(plan.trailing_pct or trail, trail)
+            plan.partial_exit_enabled = True
         self.exit_manager.register(plan)
         self._append_trace_event_for_intent(
             intent,
