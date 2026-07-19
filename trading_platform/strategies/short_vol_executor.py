@@ -22,6 +22,7 @@ from typing import Any
 
 from trading_platform.derivatives.engine import ImpliedVolatilityCalculator
 from trading_platform.domain.enums import OptionType, Segment, Side
+from trading_platform.neural.vol_forecaster import VolatilityForecaster
 from trading_platform.strategies.short_vol import ShortVolStrategy
 
 logger = logging.getLogger(__name__)
@@ -40,6 +41,7 @@ class ShortVolExecutor:
     def __init__(self, runtime: Any, strategy: ShortVolStrategy | None = None) -> None:
         self._rt = runtime
         self.strategy = strategy or ShortVolStrategy()
+        self._vol_forecaster = VolatilityForecaster()
         # Per-day cache of option last-prices keyed by (symbol, date). The Angel One
         # candle API is aggressively rate-limited; caching means each ATM contract is
         # fetched at most once per day (shared by previews and the daily auto-entry),
@@ -198,12 +200,22 @@ class ShortVolExecutor:
                     "reason": f"could not compute {underlying} implied vol (illiquid ATM?)"}
         wing = self._wing_width(spot, step)
 
+        # GARCH volatility forecast for the VRP reference (implied vs *forecast*
+        # realized, not trailing realized). Opt-in via SHORTVOL_USE_VOL_FORECAST;
+        # falls back to trailing realized when disabled or the fit is degenerate.
+        forecast_vol = None
+        if _env_flag("SHORTVOL_USE_VOL_FORECAST", False):
+            fv = self._vol_forecaster.forecast_pct(closes, underlying)
+            forecast_vol = fv if fv > 0 else None
+
         decision = self.strategy.decide(
             spot=spot, vix=iv, closes=closes, capital=capital, lot_size=lot_size,
-            strike_step=step, wing_width=wing,
+            strike_step=step, wing_width=wing, forecast_vol=forecast_vol,
         )
         out: dict = {
             **base, "vix": round(iv, 2), "vrp": round(decision.vrp, 2),
+            "forecast_vol": round(forecast_vol, 2) if forecast_vol else None,
+            "vol_reference": "garch_forecast" if forecast_vol else "trailing_realized",
             "enter": decision.enter, "reason": decision.reason, "lots": decision.lots,
             "net_credit_pts": decision.net_credit, "max_loss_pts": decision.max_loss,
         }
@@ -249,6 +261,24 @@ class ShortVolExecutor:
 
     def preview(self, underlying: str = "NIFTY") -> dict:
         return {"mode": "preview", **self.build(underlying)}
+
+    def validate_vol_forecast(self, underlying: str = "NIFTY", days: int = 1000) -> dict:
+        """Walk-forward test on REAL history: does GARCH predict future realized
+        vol better than the trailing-realized baseline? Only if this says
+        beats_naive=True should SHORTVOL_USE_VOL_FORECAST be enabled — the same
+        'earn deployment' rule the rest of the platform follows."""
+        bars = self._rt.decision_pipeline._fetch_bars(
+            underlying, date.today() - timedelta(days=days), 400)
+        closes = [b.close for b in bars] if bars else []
+        v = self._vol_forecaster.validate_beats_naive(closes)
+        return {
+            "underlying": underlying, "n_bars": len(closes), "samples": v.n,
+            "naive_rmse": round(v.naive_rmse, 3) if v.naive_rmse != float("inf") else None,
+            "garch_rmse": round(v.garch_rmse, 3) if v.garch_rmse != float("inf") else None,
+            "beats_naive": v.beats_naive,
+            "verdict": ("GARCH earns deployment" if v.beats_naive
+                        else "keep trailing-realized (GARCH did not beat baseline)"),
+        }
 
     async def enter(self, underlying: str = "NIFTY") -> dict:
         """Build then SUBMIT the iron condor as a multi-leg order."""

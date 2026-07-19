@@ -664,6 +664,17 @@ def short_vol_preview(underlying: str = "NIFTY"):
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
+@app.get("/short-vol/vol-validation")
+def short_vol_vol_validation(underlying: str = "NIFTY"):
+    """Walk-forward validation: does the GARCH vol forecast beat the trailing-
+    realized baseline on real history? Decides whether SHORTVOL_USE_VOL_FORECAST
+    should be enabled (honest 'earn deployment' gate)."""
+    try:
+        return runtime.short_vol_executor.validate_vol_forecast(underlying)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 @app.post("/short-vol/enter", dependencies=[_AuthDep])
 async def short_vol_enter(payload: dict | None = None):
     """Submit the defined-risk iron condor IF the VRP signal says enter. Gated."""
