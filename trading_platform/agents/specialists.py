@@ -249,15 +249,29 @@ class OptionsVolatilityAgent:
         self._gw = gateway
 
     def run(self, ctx: AgentInputContext) -> AgentVote:
-        mkt = _build_market_context(ctx)
-        prompt = (
-            f"{mkt}\n"
-            "Assess implied volatility surface, term structure skew, and vol-of-vol signals "
-            "using predicted_volatility and tail_risk_score above. "
-            "Output JSON: action, confidence, reasoning, evidence_ids."
-        )
-        resp = self._gw.generate("gemma4-26b-moe", _SYSTEM_BASE, prompt)
-        return _safe_vote(self.name, resp.get("model_id", "gemma4-26b-moe"), resp, ctx.evidence_ids)
+        """REAL volatility assessment from the GARCH forecast + tail risk. It has
+        no *directional* edge (returns are unpredictable), so it honestly votes
+        HOLD — but its confidence and reasoning reflect the actual vol regime,
+        which is the signal that genuinely informs short-vol (condor) decisions."""
+        f = ctx.features or {}
+        pred_vol = float(f.get("predicted_volatility", 0.0) or 0.0)   # annualised fraction
+        tail_risk = float(f.get("tail_risk_score", 0.0) or 0.0)
+        pct = pred_vol * 100.0
+
+        if tail_risk >= 0.6 or pct >= 30.0:
+            regime, conf = "elevated", 0.65
+            reason = f"forecast vol {pct:.0f}% / tail-risk {tail_risk:.2f} — vol-selling risky, favour caution"
+        elif pct <= 12.0:
+            regime, conf = "subdued", 0.6
+            reason = f"forecast vol {pct:.0f}% subdued — premium likely thin, be selective on short-vol"
+        else:
+            regime, conf = "normal", 0.5
+            reason = f"forecast vol {pct:.0f}% normal — no directional edge; short-vol depends on VRP"
+
+        # No directional edge -> HOLD; the value is the vol-regime read, not a call.
+        resp = {"action": "HOLD", "confidence": conf,
+                "reasoning": f"vol regime={regime}: {reason}", "evidence_ids": []}
+        return _safe_vote(self.name, "options_vol_garch_v1", resp, ctx.evidence_ids)
 
 
 class FuturesCarryAgent:
@@ -304,36 +318,42 @@ class RiskCriticAgent:
         self._gw = gateway
 
     def run(self, ctx: AgentInputContext, proposals: list[StrategyProposal]) -> RiskCritique:
-        system = (
-            "You are a risk critic. Try to identify weaknesses before the risk engine. "
-            "Respond in JSON with keys: veto (bool), risk_score (0-1), concerns (list), "
-            "recommended_action (PROCEED|REDUCE|HALT), evidence_ids (list)."
-        )
-        mkt = _build_market_context(ctx)
-        prompt = (
-            f"{mkt}\n"
-            f"Proposals: {[p.to_dict() for p in proposals]}. "
-            "Identify crowding, stale data, event risk, high slippage, or model disagreement "
-            "given the indicators and portfolio state above."
-        )
-        resp = self._gw.generate("gemma4-31b", system, prompt)
-        veto = bool(resp.get("veto", False))
-        risk_score = float(resp.get("risk_score", 0.3))
-        recommended = resp.get("recommended_action", "PROCEED")
-        if recommended not in ("PROCEED", "REDUCE", "HALT"):
-            recommended = "PROCEED"
+        """REAL risk critique computed from actual market/portfolio numbers — not
+        an LLM guess. Combines tail-risk, drawdown, and forecast vol into a risk
+        score and a PROCEED/REDUCE/HALT recommendation before the RiskEngine's
+        hard gates. Deterministic and auditable."""
+        f = ctx.features or {}
+        p = ctx.portfolio_state or {}
+        tail_risk = float(f.get("tail_risk_score", 0.0) or 0.0)
+        pred_vol = float(f.get("predicted_volatility", 0.0) or 0.0)   # annualised fraction
+        drawdown = float(p.get("drawdown", 0.0) or 0.0)
 
-        # Merge supervisor-level pre-retrieved ids with gateway-retrieved ids.
-        gateway_ids: list[str] = list(resp.get("evidence_ids") or [])
-        merged_ids = list(dict.fromkeys(list(ctx.evidence_ids) + gateway_ids))
+        concerns: list[str] = []
+        if tail_risk >= 0.6:
+            concerns.append(f"elevated tail-risk {tail_risk:.2f}")
+        if drawdown >= 0.05:
+            concerns.append(f"drawdown {drawdown:.1%}")
+        if pred_vol >= 0.30:
+            concerns.append(f"high forecast vol {pred_vol:.0%}")
+
+        # Blended, bounded risk score from real inputs.
+        risk_score = min(1.0, 0.55 * tail_risk + 4.0 * drawdown + 0.6 * min(pred_vol, 0.5))
+
+        # Recommendation ladder tied to hard-ish thresholds.
+        if drawdown >= 0.09 or risk_score >= 0.85:
+            recommended, veto = "HALT", True
+        elif risk_score >= 0.55:
+            recommended, veto = "REDUCE", False
+        else:
+            recommended, veto = "PROCEED", False
 
         return RiskCritique(
             veto=veto,
-            risk_score=risk_score,
-            concerns=list(resp.get("concerns", [])),
+            risk_score=round(risk_score, 3),
+            concerns=concerns or ["no elevated risk signals"],
             recommended_action=recommended,
-            evidence_ids=merged_ids,
-            model_id=resp.get("model_id", "gemma4-31b"),
+            evidence_ids=list(ctx.evidence_ids),
+            model_id="risk_critic_rules_v1",
         )
 
 
