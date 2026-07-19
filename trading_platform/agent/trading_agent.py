@@ -299,11 +299,18 @@ class TradingAgent:
         executor = getattr(self._runtime, "short_vol_executor", None)
         if executor is None:
             return
+        # Continuous mode: the vol edge (condor/put-spread/call-spread) is the
+        # profitable trade source, so enter it whenever VRP is rich and a slot is
+        # free — auto-rolling the validated weekly structures rather than firing
+        # only on Mondays. The per-(underlying,expiry) open guard + min-DTE filter
+        # keep quality; the VRP + Kelly + final risk gate still decide each order.
+        continuous = os.getenv("SHORTVOL_CONTINUOUS", "false").strip().lower() in {"1", "true", "yes", "on"}
         today = now.date()
-        if self._state.shortvol_entry_date == today:
-            return
-        if not executor.is_entry_window(now):
-            return
+        if not continuous:
+            if self._state.shortvol_entry_date == today:
+                return
+            if not executor.is_entry_window(now):
+                return
         try:
             result = await executor.auto_enter(now)
         except Exception as exc:
@@ -311,13 +318,14 @@ class TradingAgent:
             return
         if not result.get("ran"):
             return
-        # Mark done for the day only once we've actually attempted (auto enabled +
-        # window open), so a disabled flag doesn't burn the daily slot.
-        self._state.shortvol_entry_date = today
+        if not continuous:
+            self._state.shortvol_entry_date = today
         submitted = [r for r in result.get("results", []) if r.get("submitted")]
+        if not submitted and continuous:
+            return   # nothing new to enter this scan — stay quiet
         self._log_activity(
-            f"SHORT-VOL auto-entry: {len(submitted)} condor(s) submitted "
-            f"of {len(result.get('results', []))} underlying(s)"
+            f"SHORT-VOL auto-entry: {len(submitted)} structure(s) submitted "
+            f"of {len(result.get('results', []))} slot(s)"
         )
         self._publish("agent.short_vol_auto_entry", {
             "ts": now_ist().isoformat(), "result": result,

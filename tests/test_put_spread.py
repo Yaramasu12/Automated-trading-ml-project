@@ -43,6 +43,18 @@ class PutSpreadStrategyTests(unittest.TestCase):
         p_condor = self.s.win_probability(20.0, 11.0)
         self.assertGreater(p_put, p_condor)
 
+    def test_call_spread_is_two_ce_legs(self):
+        d = self.s.decide(spot=24000, vix=20.0, closes=_closes(), capital=1_000_000,
+                          lot_size=50, forecast_vol=11.0, structure="call_spread")
+        self.assertTrue(d.enter, d.reason)
+        self.assertEqual(len(d.legs), 2)
+        self.assertTrue(all(l.option_type == OptionType.CE for l in d.legs))
+        sells = [l for l in d.legs if l.side == Side.SELL]
+        buys = [l for l in d.legs if l.side == Side.BUY]
+        # protective wing strictly ABOVE the short call
+        self.assertGreater(buys[0].strike, sells[0].strike)
+        self.assertLessEqual(d.max_loss, self.s.wing_width)
+
 
 class StructureConfigTests(unittest.TestCase):
     def _executor(self):
