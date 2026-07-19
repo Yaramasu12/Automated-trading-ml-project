@@ -168,13 +168,14 @@ class ShortVolExecutor:
 
     # ── decision + leg resolution ───────────────────────────────────────────
 
-    def build(self, underlying: str = "NIFTY") -> dict:
+    def build(self, underlying: str = "NIFTY", expiry: date | None = None) -> dict:
         """Compute the full short-vol decision with resolved contracts & prices.
         Does NOT execute. Returns a dict describing what WOULD be traded.
 
         Prices every input off the underlying's OWN option chain — its ATM implied
         vol, strike step, price-scaled wing, and option lot size — so the exact
-        same path is correct for NIFTY and every other index."""
+        same path is correct for NIFTY and every other index. `expiry` selects the
+        target expiry (multi-expiry); defaults to the nearest."""
         closes, spot = self._closes_and_spot(underlying)
         capital = float(getattr(self._rt.portfolio, "equity", 0) or self._rt.portfolio.cash)
         base = {
@@ -185,9 +186,11 @@ class ShortVolExecutor:
         if spot <= 0:
             return {**base, "vix": 0.0, "vrp": 0.0, "reason": "no spot price"}
 
-        expiry = self._rt.instrument_master.nearest_expiry(underlying, date.today(), segment=Segment.OPTIONS)
+        if expiry is None:
+            expiry = self._rt.instrument_master.nearest_expiry(underlying, date.today(), segment=Segment.OPTIONS)
         if expiry is None:
             return {**base, "vix": 0.0, "vrp": 0.0, "reason": f"no listed options/expiry for {underlying}"}
+        dte = max((expiry - date.today()).days, 1)
 
         step = self._infer_strike_step(underlying, expiry)
         iv, lot_size = self._atm_iv_and_lot(underlying, spot, expiry)
@@ -210,10 +213,11 @@ class ShortVolExecutor:
 
         decision = self.strategy.decide(
             spot=spot, vix=iv, closes=closes, capital=capital, lot_size=lot_size,
-            strike_step=step, wing_width=wing, forecast_vol=forecast_vol,
+            strike_step=step, wing_width=wing, forecast_vol=forecast_vol, hold_days=dte,
         )
         out: dict = {
             **base, "vix": round(iv, 2), "vrp": round(decision.vrp, 2),
+            "expiry": expiry.isoformat(), "dte": dte,
             "forecast_vol": round(forecast_vol, 2) if forecast_vol else None,
             "vol_reference": "garch_forecast" if forecast_vol else "trailing_realized",
             "enter": decision.enter, "reason": decision.reason, "lots": decision.lots,
@@ -231,8 +235,8 @@ class ShortVolExecutor:
                 out["reason"] = f"could not resolve {leg.option_type.value} {leg.strike:.0f} @ {expiry}"
                 out["legs"] = []
                 return out
-            # price the leg (live tick -> BS via the agent's resolver would also work)
-            T = self.strategy.hold_days / 252.0
+            # price the leg at the actual days-to-expiry (multi-expiry aware)
+            T = dte / 252.0
             premium = self.strategy._bs(spot, float(inst.strike), T, vix / 100.0,
                                         call=(leg.option_type.value == "CE"))
             out["legs"].append({
@@ -280,29 +284,45 @@ class ShortVolExecutor:
                         else "keep trailing-realized (GARCH did not beat baseline)"),
         }
 
-    async def enter(self, underlying: str = "NIFTY") -> dict:
-        """Build then SUBMIT the iron condor as a multi-leg order."""
-        plan = self.build(underlying)
+    async def enter(self, underlying: str = "NIFTY", expiry: date | None = None) -> dict:
+        """Build then SUBMIT the iron condor as a multi-leg order for one expiry."""
+        plan = self.build(underlying, expiry)
         if not plan.get("enter") or not plan.get("legs"):
             return {"submitted": False, **plan}
+        exp = plan.get("expiry", "")
+        group_id = f"condor_{underlying}_{exp}"
         legs_payload = [
             {
                 "symbol": l["symbol"], "side": l["side"], "price": l["price"],
                 "quantity": l["quantity"], "strategy_name": "short_vol_condor",
-                "metadata": {"is_wing": l["is_wing"], "vrp": plan["vrp"]},
+                "metadata": {"is_wing": l["is_wing"], "vrp": plan["vrp"], "expiry": exp},
             }
             for l in plan["legs"]
         ]
         result = await self._rt.submit_multi_leg({
-            "legs": legs_payload, "strategy_name": "short_vol_condor",
+            "legs": legs_payload, "strategy_name": "short_vol_condor", "group_id": group_id,
         })
         return {"submitted": True, "plan": plan, "execution": result}
 
     # ── weekly auto-entry ─────────────────────────────────────────────────────
 
-    def has_open_condor(self, underlying: str) -> bool:
-        """True if we already hold an open option position on this underlying —
-        used to avoid stacking a second condor on top of a live one."""
+    def target_expiries(self, underlying: str) -> list[date]:
+        """The expiries to trade this cycle: the nearest N distinct expiries
+        (SHORTVOL_MAX_EXPIRIES, default 1). Setting 2 adds the next expiry
+        (e.g. weekly + monthly) → more condors on the same VRP edge."""
+        n = max(1, int(os.getenv("SHORTVOL_MAX_EXPIRIES", "1")))
+        today = date.today()
+        try:
+            exps = sorted(e for e in self._rt.instrument_master.expiries(underlying, Segment.OPTIONS) if e >= today)
+        except Exception as exc:
+            logger.warning("short-vol: expiry list failed for %s: %s", underlying, exc)
+            exps = []
+        return exps[:n]
+
+    def has_open_condor(self, underlying: str, expiry: date | None = None) -> bool:
+        """True if we already hold an open option position on this underlying
+        (and, when given, this expiry) — avoids stacking condors on the same
+        underlying/expiry while still allowing different expiries to coexist."""
         u = underlying.strip().upper()
         try:
             for pos in self._rt.portfolio.positions.values():
@@ -311,6 +331,7 @@ class ShortVolExecutor:
                     pos.quantity != 0
                     and inst.segment == Segment.OPTIONS
                     and (inst.underlying or "").strip().upper() == u
+                    and (expiry is None or inst.expiry == expiry)
                 ):
                     return True
         except Exception as exc:
@@ -337,20 +358,22 @@ class ShortVolExecutor:
         if not _env_flag("SHORTVOL_AUTO_ENABLED", False):
             return {"ran": False, "reason": "SHORTVOL_AUTO_ENABLED=false"}
         results: list[dict] = []
-        for idx, underlying in enumerate(self.auto_underlyings):
-            if idx > 0:
-                # Non-blocking spacing so the per-index candle fetches don't burst
-                # into the Angel One rate limit (see _option_last_price).
-                await asyncio.sleep(1.0)
-            if self.has_open_condor(underlying):
-                results.append({"underlying": underlying, "submitted": False,
-                                "reason": "condor already open"})
-                continue
-            try:
-                res = await self.enter(underlying)
-            except Exception as exc:
-                logger.warning("short-vol auto-enter failed for %s: %s", underlying, exc)
-                res = {"submitted": False, "reason": f"error: {exc}", "underlying": underlying}
-            res.setdefault("underlying", underlying)
-            results.append(res)
+        first = True
+        for underlying in self.auto_underlyings:
+            for expiry in self.target_expiries(underlying):
+                if not first:
+                    # Non-blocking spacing so the per-leg candle fetches don't burst
+                    # into the Angel One rate limit (see _option_last_price).
+                    await asyncio.sleep(1.0)
+                first = False
+                tag = {"underlying": underlying, "expiry": expiry.isoformat()}
+                if self.has_open_condor(underlying, expiry):
+                    results.append({**tag, "submitted": False, "reason": "condor already open"})
+                    continue
+                try:
+                    res = await self.enter(underlying, expiry)
+                except Exception as exc:
+                    logger.warning("short-vol auto-enter failed for %s %s: %s", underlying, expiry, exc)
+                    res = {"submitted": False, "reason": f"error: {exc}"}
+                results.append({**tag, **res})
         return {"ran": True, "results": results}
