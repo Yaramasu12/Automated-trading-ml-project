@@ -901,7 +901,16 @@ class TradingAgent:
             cycle.errors.extend(raw["errors"])
             cycle.regimes.update(raw["regimes"])
 
+            # Directional momentum (Path A) has no proven edge and trades index
+            # FUTURES (full-notional cash). When off, the 8-node pipeline still
+            # runs for analysis but places NO directional orders — the vol edge is
+            # the trade source. (This is the ACTIVE scan path; the flag must live
+            # here, not only in _scan_and_execute.)
+            directional_on = os.getenv("AGENT_DIRECTIONAL_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}
+
             for symbol, underlying, state, candidate in raw["candidates_for_enqueue"]:
+                if not directional_on:
+                    continue
                 if symbol in open_positions or underlying in open_positions:
                     cycle.skipped_existing += 1
                     continue
