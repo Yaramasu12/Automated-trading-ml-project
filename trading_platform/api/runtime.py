@@ -2396,6 +2396,40 @@ class TradingRuntime:
             note_swallowed("best_mark.exit_manager", exc)
         return None
 
+    def _theoretical_option_mark(self, pos, now: datetime) -> float | None:
+        """Mark an option position from the LIVE underlying price via Black-Scholes
+        when the option strike itself has no live tick (index options aren't
+        individually subscribed, and the candle API is rate-limited). This makes
+        unrealized P&L move with delta + theta decay instead of being stuck at
+        entry (P&L = 0). Approximate IV (MARK_IV) — good enough for P&L trend."""
+        inst = getattr(pos, "instrument", None)
+        if inst is None or inst.option_type is None or not inst.strike or inst.expiry is None:
+            return None
+        underlying = (inst.underlying or "").strip().upper()
+        if not underlying:
+            return None
+        try:
+            u_tick = self.live_feed.latest_tick(underlying)
+        except Exception:
+            u_tick = None
+        if not (u_tick and getattr(u_tick, "last_price", 0) and u_tick.last_price > 0):
+            return None
+        spot = float(u_tick.last_price)
+        K = float(inst.strike)
+        is_call = inst.option_type.value == "CE"
+        dte = (inst.expiry - now.date()).days
+        T = max(dte, 0.5) / 252.0
+        iv = float(os.getenv("MARK_IV", "0.14"))
+        r = 0.065
+        if T <= 0 or iv <= 0:
+            return max(0.0, (spot - K) if is_call else (K - spot))
+        d1 = (math.log(spot / K) + (r + 0.5 * iv * iv) * T) / (iv * math.sqrt(T))
+        d2 = d1 - iv * math.sqrt(T)
+        nd = lambda x: 0.5 * (1.0 + math.erf(x / math.sqrt(2.0)))
+        if is_call:
+            return max(0.0, spot * nd(d1) - K * math.exp(-r * T) * nd(d2))
+        return max(0.0, K * math.exp(-r * T) * nd(-d2) - spot * nd(-d1))
+
     def _can_submit_live_orders(self) -> bool:
         return (
             self.execution_mode.value.startswith("LIVE")
@@ -2846,11 +2880,17 @@ class TradingRuntime:
     def portfolio_positions(self) -> dict:
         """All open positions with live mark-to-market P&L."""
         now = datetime.now(timezone.utc)
-        mark_prices: dict[str, float] = {}
-        for symbol in list(self.portfolio.positions.keys()):
+        live_marks: dict[str, float] = {}     # from an actual live tick
+        model_marks: dict[str, float] = {}    # theoretical (BS off the underlying)
+        for symbol, pos in self.portfolio.positions.items():
             tick = self.live_feed.latest_tick(symbol)
             if tick and tick.last_price > 0:
-                mark_prices[symbol] = tick.last_price
+                live_marks[symbol] = tick.last_price
+            else:
+                m = self._theoretical_option_mark(pos, now)
+                if m is not None and m > 0:
+                    model_marks[symbol] = round(m, 2)
+        mark_prices: dict[str, float] = {**model_marks, **live_marks}
         snapshot = self.portfolio.mark_to_market(now, mark_prices)
         positions = []
         for symbol, pos in self.portfolio.positions.items():
@@ -2860,6 +2900,7 @@ class TradingRuntime:
             lot_size = getattr(pos.instrument, "lot_size", 1) if hasattr(pos, "instrument") else 1
             unrealized = pos.unrealized_pnl(mark)
             pnl_pct = unrealized / max(pos.average_price * abs(pos.quantity) * lot_size, 1)
+            source = "live" if symbol in live_marks else ("model" if symbol in model_marks else "entry")
             positions.append({
                 "symbol": symbol,
                 "quantity": pos.quantity,
@@ -2869,7 +2910,8 @@ class TradingRuntime:
                 "unrealized_pnl": round(unrealized, 2),
                 "realized_pnl": round(pos.realized_pnl, 2),
                 "pnl_pct": round(pnl_pct * 100, 2),
-                "live": symbol in mark_prices,
+                "live": symbol in live_marks,
+                "price_source": source,
             })
         return {
             "count": len(positions),
