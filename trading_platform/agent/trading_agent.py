@@ -489,6 +489,13 @@ class TradingAgent:
         # Current open positions — don't double-enter
         open_positions = set(self._runtime.portfolio.position_symbols())
 
+        # Directional momentum (Path A) has no proven edge and trades index FUTURES
+        # (full-notional cash, no positive expectancy). When disabled, the 8-node
+        # pipeline still runs for analysis/regime, but places NO directional orders
+        # — the profitable vol edge (condor/put-spread/call-spread) is the trade
+        # source. Kept env-tunable so the analysis pipeline is never lost.
+        directional_on = os.getenv("AGENT_DIRECTIONAL_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}
+
         for scan in scans.get("scans", []):
             underlying = scan.get("underlying", "")
             cycle.regimes[underlying] = scan.get("regime", "unknown")
@@ -497,6 +504,8 @@ class TradingAgent:
 
             for candidate in scan.get("candidates", []):
                 cycle.total_candidates += 1
+                if not directional_on:
+                    continue   # analysis only — vol edge is the trade source
                 rd = candidate.get("risk_decision") or {}
                 if not rd.get("approved"):
                     cycle.rejected += 1

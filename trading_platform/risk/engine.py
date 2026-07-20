@@ -117,6 +117,12 @@ class RiskEngine:
             and instrument.instrument_type == InstrumentType.OPTION
             and intent.signal.side == Side.SELL
             and not intent.signal.metadata.get("hedged", False)
+            # Legs of a defined-risk multi-leg structure (condor / put-spread /
+            # call-spread) are NOT naked — the protective long wing is part of the
+            # same group. Blocking the short leg (which is submitted first) is what
+            # rolled back every vol-edge structure. The structure's max loss is
+            # still enforced by CapitalProtection.
+            and not intent.signal.metadata.get("multi_leg_group")
         ):
             return RiskDecision(False, "naked_option_selling_blocked", 0.95)
 
