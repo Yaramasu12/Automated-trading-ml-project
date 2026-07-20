@@ -387,22 +387,27 @@ class ShortVolExecutor:
             return {"ran": False, "reason": "SHORTVOL_AUTO_ENABLED=false"}
         results: list[dict] = []
         structures = self.structures
+        # STAGGER entries across scans: only attempt a few NEW slots per call so
+        # the ATM-IV candle fetches stay under Angel One's throttle. Slots with an
+        # open position are skipped for free (no fetch); once all are filled the
+        # scan is a no-op. Positions hold for days, so staggered entry is fine.
+        max_per_scan = max(1, int(os.getenv("SHORTVOL_MAX_ENTRIES_PER_SCAN", "3")))
+        attempts = 0
         first = True
         for underlying in self.auto_underlyings:
             for i, expiry in enumerate(self.target_expiries(underlying)):
-                if not first:
-                    # Non-blocking spacing so the per-slot ATM-IV candle fetches
-                    # don't burst into the Angel One rate limit (env-tunable).
-                    await asyncio.sleep(float(os.getenv("SHORTVOL_ENTRY_SPACING", "2.5")))
-                first = False
-                # One structure per expiry SLOT (condor on the near expiry,
-                # put_spread on the next, …) so both edges trade on DIFFERENT
-                # expiries and their downside never stacks on the same one.
                 structure = structures[i % len(structures)]
                 tag = {"underlying": underlying, "expiry": expiry.isoformat(), "structure": structure}
                 if self.has_open_condor(underlying, expiry):
                     results.append({**tag, "submitted": False, "reason": "position already open"})
                     continue
+                if attempts >= max_per_scan:
+                    results.append({**tag, "submitted": False, "reason": "deferred (per-scan cap)"})
+                    continue
+                if not first:
+                    await asyncio.sleep(float(os.getenv("SHORTVOL_ENTRY_SPACING", "2.5")))
+                first = False
+                attempts += 1
                 try:
                     res = await self.enter(underlying, expiry, structure)
                 except Exception as exc:
