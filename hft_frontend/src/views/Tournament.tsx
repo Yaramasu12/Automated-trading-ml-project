@@ -113,7 +113,7 @@ export function Tournament() {
     <div className="space-y-5">
       <PageHeader
         title="Strategy Tournament"
-        subtitle="Champion/challenger validation across rule, neural-enhanced, quantum-allocated, and policy research lanes"
+        subtitle="Champion/challenger validation across rule, neural-enhanced, and policy research lanes"
         icon={<Swords size={17} className="text-brand-orange" />}
         action={
           <button

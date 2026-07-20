@@ -214,11 +214,6 @@ export const runAICouncilPreview = (payload: Record<string, unknown>) => post<im
 export const getNeuralStatus = () => get<import('./types').NeuralStatus>('/neural/status')
 export const runNeuralPredictPreview = (payload: Record<string, unknown>) => post<import('./types').NeuralBundle>('/neural/predict-preview', payload)
 
-// ─── Quantum Lab ──────────────────────────────────────────────────────────────
-export const getQuantumStatus = () => get<import('./types').QuantumStatus>('/quantum/status')
-export const runQuantumOptimizePreview = (payload: Record<string, unknown>) => post<import('./types').QuantumOptimizationResult>('/quantum/optimize-preview', payload)
-export const getQuantumResults = (limit = 20) => get<{ results: import('./types').QuantumOptimizationResult[] }>(`/quantum/results?limit=${limit}`)
-
 // ─── MARL ─────────────────────────────────────────────────────────────────────
 export const runMarlAdvisoryPreview = (payload: Record<string, unknown>) => post<import('./types').MarlAdvisoryResult>('/marl/advisory-preview', payload)
 

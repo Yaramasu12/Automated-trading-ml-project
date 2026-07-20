@@ -109,41 +109,6 @@ export interface NeuralStatus {
   [key: string]: unknown
 }
 
-// ─── Quantum Lab ──────────────────────────────────────────────────────────────
-
-export interface QuantumOptimizationResult {
-  trace_id: string
-  selected_symbols: string[]
-  backend_used: string
-  objective_value: number
-  classical_baseline_objective: number
-  improvement_over_classical: number | null
-  created_at?: string
-  beats_baseline?: boolean
-  constraints_satisfied?: boolean
-  stable?: boolean
-  expected_edge_sum?: number
-  risk_score?: number
-  [key: string]: unknown
-}
-
-export interface QuantumBackendInfo {
-  name: string
-  available: boolean
-  error?: string
-  reason?: string
-  latency_ms?: number
-  [key: string]: unknown
-}
-
-export interface QuantumStatus {
-  enabled: boolean
-  backend: string
-  timeout_seconds: number
-  backends?: QuantumBackendInfo[]
-  [key: string]: unknown
-}
-
 // ─── MARL ─────────────────────────────────────────────────────────────────────
 
 export interface MarlAdvisoryResult {

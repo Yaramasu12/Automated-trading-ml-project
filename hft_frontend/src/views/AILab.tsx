@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, useCallback } from 'react'
 import { clsx } from 'clsx'
 import {
-  Atom, Brain, Cpu, Loader2, RefreshCw, Target, Zap, GitMerge, Database,
+  Atom, Brain, Loader2, RefreshCw, Target, Zap, GitMerge, Database,
   ChevronDown, ChevronRight as ChevronRightIcon, TrendingUp, ShieldCheck, Layers,
 } from 'lucide-react'
 import { RadialBarChart, RadialBar, ResponsiveContainer, Tooltip } from 'recharts'
@@ -12,7 +12,6 @@ import { useStore } from '../store'
 import {
   getAICouncilStatus, getAICouncilDecisions, runAICouncilPreview,
   getNeuralStatus, runNeuralPredictPreview,
-  getQuantumStatus, runQuantumOptimizePreview, getQuantumResults,
   getGoalGovernorStatus,
   listTraces, runHighEndScan,
   runMarlAdvisoryPreview,
@@ -26,7 +25,6 @@ const TABS = [
   { id: 'overview',      label: 'Overview',     icon: <Atom size={13} /> },
   { id: 'council',       label: 'AI Council',   icon: <Brain size={13} /> },
   { id: 'neural',        label: 'Neural Lab',   icon: <Zap size={13} /> },
-  { id: 'quantum',       label: 'Quantum',      icon: <Cpu size={13} /> },
   { id: 'marl',          label: 'MARL',         icon: <GitMerge size={13} /> },
   { id: 'orchestrator',  label: 'Orchestrator', icon: <Database size={13} /> },
 ]
@@ -42,8 +40,6 @@ export function AILab() {
   const aiCouncilDecisions = useStore((s) => s.aiCouncilDecisions)
   const neuralStatus       = useStore((s) => s.neuralStatus)
   const latestNeuralBundle = useStore((s) => s.latestNeuralBundle)
-  const quantumStatus      = useStore((s) => s.quantumStatus)
-  const latestQuantumResult = useStore((s) => s.latestQuantumResult)
   const goalStatus         = useStore((s) => s.goalGovernorStatus)
   const latestHighEndScan  = useStore((s) => s.latestHighEndScan)
   const recentTraces       = useStore((s) => s.recentTraces)
@@ -52,8 +48,6 @@ export function AILab() {
   const setAICouncilDecisions = useStore((s) => s.setAICouncilDecisions)
   const setNeuralStatus       = useStore((s) => s.setNeuralStatus)
   const setLatestNeuralBundle = useStore((s) => s.setLatestNeuralBundle)
-  const setQuantumStatus      = useStore((s) => s.setQuantumStatus)
-  const setLatestQuantumResult = useStore((s) => s.setLatestQuantumResult)
   const setGoalStatus         = useStore((s) => s.setGoalGovernorStatus)
   const setLatestHighEndScan  = useStore((s) => s.setLatestHighEndScan)
   const setRecentTraces       = useStore((s) => s.setRecentTraces)
@@ -70,17 +64,6 @@ export function AILab() {
   // Neural tab state
   const [neuralSymbols, setNeuralSymbols]     = useState('NIFTY,BANKNIFTY')
   const [neuralLoading, setNeuralLoading]     = useState(false)
-
-  // Quantum tab state
-  const [quantumCandidates, setQuantumCandidates] = useState(JSON.stringify([
-    { symbol: 'NIFTY', side: 'BUY', expected_edge: 0.014, risk_estimate: 0.31 },
-    { symbol: 'BANKNIFTY', side: 'BUY', expected_edge: 0.018, risk_estimate: 0.42 },
-    { symbol: 'RELIANCE', side: 'BUY', expected_edge: 0.011, risk_estimate: 0.26 },
-  ], null, 2))
-  const [quantumRiskAversion, setQuantumRiskAversion] = useState(0.5)
-  const [quantumCardinality, setQuantumCardinality]   = useState(5)
-  const [quantumLoading, setQuantumLoading]   = useState(false)
-  const [quantumHistory, setQuantumHistory]   = useState<Record<string, unknown>[]>([])
 
   // MARL tab state
   const [marlForm, setMarlForm] = useState({ portfolio_pnl: 0, open_positions: 0, drawdown: 0 })
@@ -121,19 +104,17 @@ export function AILab() {
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
   const loadAll = useCallback(async () => {
-    const [cs, ns, qs, gs, traces] = await Promise.allSettled([
+    const [cs, ns, gs, traces] = await Promise.allSettled([
       getAICouncilStatus(),
       getNeuralStatus(),
-      getQuantumStatus(),
       getGoalGovernorStatus(),
       listTraces(10),
     ])
     if (cs.status === 'fulfilled')     setAICouncilStatus(cs.value)
     if (ns.status === 'fulfilled')     setNeuralStatus(ns.value)
-    if (qs.status === 'fulfilled')     setQuantumStatus(qs.value)
     if (gs.status === 'fulfilled')     setGoalStatus(gs.value)
     if (traces.status === 'fulfilled') setRecentTraces(traces.value.traces)
-  }, [setAICouncilStatus, setNeuralStatus, setQuantumStatus, setGoalStatus, setRecentTraces])
+  }, [setAICouncilStatus, setNeuralStatus, setGoalStatus, setRecentTraces])
 
   useEffect(() => {
     loadAll()
@@ -144,9 +125,6 @@ export function AILab() {
   useEffect(() => {
     if (tab === 'council' && aiCouncilDecisions.length === 0) {
       getAICouncilDecisions(10).then(r => setAICouncilDecisions(r.decisions)).catch(() => {})
-    }
-    if (tab === 'quantum') {
-      getQuantumResults(10).then(r => setQuantumHistory(r.results as unknown as Record<string, unknown>[])).catch(() => {})
     }
     if (tab === 'orchestrator') {
       loadOrchestrator()
@@ -171,21 +149,6 @@ export function AILab() {
       setLatestNeuralBundle(res)
     } catch { /* ignore */ }
     finally { setNeuralLoading(false) }
-  }
-
-  const handleQuantumPreview = async () => {
-    setQuantumLoading(true)
-    try {
-      let candidates: unknown[]
-      try { candidates = JSON.parse(quantumCandidates) } catch { candidates = [] }
-      const res = await runQuantumOptimizePreview({
-        candidates,
-        risk_aversion: quantumRiskAversion,
-        cardinality_limit: quantumCardinality,
-      })
-      setLatestQuantumResult(res)
-    } catch { /* ignore */ }
-    finally { setQuantumLoading(false) }
   }
 
   const handleHighEndScan = async () => {
@@ -215,14 +178,6 @@ export function AILab() {
       live: true,
       detail: `Forecaster: ${neuralStatus?.models?.forecaster ?? '—'}`,
       color: 'blue',
-    },
-    {
-      id: 'quantum', phase: 'Phase 4', label: 'Quantum',
-      icon: <Cpu size={14} className="text-brand-cyan" />,
-      enabled: quantumStatus?.enabled,
-      live: quantumStatus?.backends?.some(b => b.available),
-      detail: `Backend: ${quantumStatus?.backend ?? '—'}`,
-      color: 'cyan',
     },
     {
       id: 'goal', phase: 'Phase 6', label: 'Goal Governor',
@@ -270,7 +225,7 @@ export function AILab() {
           <Atom size={16} className="text-brand-purple" />
           <div>
             <h1 className="text-lg font-bold text-gray-100">AI Lab</h1>
-            <p className="text-xs text-gray-500 mt-0.5">Quantum Multi-Agent Inference · Phase 1–9</p>
+            <p className="text-xs text-gray-500 mt-0.5">Multi-Agent Inference · Phase 1–9</p>
           </div>
         </div>
         <button
@@ -384,7 +339,6 @@ export function AILab() {
                     {[
                       { label: 'Council', data: latestHighEndScan.ai_council, key: 'action' },
                       { label: 'Neural', data: latestHighEndScan.neural, key: 'overall_uncertainty' },
-                      { label: 'Quantum', data: latestHighEndScan.quantum, key: 'backend_used' },
                     ].map((c) => (
                       c.data && (
                         <div key={c.label} className="bg-surface-elevated rounded p-2">
@@ -657,132 +611,6 @@ export function AILab() {
               )}
             </CardBody>
           </Card>
-        </div>
-      )}
-
-      {/* Tab: Quantum */}
-      {tab === 'quantum' && (
-        <div className="space-y-4">
-          <Card>
-            <CardHeader title="Quantum Status" icon={<Cpu size={14} className="text-brand-cyan" />} />
-            <CardBody>
-              <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
-                {[
-                  { label: 'Enabled', value: String(quantumStatus?.enabled ?? false) },
-                  { label: 'Backend', value: quantumStatus?.backend ?? '—' },
-                  { label: 'Timeout', value: `${quantumStatus?.timeout_seconds ?? '—'}s` },
-                ].map((s) => (
-                  <div key={s.label} className="bg-surface-elevated rounded p-2">
-                    <div className="text-[10px] text-gray-500 uppercase">{s.label}</div>
-                    <div className="text-sm font-bold font-mono text-gray-100 mt-1">{s.value}</div>
-                  </div>
-                ))}
-              </div>
-              {quantumStatus?.backends && (
-                <div className="mt-3 pt-3 border-t border-surface-border">
-                  <div className="text-xs text-gray-400 mb-2">Available Backends</div>
-                  <div className="flex flex-wrap gap-2">
-                    {quantumStatus.backends.map((b) => (
-                      <div key={b.name} className="flex items-center gap-1.5">
-                        <span className={clsx('w-1.5 h-1.5 rounded-full', b.available ? 'bg-brand-green' : 'bg-gray-600')} />
-                        <span className="text-xs font-mono text-gray-300">{b.name}</span>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
-            </CardBody>
-          </Card>
-
-          <Card>
-            <CardHeader title="Optimize Preview" icon={<Cpu size={14} />} />
-            <CardBody className="space-y-3">
-              <div>
-                <label className="block text-xs text-gray-400 mb-1 uppercase tracking-wider">Candidates (JSON array)</label>
-                <textarea
-                  value={quantumCandidates}
-                  onChange={(e) => setQuantumCandidates(e.target.value)}
-                  rows={3}
-                  placeholder='["NIFTY", "BANKNIFTY"]'
-                  className="w-full bg-surface-elevated border border-surface-border text-xs text-gray-200 rounded px-2 py-1.5 font-mono focus:outline-none focus:border-brand-cyan resize-none"
-                />
-              </div>
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="block text-xs text-gray-400 mb-1 uppercase tracking-wider">
-                    Risk Aversion: {quantumRiskAversion.toFixed(2)}
-                  </label>
-                  <input
-                    type="range" min={0} max={1} step={0.05}
-                    value={quantumRiskAversion}
-                    onChange={(e) => setQuantumRiskAversion(Number(e.target.value))}
-                    className="w-full"
-                  />
-                </div>
-                <div>
-                  <label className="block text-xs text-gray-400 mb-1 uppercase tracking-wider">Cardinality</label>
-                  <input
-                    type="number" min={1} max={20}
-                    value={quantumCardinality}
-                    onChange={(e) => setQuantumCardinality(Number(e.target.value))}
-                    className="w-full bg-surface-elevated border border-surface-border text-xs text-gray-200 rounded px-2 py-1.5 font-mono focus:outline-none focus:border-brand-cyan"
-                  />
-                </div>
-              </div>
-              <button
-                onClick={handleQuantumPreview}
-                disabled={quantumLoading}
-                className="flex items-center gap-2 px-4 py-2 rounded-md bg-brand-cyan/15 border border-brand-cyan/30 text-brand-cyan text-xs font-medium hover:bg-brand-cyan/25 disabled:opacity-50 transition-colors"
-              >
-                {quantumLoading ? <Loader2 size={12} className="animate-spin" /> : <Cpu size={12} />}
-                Run Optimization
-              </button>
-
-              {latestQuantumResult && (
-                <div className="space-y-3 border-t border-surface-border pt-3">
-                  <div className="flex flex-wrap gap-2">
-                    {latestQuantumResult.selected_symbols.map((s) => (
-                      <Tag key={s} label={s} color="cyan" />
-                    ))}
-                  </div>
-                  <div className="grid grid-cols-3 gap-2">
-                    {[
-                      { label: 'Backend', value: latestQuantumResult.backend_used },
-                      { label: 'Objective', value: latestQuantumResult.objective_value.toFixed(4) },
-                      { label: 'Improvement', value: latestQuantumResult.improvement_over_classical != null
-                        ? `${(latestQuantumResult.improvement_over_classical * 100).toFixed(1)}%` : 'N/A' },
-                    ].map((s) => (
-                      <div key={s.label} className="bg-surface-elevated rounded p-2">
-                        <div className="text-[10px] text-gray-500 uppercase">{s.label}</div>
-                        <div className="text-xs font-bold font-mono text-brand-cyan mt-1">{s.value}</div>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
-            </CardBody>
-          </Card>
-
-          {/* History */}
-          {quantumHistory.length > 0 && (
-            <Card>
-              <CardHeader title="Recent Results" subtitle={`${quantumHistory.length} results`} />
-              <Table
-                columns={[
-                  { key: 'trace_id', label: 'Trace ID', render: (v) => <span className="text-xs font-mono text-brand-cyan">{String(v).slice(0, 12)}</span> },
-                  { key: 'backend_used', label: 'Backend' },
-                  { key: 'selected_symbols', label: 'Selected', render: (v) => (
-                    <span className="text-xs text-gray-400">{(v as string[])?.join(', ') ?? '—'}</span>
-                  )},
-                  { key: 'objective_value', label: 'Objective', align: 'right', render: (v) => Number(v).toFixed(4) },
-                ]}
-                rows={quantumHistory}
-                keyFn={(r) => String(r.trace_id ?? Math.random())}
-                emptyMessage="No history"
-                compact
-              />
-            </Card>
-          )}
         </div>
       )}
 

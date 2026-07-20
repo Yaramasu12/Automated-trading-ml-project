@@ -117,7 +117,6 @@ export function Engine() {
   const monitoring      = useStore((s) => s.monitoring)
   const aiCouncilStatus = useStore((s) => s.aiCouncilStatus)
   const neuralStatus    = useStore((s) => s.neuralStatus)
-  const quantumStatus   = useStore((s) => s.quantumStatus)
 
   const [tab, setTab]         = useState('agent')
   const [agentStatus, setAgentStatus] = useState<Record<string, unknown> | null>(null)
@@ -168,7 +167,7 @@ export function Engine() {
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const tickPollRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
-  const anyAiEnabled = aiCouncilStatus?.enabled || neuralStatus?.enabled || quantumStatus?.enabled
+  const anyAiEnabled = aiCouncilStatus?.enabled || neuralStatus?.enabled
 
   // ── Agent tab ────────────────────────────────────────────────────────────────
   const loadAgentData = useCallback(async () => {

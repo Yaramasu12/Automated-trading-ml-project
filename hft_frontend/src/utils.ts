@@ -1,4 +1,10 @@
-export function inr(value: number, decimals = 0): string {
+// Missing/NaN-safe formatters. Previously inr()/num() rendered "₹NaN" and
+// pct() THREW (undefined.toFixed) — blanking whole pages — when a value was
+// missing. All now show an em-dash for non-finite input.
+const PLACEHOLDER = '—'
+
+export function inr(value: number | null | undefined, decimals = 0): string {
+  if (value == null || !Number.isFinite(value)) return PLACEHOLDER
   return new Intl.NumberFormat('en-IN', {
     style: 'currency',
     currency: 'INR',
@@ -7,31 +13,32 @@ export function inr(value: number, decimals = 0): string {
   }).format(value)
 }
 
-export function pct(value: number, decimals = 2): string {
+export function pct(value: number | null | undefined, decimals = 2): string {
+  if (value == null || !Number.isFinite(value)) return PLACEHOLDER
   return `${value >= 0 ? '+' : ''}${value.toFixed(decimals)}%`
 }
 
-export function num(value: number, decimals = 2): string {
+export function num(value: number | null | undefined, decimals = 2): string {
+  if (value == null || !Number.isFinite(value)) return PLACEHOLDER
   return new Intl.NumberFormat('en-IN', {
     maximumFractionDigits: decimals,
     minimumFractionDigits: decimals,
   }).format(value)
 }
 
-export function fmtDate(iso: string): string {
-  return new Date(iso).toLocaleDateString('en-IN', {
-    day: '2-digit',
-    month: 'short',
-    year: 'numeric',
-  })
+export function fmtDate(iso: string | null | undefined): string {
+  if (!iso) return PLACEHOLDER
+  const d = new Date(iso)
+  if (isNaN(d.getTime())) return PLACEHOLDER
+  return d.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })
 }
 
-export function fmtTime(iso: string): string {
-  return new Date(iso).toLocaleTimeString('en-IN', {
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-    hour12: false,
+export function fmtTime(iso: string | null | undefined): string {
+  if (!iso) return PLACEHOLDER
+  const d = new Date(iso)
+  if (isNaN(d.getTime())) return PLACEHOLDER
+  return d.toLocaleTimeString('en-IN', {
+    hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false,
   })
 }
 

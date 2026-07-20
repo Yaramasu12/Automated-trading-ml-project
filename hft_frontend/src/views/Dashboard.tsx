@@ -16,7 +16,7 @@ import { useStore } from '../store'
 import { fmtDate, fmtDateTime, inr, pct, fmtUptime } from '../utils'
 import {
   getEquityCurve, getDailyPnl, getRecentTrades, getTargetProgress,
-  getAICouncilStatus, getNeuralStatus, getQuantumStatus, getGoalGovernorStatus,
+  getAICouncilStatus, getNeuralStatus, getGoalGovernorStatus,
   getBatchTicks, getFeedSnapshot,
 } from '../api'
 import type { Trade } from '../types'
@@ -100,12 +100,10 @@ export function Dashboard() {
 
   const aiCouncilStatus = useStore((s) => s.aiCouncilStatus)
   const neuralStatus    = useStore((s) => s.neuralStatus)
-  const quantumStatus   = useStore((s) => s.quantumStatus)
   const goalStatus      = useStore((s) => s.goalGovernorStatus)
 
   const setAICouncilStatus = useStore((s) => s.setAICouncilStatus)
   const setNeuralStatus    = useStore((s) => s.setNeuralStatus)
-  const setQuantumStatus   = useStore((s) => s.setQuantumStatus)
   const setGoalStatus      = useStore((s) => s.setGoalGovernorStatus)
 
   const [marketTicks, setMarketTicks] = useState<Record<string, DashboardTick>>({})
@@ -148,11 +146,10 @@ export function Dashboard() {
   useEffect(() => {
     refresh()
     pollRef.current = setInterval(refresh, 30_000)
-    Promise.allSettled([getAICouncilStatus(), getNeuralStatus(), getQuantumStatus(), getGoalGovernorStatus()])
-      .then(([cs, ns, qs, gs]) => {
+    Promise.allSettled([getAICouncilStatus(), getNeuralStatus(), getGoalGovernorStatus()])
+      .then(([cs, ns, gs]) => {
         if (cs.status === 'fulfilled') setAICouncilStatus(cs.value)
         if (ns.status === 'fulfilled') setNeuralStatus(ns.value)
-        if (qs.status === 'fulfilled') setQuantumStatus(qs.value)
         if (gs.status === 'fulfilled') setGoalStatus(gs.value)
       })
     return () => { if (pollRef.current) clearInterval(pollRef.current) }
@@ -183,7 +180,7 @@ export function Dashboard() {
   const isSystemFresh = equityCurve.length === 0 && recentTrades.length === 0 && !livePortfolio
 
   // AI system status count
-  const aiSystems = [aiCouncilStatus?.enabled, neuralStatus?.enabled, quantumStatus?.enabled, goalStatus?.enabled]
+  const aiSystems = [aiCouncilStatus?.enabled, neuralStatus?.enabled, goalStatus?.enabled]
   const aiEnabledCount = aiSystems.filter(Boolean).length
   const feedRunning = Boolean(feedSnapshot?.running)
 
@@ -226,7 +223,7 @@ export function Dashboard() {
           <LayoutDashboard size={16} className="text-brand-blue" />
           <div>
             <h1 className="text-lg font-bold text-gray-100">Command Center</h1>
-            <p className="text-xs text-gray-500 mt-0.5">Live performance · quantum multi-agent overview</p>
+            <p className="text-xs text-gray-500 mt-0.5">Live performance · multi-agent overview</p>
           </div>
         </div>
         <div className="flex items-center gap-2">
@@ -317,15 +314,6 @@ export function Dashboard() {
             live: true,
             detail: neuralStatus?.models?.forecaster,
             color: 'blue',
-          },
-          {
-            icon: <Cpu size={13} className="text-brand-cyan" />,
-            label: 'Quantum',
-            phase: 'Phase 4',
-            enabled: quantumStatus?.enabled,
-            live: quantumStatus?.backends?.some(b => b.available),
-            detail: quantumStatus?.backend,
-            color: 'cyan',
           },
           {
             icon: <Target size={13} className="text-brand-green" />,

@@ -16,8 +16,6 @@ import type {
   NeuralBundle,
   NeuralStatus,
   PolicyInfo,
-  QuantumOptimizationResult,
-  QuantumStatus,
   RuntimeState,
   SignalScanResult,
   StrategyEvaluationResult,
@@ -40,7 +38,6 @@ export type NavView =
   | 'account'
   | 'ai-council'
   | 'neural'
-  | 'quantum'
   | 'goal-governor'
   | 'policies'
   | 'traces'
@@ -115,12 +112,6 @@ interface Store {
   setNeuralStatus: (s: NeuralStatus) => void
   latestNeuralBundle: NeuralBundle | null
   setLatestNeuralBundle: (b: NeuralBundle) => void
-
-  // ── Quantum Lab ───────────────────────────────────────────────────────────
-  quantumStatus: QuantumStatus | null
-  setQuantumStatus: (s: QuantumStatus) => void
-  latestQuantumResult: QuantumOptimizationResult | null
-  setLatestQuantumResult: (r: QuantumOptimizationResult) => void
 
   // ── Goal Governor ─────────────────────────────────────────────────────────
   goalGovernorStatus: GoalGovernorStatus | null
@@ -199,11 +190,6 @@ export const useStore = create<Store>((set) => ({
   setNeuralStatus: (s) => set({ neuralStatus: s }),
   latestNeuralBundle: null,
   setLatestNeuralBundle: (b) => set({ latestNeuralBundle: b }),
-
-  quantumStatus: null,
-  setQuantumStatus: (s) => set({ quantumStatus: s }),
-  latestQuantumResult: null,
-  setLatestQuantumResult: (r) => set({ latestQuantumResult: r }),
 
   goalGovernorStatus: null,
   setGoalGovernorStatus: (s) => set({ goalGovernorStatus: s }),
