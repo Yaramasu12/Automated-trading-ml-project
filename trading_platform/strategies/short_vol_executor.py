@@ -391,9 +391,9 @@ class ShortVolExecutor:
         for underlying in self.auto_underlyings:
             for i, expiry in enumerate(self.target_expiries(underlying)):
                 if not first:
-                    # Non-blocking spacing so the per-leg candle fetches don't burst
-                    # into the Angel One rate limit (see _option_last_price).
-                    await asyncio.sleep(1.0)
+                    # Non-blocking spacing so the per-slot ATM-IV candle fetches
+                    # don't burst into the Angel One rate limit (env-tunable).
+                    await asyncio.sleep(float(os.getenv("SHORTVOL_ENTRY_SPACING", "2.5")))
                 first = False
                 # One structure per expiry SLOT (condor on the near expiry,
                 # put_spread on the next, …) so both edges trade on DIFFERENT
