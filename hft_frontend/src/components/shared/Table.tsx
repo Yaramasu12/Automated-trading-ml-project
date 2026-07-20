@@ -1,5 +1,5 @@
 import { clsx } from 'clsx'
-import type { ReactNode } from 'react'
+import { isValidElement, type ReactNode } from 'react'
 
 export interface Column<T> {
   key: string
@@ -82,7 +82,11 @@ export function Table<T>({
                         col.className,
                       )}
                     >
-                      {col.render ? col.render(value, row) : String(value ?? '')}
+                      {col.render
+                        ? col.render(value, row)
+                        : isValidElement(value)
+                          ? value
+                          : String(value ?? '')}
                     </td>
                   )
                 })}
