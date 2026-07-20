@@ -25,6 +25,13 @@ class RiskLimits:
     max_order_to_trade_ratio: float = 50.0
     block_naked_option_selling: bool = True
     expiry_day_open_cutoff_hour: int = 14
+    # Defence-in-depth: when directional trading is disabled (the default — index
+    # FUTURES momentum has no proven edge and their full-notional fills blow cash
+    # deeply negative), refuse to OPEN any futures position at the risk layer, so a
+    # regression in the agent's directional gate can never place them. Closing
+    # (position-reducing) futures orders are always allowed so an open future can
+    # still be squared off.
+    block_futures_opening: bool = False
 
 
 @dataclass(frozen=True)
@@ -92,6 +99,8 @@ class RiskEngine:
         # position limits for any index lot, so we compare margin against
         # max_futures_margin_pct (default 20%) rather than max_position_pct (5%).
         is_future = intent.instrument.instrument_type == InstrumentType.FUTURE
+        if is_future and is_opening and self.limits.block_futures_opening:
+            return RiskDecision(False, "directional_futures_blocked", 1.0)
         if is_future:
             effective_exposure = intent.notional_value * 0.12
             applicable_limit = self.limits.max_futures_margin_pct

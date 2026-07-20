@@ -112,6 +112,43 @@ class RiskEngineTests(unittest.TestCase):
         self.assertFalse(decision.approved)
         self.assertEqual(decision.reason, "correlated_exposure_exceeds_limit")
 
+    def _future(self):
+        from trading_platform.domain.enums import InstrumentType
+        return next(i for i in self.master.all()
+                    if getattr(i, "instrument_type", None) == InstrumentType.FUTURE)
+
+    def _intent_meta(self, instrument, side, quantity, price, metadata=None):
+        signal = Signal("test", instrument.symbol, side, 0.9, price, "unit test",
+                        datetime.now(timezone.utc), metadata=metadata or {})
+        return OrderIntent(signal, instrument, quantity, OrderType.MARKET, ProductType.INTRADAY)
+
+    def test_blocks_opening_futures_when_directional_off(self):
+        fut = self._future()
+        intent = self._intent_meta(fut, Side.BUY, 1, 24000)
+        decision = RiskEngine(RiskLimits(block_futures_opening=True)).evaluate(
+            intent, self.snapshot, datetime(2026, 1, 5, 10, 0), ExecutionMode.BACKTEST,
+        )
+        self.assertFalse(decision.approved)
+        self.assertEqual(decision.reason, "directional_futures_blocked")
+
+    def test_allows_closing_futures_even_when_blocked(self):
+        # A position-reducing futures order (square-off) must still pass.
+        fut = self._future()
+        intent = self._intent_meta(fut, Side.SELL, 1, 24000, metadata={"opens_position": False})
+        decision = RiskEngine(RiskLimits(block_futures_opening=True)).evaluate(
+            intent, self.snapshot, datetime(2026, 1, 5, 10, 0), ExecutionMode.BACKTEST,
+        )
+        self.assertTrue(decision.approved, decision.reason)
+
+    def test_allows_opening_futures_when_directional_on(self):
+        # Default block_futures_opening=False (directional enabled) -> not blocked here.
+        fut = self._future()
+        intent = self._intent_meta(fut, Side.BUY, 1, 24000)
+        decision = RiskEngine(RiskLimits()).evaluate(
+            intent, self.snapshot, datetime(2026, 1, 5, 10, 0), ExecutionMode.BACKTEST,
+        )
+        self.assertNotEqual(decision.reason, "directional_futures_blocked")
+
     def _intent(self, instrument, side, quantity, price):
         signal = Signal("test", instrument.symbol, side, 0.9, price, "unit test", datetime.now(timezone.utc))
         return OrderIntent(signal, instrument, quantity, OrderType.MARKET, ProductType.INTRADAY)

@@ -126,12 +126,19 @@ class TradingRuntime:
         self.portfolio = PortfolioLedger(self.settings.initial_capital)
         self.paper_broker = SimulatedBrokerClient()
         self.broker_capabilities = BrokerCapabilityRegistry()
+        # Block opening index-futures at the risk layer whenever directional
+        # trading is disabled (the default). This is defence-in-depth behind the
+        # agent's directional gate: the 2026-07-20 open showed 3 momentum futures
+        # fill and drive cash to -2.7M before the gate engaged. Reducing/closing
+        # futures orders are still allowed (see is_opening check in evaluate).
+        _directional_on = os.getenv("AGENT_DIRECTIONAL_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"}
         self.risk_engine = RiskEngine(
             RiskLimits(
                 max_drawdown=self.settings.max_drawdown,
                 max_daily_loss=self.settings.max_daily_loss,
                 max_position_pct=self.settings.max_position_pct,
                 max_margin_utilization=self.settings.max_margin_utilization,
+                block_futures_opening=not _directional_on,
             )
         )
         self.live_armed = False
