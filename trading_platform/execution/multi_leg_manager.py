@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 EnqueueFn = Callable[[OrderIntent], Awaitable[str]]
 
 # How long to wait for each leg's broker fill before treating it as failed (seconds).
-_LEG_FILL_TIMEOUT = 30.0
+_LEG_FILL_TIMEOUT = 75.0   # tolerate scheduler congestion at market open
 
 
 @dataclass

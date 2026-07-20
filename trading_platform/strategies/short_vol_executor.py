@@ -229,7 +229,11 @@ class ShortVolExecutor:
             return out
 
         vix = iv
-        qty = decision.lots * lot_size
+        # Quantity is in LOTS (contracts). notional_value and the ledger already
+        # multiply by lot_size, so passing lots*lot_size here double-counts the
+        # multiplier — inflating option notional ~lot_size× (→ position_size
+        # rejections that roll back the whole structure) and P&L on fill.
+        qty = decision.lots
         for leg in decision.legs:
             inst = self._resolve_option(underlying, leg.strike, leg.option_type, expiry)
             if inst is None:
