@@ -232,5 +232,66 @@ class CondorExitContractTests(unittest.TestCase):
         self.assertEqual(trig, ExitTrigger.EXPIRY)
 
 
+class OptionPriceFetchTests(unittest.TestCase):
+    """Rate-limit hardening of the ATM option-price candle fetch."""
+
+    def _inst(self, sym="NIFTY28JUL2624000CE"):
+        return SimpleNamespace(symbol=sym, strike=24000.0, lot_size=75)
+
+    def _executor(self, get_candles):
+        rt = SimpleNamespace(angel_one_history=SimpleNamespace(get_candles=get_candles))
+        return ShortVolExecutor(rt)
+
+    def test_success_is_cached_and_fetched_once(self):
+        calls = {"n": 0}
+        def gc(inst, a, b, tf):
+            calls["n"] += 1
+            return [SimpleNamespace(close=123.5)]
+        ex = self._executor(gc)
+        with mock.patch.dict(os.environ, {"SHORTVOL_FETCH_SPACING": "0"}):
+            self.assertEqual(ex._option_last_price(self._inst()), 123.5)
+            self.assertEqual(ex._option_last_price(self._inst()), 123.5)  # served from cache
+        self.assertEqual(calls["n"], 1)
+
+    def test_retries_then_succeeds_on_rate_limit(self):
+        seq = [Exception("Access denied because of exceeding access rate"),
+               [SimpleNamespace(close=88.0)]]
+        def gc(inst, a, b, tf):
+            r = seq.pop(0)
+            if isinstance(r, Exception):
+                raise r
+            return r
+        ex = self._executor(gc)
+        with mock.patch.dict(os.environ, {"SHORTVOL_FETCH_SPACING": "0", "SHORTVOL_FETCH_ATTEMPTS": "4"}), \
+                mock.patch("trading_platform.strategies.short_vol_executor.time.sleep"):
+            self.assertEqual(ex._option_last_price(self._inst()), 88.0)
+
+    def test_persistent_rate_limit_negatively_cached(self):
+        calls = {"n": 0}
+        def gc(inst, a, b, tf):
+            calls["n"] += 1
+            raise Exception("exceeding access rate")
+        ex = self._executor(gc)
+        with mock.patch.dict(os.environ, {"SHORTVOL_FETCH_SPACING": "0", "SHORTVOL_FETCH_ATTEMPTS": "2",
+                                          "SHORTVOL_FETCH_NEG_TTL": "60"}), \
+                mock.patch("trading_platform.strategies.short_vol_executor.time.sleep"):
+            self.assertEqual(ex._option_last_price(self._inst()), 0.0)
+            n_after_first = calls["n"]
+            # Second call within TTL must NOT re-hammer the throttled contract.
+            self.assertEqual(ex._option_last_price(self._inst()), 0.0)
+        self.assertEqual(calls["n"], n_after_first)
+
+    def test_throttle_spaces_consecutive_fetches(self):
+        def gc(inst, a, b, tf):
+            return [SimpleNamespace(close=1.0)]
+        ex = self._executor(gc)
+        slept = []
+        with mock.patch.dict(os.environ, {"SHORTVOL_FETCH_SPACING": "0.5"}), \
+                mock.patch("trading_platform.strategies.short_vol_executor.time.sleep", slept.append):
+            ex._option_last_price(self._inst("A"))   # first fetch: no wait
+            ex._option_last_price(self._inst("B"))   # second: must be spaced
+        self.assertTrue(any(s > 0 for s in slept), slept)
+
+
 if __name__ == "__main__":
     unittest.main()

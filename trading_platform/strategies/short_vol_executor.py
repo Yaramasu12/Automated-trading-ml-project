@@ -47,6 +47,15 @@ class ShortVolExecutor:
         # fetched at most once per day (shared by previews and the daily auto-entry),
         # so we don't re-hammer it and trip "exceeding access rate".
         self._price_cache: dict[tuple[str, date], float] = {}
+        # Serialise ALL candle reads: Angel One denies bursts even across
+        # underlyings, so we enforce a minimum wall-clock gap before every fetch
+        # (not just between entries). Monotonic so it is immune to clock changes.
+        self._last_fetch_ts: float = 0.0
+        # Short-TTL negative cache: a contract whose fetch just tripped the rate
+        # limit is skipped for SHORTVOL_FETCH_NEG_TTL seconds so one throttled
+        # underlying (e.g. BANKNIFTY) doesn't burn the whole scan re-hammering the
+        # same denied strike — but it DOES retry on a later scan cycle.
+        self._neg_cache: dict[tuple[str, date], float] = {}
 
     # ── market data ─────────────────────────────────────────────────────────
 
@@ -103,29 +112,52 @@ class ShortVolExecutor:
         gaps = [b - a for a, b in zip(strikes, strikes[1:]) if b > a]
         return int(min(gaps)) if gaps else 50
 
+    def _throttle_fetch(self) -> None:
+        """Enforce a minimum gap before every candle read so bursts (the CE+PE
+        ATM pair, and back-to-back underlyings) are physically serialised under
+        Angel One's rate limit. Blocking is intentional; build() runs off the
+        event loop via asyncio.to_thread (see enter())."""
+        spacing = float(os.getenv("SHORTVOL_FETCH_SPACING", "0.5"))
+        wait = spacing - (time.monotonic() - self._last_fetch_ts)
+        if wait > 0:
+            time.sleep(wait)
+        self._last_fetch_ts = time.monotonic()
+
     def _option_last_price(self, inst) -> float:
         """Most recent traded price of an option contract (daily candle close).
 
-        Cached per (symbol, day) and retried with backoff on rate-limit, because
-        the candle API throttles hard when several strikes are fetched in a burst."""
+        Cached per (symbol, day) and retried with exponential backoff on
+        rate-limit, because the candle API throttles hard when several strikes are
+        fetched in a burst. Every read is paced by _throttle_fetch, and a contract
+        that keeps getting denied is negatively cached for a short window so one
+        throttled underlying doesn't starve the rest of the scan."""
         sym = getattr(inst, "symbol", "?")
         key = (sym, date.today())
         cached = self._price_cache.get(key)
         if cached is not None:
             return cached
+        neg_ttl = float(os.getenv("SHORTVOL_FETCH_NEG_TTL", "20"))
+        failed_at = self._neg_cache.get(key)
+        if failed_at is not None and (time.monotonic() - failed_at) < neg_ttl:
+            return 0.0   # recently rate-limited; skip until it ages out (retries next scan)
         to_dt = datetime.now(); from_dt = to_dt - timedelta(days=10)
-        for attempt in range(3):
+        attempts = max(1, int(os.getenv("SHORTVOL_FETCH_ATTEMPTS", "4")))
+        for attempt in range(attempts):
+            self._throttle_fetch()
             try:
                 bars = self._rt.angel_one_history.get_candles(inst, from_dt, to_dt, "ONE_DAY")
                 if bars:
                     price = float(bars[-1].close)
                     self._price_cache[key] = price
+                    self._neg_cache.pop(key, None)
                     return price
                 return 0.0
             except Exception as exc:
-                if "rate" in str(exc).lower() and attempt < 2:
-                    time.sleep(0.6 * (attempt + 1))   # 0.6s, 1.2s backoff
+                if "rate" in str(exc).lower() and attempt < attempts - 1:
+                    time.sleep(min(4.0, 0.8 * (2 ** attempt)))   # 0.8s, 1.6s, 3.2s (capped 4s)
                     continue
+                if "rate" in str(exc).lower():
+                    self._neg_cache[key] = time.monotonic()
                 logger.warning("short-vol: option price fetch failed for %s: %s", sym, exc)
                 return 0.0
         return 0.0
@@ -299,7 +331,9 @@ class ShortVolExecutor:
     async def enter(self, underlying: str = "NIFTY", expiry: date | None = None,
                     structure: str = "condor") -> dict:
         """Build then SUBMIT the defined-risk structure as a multi-leg order."""
-        plan = self.build(underlying, expiry, structure)
+        # build() does blocking candle reads with throttle/backoff sleeps; run it
+        # off the event loop so a rate-limited fetch can't stall the agent scan.
+        plan = await asyncio.to_thread(self.build, underlying, expiry, structure)
         if not plan.get("enter") or not plan.get("legs"):
             return {"submitted": False, **plan}
         exp = plan.get("expiry", "")
