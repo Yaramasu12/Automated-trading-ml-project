@@ -25,6 +25,21 @@ class FakeSmartApi:
         }
 
 
+class RateLimitedSmartApi:
+    """Raises Angel One's rate-limit error for the first `fail_times` calls,
+    then returns a valid candle payload."""
+
+    def __init__(self, fail_times: int):
+        self.calls = 0
+        self.fail_times = fail_times
+
+    def getCandleData(self, params):
+        self.calls += 1
+        if self.calls <= self.fail_times:
+            raise Exception("Access denied because of exceeding access rate")
+        return {"status": True, "data": [["2026-01-01T09:15:00+05:30", 100, 110, 95, 105, 1000]]}
+
+
 class AngelOneDataTests(unittest.TestCase):
     def test_parses_openapi_instrument_rows(self):
         provider = AngelOneInstrumentMasterProvider(_settings())
@@ -133,6 +148,51 @@ class AngelOneDataTests(unittest.TestCase):
             )
 
         self.assertIsNone(fake_api.last_params)
+
+    def _numeric_instrument(self) -> Instrument:
+        return Instrument(
+            symbol="SBIN-EQ", name="SBIN", exchange=Exchange.NSE,
+            segment=Segment.FUTURES, asset_class=AssetClass.COMMODITY,
+            instrument_type=InstrumentType.FUTURE, token="3045",
+        )
+
+    def test_rate_limit_retries_then_succeeds(self):
+        import os
+        from unittest import mock
+        api = RateLimitedSmartApi(fail_times=1)
+        history = AngelOneHistoricalDataProvider(_settings(), smart_api=api)
+        with mock.patch.dict(os.environ, {"ANGEL_ONE_CANDLE_MIN_INTERVAL": "0", "ANGEL_ONE_CANDLE_RETRIES": "3"}), \
+                mock.patch("trading_platform.data.angel_one_history.time.sleep"):
+            bars = history.get_candles(self._numeric_instrument(),
+                                       datetime(2026, 1, 1, 9, 15), datetime(2026, 1, 2, 15, 30))
+        self.assertEqual(len(bars), 1)          # recovered instead of raising rate_limited
+        self.assertEqual(api.calls, 2)
+
+    def test_persistent_rate_limit_raises_after_retries(self):
+        import os
+        from unittest import mock
+        api = RateLimitedSmartApi(fail_times=99)
+        history = AngelOneHistoricalDataProvider(_settings(), smart_api=api)
+        with mock.patch.dict(os.environ, {"ANGEL_ONE_CANDLE_MIN_INTERVAL": "0", "ANGEL_ONE_CANDLE_RETRIES": "2"}), \
+                mock.patch("trading_platform.data.angel_one_history.time.sleep"):
+            with self.assertRaisesRegex(RuntimeError, "rate_limited"):
+                history.get_candles(self._numeric_instrument(),
+                                    datetime(2026, 1, 1, 9, 15), datetime(2026, 1, 2, 15, 30))
+        self.assertEqual(api.calls, 2)          # tried exactly `retries` times, no re-login storm
+
+    def test_throttle_spaces_calls(self):
+        import os, time as _t
+        from unittest import mock
+        api = FakeSmartApi()
+        history = AngelOneHistoricalDataProvider(_settings(), smart_api=api)
+        slept: list[float] = []
+        # Force a recent last-call so the next call must wait the full interval.
+        AngelOneHistoricalDataProvider._last_call_ts = _t.monotonic()
+        with mock.patch.dict(os.environ, {"ANGEL_ONE_CANDLE_MIN_INTERVAL": "0.5"}), \
+                mock.patch("trading_platform.data.angel_one_history.time.sleep", slept.append):
+            history.get_candles(self._numeric_instrument(),
+                                datetime(2026, 1, 1, 9, 15), datetime(2026, 1, 2, 15, 30))
+        self.assertTrue(any(s > 0 for s in slept), slept)
 
 
 def _settings() -> Settings:
