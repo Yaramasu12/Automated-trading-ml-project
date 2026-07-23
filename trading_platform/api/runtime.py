@@ -1126,6 +1126,50 @@ class TradingRuntime:
             self.exit_manager.register(plan)
             restored_plans += 1
 
+        # ── Re-arm exit plans for orphaned option positions ─────────────────
+        # Exit plans are created on FILL. Positions restored from DB after a
+        # restart do NOT re-fire the fill event, and if the DB held no saved
+        # plans (a persistence gap), the restored legs end up with NO exit plan
+        # — so the monitor never squares them off and they linger past expiry.
+        # For every restored defined-risk option leg lacking a plan, rebuild an
+        # EXPIRY-ONLY plan (no price triggers — the wings cap the loss; this
+        # mirrors the multi-leg exit design in _on_fill) so it settles at expiry.
+        rearmed = 0
+        _planned = {p.get("symbol") for p in self.exit_manager.active_plans()}
+        for symbol, pos in list(self.portfolio.positions.items()):
+            if pos.quantity == 0 or symbol in _planned:
+                continue
+            inst = pos.instrument
+            if inst is None or getattr(inst, "option_type", None) is None or inst.expiry is None:
+                continue
+            plan = ExitPlan(
+                plan_id=f"rearm_{symbol}",
+                instrument=inst,
+                symbol=symbol,
+                entry_price=pos.average_price,
+                quantity=abs(pos.quantity),
+                strategy_name="short_vol",
+                side="SELL" if pos.quantity < 0 else "BUY",
+                stop_loss_price=None,
+                target_price=None,
+                trailing_pct=None,
+                expiry_date=inst.expiry,
+                partial_exit_enabled=False,
+            )
+            self.exit_manager.register(plan)
+            try:
+                self.db.save_exit_plan(plan.to_dict(), execution_mode=exec_mode)
+            except Exception as exc:
+                note_swallowed("restore_state.rearm_exit_plan", exc)
+            restored_plans += 1
+            rearmed += 1
+        if rearmed:
+            logger.warning(
+                "restore_state: re-armed %d expiry-only exit plan(s) for orphaned option "
+                "position(s) that had no plan (persistence gap) — they will now settle at expiry",
+                rearmed,
+            )
+
         if restored_positions or restored_plans:
             logger.info(
                 "restore_state: recovered %d position(s) and %d exit plan(s) for mode=%s",
