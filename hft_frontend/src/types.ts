@@ -420,10 +420,20 @@ export interface Trade {
 
 // ─── Live Feed ────────────────────────────────────────────────────────────────
 
+export interface FeedFreshness {
+  market_status: string
+  market_open: boolean
+  freshest_tick_age_seconds: number | null
+  hard_seconds: number | null
+  stale: boolean
+  as_of: string
+}
+
 export interface LiveFeedSnapshot {
   running: boolean
   subscribed_symbols: string[]
   tick_count: number
+  freshness?: FeedFreshness
 }
 
 // ─── Live Portfolio (from WS) ─────────────────────────────────────────────────
@@ -461,6 +471,7 @@ export interface LivePortfolioSnapshot {
 export interface WsDashboardMessage {
   type: 'snapshot'
   timestamp: string
+  heartbeat?: boolean
   authenticated?: boolean
   state: RuntimeState
   monitoring: MonitoringMetrics

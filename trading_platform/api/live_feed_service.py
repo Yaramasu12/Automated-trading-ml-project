@@ -18,7 +18,12 @@ from __future__ import annotations
 
 from typing import Any, Callable
 
-from trading_platform.agent.market_hours import now_ist
+from trading_platform.agent.market_hours import (
+    is_entry_allowed,
+    is_mcx_entry_allowed,
+    market_status,
+    now_ist,
+)
 from trading_platform.logging_safety import note_swallowed
 
 
@@ -83,7 +88,42 @@ class LiveFeedService:
         snap["live_orders_possible"] = self._can_submit_live_orders()
         snap["default_symbols"] = list(self.settings.live_feed_default_symbols)
         snap["max_symbols"] = self.settings.live_feed_max_symbols
+        snap["freshness"] = self._freshness_summary(snap)
         return snap
+
+    def _freshness_summary(self, snap: dict) -> dict:
+        """Compact freshness block the dashboard renders directly, so the UI
+        never has to *infer* staleness from message timing.
+
+        - market_status / market_open: is a trading session live right now? When
+          the market is closed a still feed is EXPECTED, not an error.
+        - freshest_tick_age_seconds: age of the newest tick across subscribed
+          symbols (None if nothing has ever ticked).
+        - stale: feed should be flowing (running + a session open) but the newest
+          tick is older than the hard threshold — the genuine "frozen" condition.
+        """
+        now = now_ist()
+        market_open = bool(is_entry_allowed(now) or is_mcx_entry_allowed(now))
+        staleness = snap.get("staleness") or {}
+        hard = float(staleness.get("hard_seconds") or 0.0)
+        ages = [
+            row.get("age_seconds")
+            for row in staleness.get("per_symbol", [])
+            if isinstance(row.get("age_seconds"), (int, float))
+        ]
+        freshest = min(ages) if ages else None
+        running = bool(snap.get("running"))
+        stale = bool(
+            running and market_open and (freshest is None or (hard > 0 and freshest > hard))
+        )
+        return {
+            "market_status": market_status(now),
+            "market_open": market_open,
+            "freshest_tick_age_seconds": freshest,
+            "hard_seconds": hard or None,
+            "stale": stale,
+            "as_of": now.isoformat(),
+        }
 
     def _resolve_feed_symbols(self, requested_symbols: list[str] | tuple[str, ...]) -> list[str]:
         today = now_ist().date()

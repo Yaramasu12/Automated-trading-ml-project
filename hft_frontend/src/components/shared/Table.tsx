@@ -36,15 +36,15 @@ export function Table<T>({
 
   return (
     <div className={clsx('overflow-x-auto', className)}>
-      <table className="w-full text-sm">
+      <table className="w-full text-sm border-collapse">
         <thead>
           <tr className="border-b border-surface-border">
             {columns.map((col) => (
               <th
                 key={col.key}
                 className={clsx(
-                  'font-medium text-gray-500 uppercase tracking-wider text-xs',
-                  compact ? 'px-3 py-2' : 'px-4 py-3',
+                  'font-semibold text-ink-faint uppercase tracking-wider text-[10px] bg-surface-inset/40',
+                  compact ? 'px-3 py-2' : 'px-4 py-2.5',
                   col.align === 'right' && 'text-right',
                   col.align === 'center' && 'text-center',
                   !col.align && 'text-left',
@@ -59,7 +59,7 @@ export function Table<T>({
         <tbody>
           {items.length === 0 ? (
             <tr>
-              <td colSpan={columns.length} className="text-center text-gray-500 py-8 text-xs">
+              <td colSpan={columns.length} className="text-center text-ink-faint py-10 text-xs">
                 {empty}
               </td>
             </tr>
@@ -67,7 +67,7 @@ export function Table<T>({
             items.map((row, index) => (
               <tr
                 key={keyFn(row, index)}
-                className="border-b border-surface-border/50 hover:bg-surface-elevated/50 transition-colors"
+                className="border-b border-surface-border/60 last:border-0 hover:bg-surface-elevated/60 transition-colors"
               >
                 {columns.map((col) => {
                   const value = (row as Record<string, unknown>)[col.key]
@@ -75,8 +75,8 @@ export function Table<T>({
                     <td
                       key={col.key}
                       className={clsx(
-                        'text-gray-300 font-mono',
-                        compact ? 'px-3 py-2' : 'px-4 py-3',
+                        'text-ink-muted font-mono',
+                        compact ? 'px-3 py-2' : 'px-4 py-2.5',
                         col.align === 'right' && 'text-right',
                         col.align === 'center' && 'text-center',
                         col.className,

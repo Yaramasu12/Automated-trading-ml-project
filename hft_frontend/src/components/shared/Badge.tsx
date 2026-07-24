@@ -11,14 +11,25 @@ type Variant =
   | 'gray'
 
 const variantMap: Record<Variant, string> = {
-  green: 'bg-brand-green/15 text-brand-green border-brand-green/30',
-  red: 'bg-brand-red/15 text-brand-red border-brand-red/30',
-  yellow: 'bg-brand-yellow/15 text-brand-yellow border-brand-yellow/30',
-  blue: 'bg-brand-blue/15 text-brand-blue border-brand-blue/30',
-  purple: 'bg-brand-purple/15 text-brand-purple border-brand-purple/30',
-  cyan: 'bg-brand-cyan/15 text-brand-cyan border-brand-cyan/30',
-  orange: 'bg-brand-orange/15 text-brand-orange border-brand-orange/30',
-  gray: 'bg-gray-700/40 text-gray-400 border-gray-600/30',
+  green: 'bg-brand-green/12 text-brand-green border-brand-green/25',
+  red: 'bg-brand-red/12 text-brand-red border-brand-red/25',
+  yellow: 'bg-brand-yellow/12 text-brand-yellow border-brand-yellow/25',
+  blue: 'bg-brand-blue/12 text-brand-blue border-brand-blue/25',
+  purple: 'bg-brand-purple/12 text-brand-purple border-brand-purple/25',
+  cyan: 'bg-brand-cyan/12 text-brand-cyan border-brand-cyan/25',
+  orange: 'bg-brand-orange/12 text-brand-orange border-brand-orange/25',
+  gray: 'bg-surface-inset text-ink-muted border-surface-border-strong',
+}
+
+const dotColor: Record<Variant, string> = {
+  green: 'bg-brand-green',
+  red: 'bg-brand-red',
+  yellow: 'bg-brand-yellow',
+  blue: 'bg-brand-blue',
+  purple: 'bg-brand-purple',
+  cyan: 'bg-brand-cyan',
+  orange: 'bg-brand-orange',
+  gray: 'bg-ink-faint',
 }
 
 interface BadgeProps {
@@ -32,22 +43,16 @@ export function Badge({ children, variant = 'gray', dot, className }: BadgeProps
   return (
     <span
       className={clsx(
-        'inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-xs font-medium border',
+        'inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[11px] font-semibold border whitespace-nowrap',
         variantMap[variant],
         className,
       )}
     >
       {dot && (
-        <span
-          className={clsx(
-            'w-1.5 h-1.5 rounded-full animate-pulse-slow',
-            variant === 'green' && 'bg-brand-green',
-            variant === 'red' && 'bg-brand-red',
-            variant === 'yellow' && 'bg-brand-yellow',
-            variant === 'blue' && 'bg-brand-blue',
-            variant === 'gray' && 'bg-gray-500',
-          )}
-        />
+        <span className="relative flex h-1.5 w-1.5">
+          <span className={clsx('absolute inline-flex h-full w-full rounded-full opacity-60 animate-ping-slow', dotColor[variant])} />
+          <span className={clsx('relative inline-flex h-1.5 w-1.5 rounded-full', dotColor[variant])} />
+        </span>
       )}
       {children}
     </span>
@@ -58,6 +63,7 @@ export function execModeBadge(mode: string) {
   if (mode.startsWith('LIVE')) return <Badge variant="red" dot>{mode}</Badge>
   if (mode === 'SHADOW_LIVE') return <Badge variant="orange" dot>SHADOW</Badge>
   if (mode === 'PAPER') return <Badge variant="yellow" dot>PAPER</Badge>
+  if (mode === '...') return <Badge variant="gray">…</Badge>
   return <Badge variant="blue">BACKTEST</Badge>
 }
 

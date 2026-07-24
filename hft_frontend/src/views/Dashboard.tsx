@@ -5,13 +5,16 @@ import {
 } from 'recharts'
 import { clsx } from 'clsx'
 import {
-  Activity, Atom, Brain, Cpu, Loader2, RefreshCw,
+  Activity, Atom, Brain, Cpu, RefreshCw,
   Target, TrendingDown, TrendingUp, Zap, LayoutDashboard,
 } from 'lucide-react'
 import { Card, CardBody, CardHeader } from '../components/shared/Card'
 import { MetricCard } from '../components/shared/MetricCard'
 import { Table } from '../components/shared/Table'
 import { execModeBadge } from '../components/shared/Badge'
+import { PageHeader } from '../components/shared/PageHeader'
+import { FreshnessBadge } from '../components/shared/Freshness'
+import { EmptyState } from '../components/shared/States'
 import { useStore } from '../store'
 import { fmtDate, fmtDateTime, inr, pct, fmtUptime } from '../utils'
 import {
@@ -87,7 +90,7 @@ export function Dashboard() {
   const runtimeState   = useStore((s) => s.runtimeState)
   const monitoring     = useStore((s) => s.monitoring)
   const livePortfolio  = useStore((s) => s.livePortfolio)
-  const wsConnected    = useStore((s) => s.wsConnected)
+  const liveFeed       = useStore((s) => s.liveFeed)
   const equityCurve    = useStore((s) => s.equityCurve)
   const dailyPnl       = useStore((s) => s.dailyPnl)
   const recentTrades   = useStore((s) => s.recentTrades)
@@ -109,6 +112,13 @@ export function Dashboard() {
   const [marketTicks, setMarketTicks] = useState<Record<string, DashboardTick>>({})
   const [feedSnapshot, setFeedSnapshot] = useState<Record<string, unknown> | null>(null)
   const [marketUpdatedAt, setMarketUpdatedAt] = useState<string | null>(null)
+  const [marketError, setMarketError] = useState<string | null>(null)
+
+  // Only hammer the tick/feed endpoints while a session is actually live. When
+  // the market is closed those calls just fail or return frozen data — a big
+  // source of console errors and needless load. Default true until the first WS
+  // snapshot tells us otherwise, so the initial paint still fetches prices.
+  const marketOpen = liveFeed?.freshness?.market_open ?? true
 
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const marketPollRef = useRef<ReturnType<typeof setInterval> | null>(null)
@@ -141,6 +151,10 @@ export function Dashboard() {
       setMarketUpdatedAt(new Date().toLocaleTimeString('en-IN'))
     }
     if (feedRes.status === 'fulfilled') setFeedSnapshot(feedRes.value as Record<string, unknown>)
+    // Surface the failure instead of silently leaving stale prices on screen.
+    setMarketError(ticksRes.status === 'rejected' && feedRes.status === 'rejected'
+      ? 'Market data unavailable — retrying.'
+      : null)
   }, [])
 
   useEffect(() => {
@@ -157,9 +171,11 @@ export function Dashboard() {
 
   useEffect(() => {
     refreshMarket()
-    marketPollRef.current = setInterval(refreshMarket, 2_000)
+    // Fast tape only while a session is live; back off hard when it's closed.
+    const period = marketOpen ? 2_000 : 30_000
+    marketPollRef.current = setInterval(refreshMarket, period)
     return () => { if (marketPollRef.current) clearInterval(marketPollRef.current) }
-  }, [refreshMarket])
+  }, [refreshMarket, marketOpen])
 
   // ── Derived metrics ──────────────────────────────────────────────────────────
   const latestEquity    = livePortfolio?.portfolio.equity ?? equityCurve[equityCurve.length - 1]?.equity ?? 0
@@ -218,40 +234,33 @@ export function Dashboard() {
     <div className="space-y-5">
 
       {/* ── Header ──────────────────────────────────────────────────────────── */}
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-2">
-          <LayoutDashboard size={16} className="text-brand-blue" />
-          <div>
-            <h1 className="text-lg font-bold text-gray-100">Command Center</h1>
-            <p className="text-xs text-gray-500 mt-0.5">Live performance · multi-agent overview</p>
-          </div>
-        </div>
-        <div className="flex items-center gap-2">
-          {runtimeState && execModeBadge(runtimeState.execution_mode)}
-          <button
-            onClick={() => { refresh(); refreshMarket() }}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-surface-elevated border border-surface-border text-xs text-gray-400 hover:text-gray-200 transition-colors"
-          >
-            <RefreshCw size={12} />
-            Refresh
-          </button>
-        </div>
-      </div>
+      <PageHeader
+        title="Command Center"
+        subtitle="Live performance · multi-agent overview"
+        icon={<LayoutDashboard size={18} />}
+        actions={
+          <>
+            {runtimeState && <div className="hidden sm:block">{execModeBadge(runtimeState.execution_mode)}</div>}
+            <button
+              onClick={() => { refresh(); refreshMarket() }}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-surface-card border border-surface-border text-xs text-ink-muted hover:text-ink hover:border-surface-border-strong transition-all"
+            >
+              <RefreshCw size={12} />
+              <span className="hidden sm:inline">Refresh</span>
+            </button>
+          </>
+        }
+      />
 
       {/* ── System Status Row ────────────────────────────────────────────────── */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
         {/* Runtime */}
-        <div className="bg-surface-card border border-surface-border rounded-lg p-3 space-y-1.5">
-          <div className="text-[10px] text-gray-500 uppercase tracking-wider font-semibold">Runtime</div>
+        <div className="bg-surface-card border border-surface-border rounded-xl p-3 space-y-2 shadow-card">
+          <div className="eyebrow">Runtime</div>
           <div className="flex items-center gap-2">
-            {runtimeState ? execModeBadge(runtimeState.execution_mode) : <span className="text-xs text-gray-600">—</span>}
+            {runtimeState ? execModeBadge(runtimeState.execution_mode) : <span className="text-xs text-ink-faint">—</span>}
           </div>
-          <div className="flex items-center gap-1.5">
-            <span className={clsx('w-1.5 h-1.5 rounded-full', wsConnected ? 'bg-brand-green animate-pulse-slow' : 'bg-brand-red')} />
-            <span className={clsx('text-[10px] font-mono', wsConnected ? 'text-brand-green' : 'text-brand-red')}>
-              {wsConnected ? 'WS LIVE' : 'WS OFF'}
-            </span>
-          </div>
+          <FreshnessBadge />
         </div>
 
         {/* Engine Health */}
@@ -396,12 +405,14 @@ export function Dashboard() {
       <Card>
         <CardHeader
           title="Live Market"
-          subtitle={`Updated ${marketUpdatedAt ?? '—'}`}
+          subtitle={marketError ?? (marketOpen
+            ? (marketUpdatedAt ? `Updated ${marketUpdatedAt}` : 'Waiting for ticks…')
+            : 'Market closed — prices from last session')}
           icon={<Activity size={14} />}
           action={
             <span className={clsx(
               'text-[10px] font-mono font-bold px-2 py-0.5 rounded border',
-              feedRunning ? 'text-brand-green border-brand-green/30 bg-brand-green/10' : 'text-brand-red border-brand-red/30 bg-brand-red/10',
+              feedRunning ? 'text-brand-green border-brand-green/30 bg-brand-green/10' : 'text-ink-faint border-surface-border bg-surface-inset',
             )}>
               {feedRunning ? 'FEED LIVE' : 'FEED OFF'}
             </span>
@@ -445,12 +456,12 @@ export function Dashboard() {
           />
           <CardBody className="h-56 !p-2">
             {equityCurve.length === 0 ? (
-              <div className="h-full flex items-center justify-center">
-                <div className="text-center">
-                  <Loader2 size={20} className="animate-spin text-gray-600 mx-auto mb-2" />
-                  <p className="text-xs text-gray-500">No equity data yet</p>
-                </div>
-              </div>
+              <EmptyState
+                className="h-full"
+                icon={<Activity size={18} />}
+                title="No equity data yet"
+                hint="The curve fills in once the engine records portfolio snapshots."
+              />
             ) : (
               <ResponsiveContainer width="100%" height="100%">
                 <AreaChart data={equityCurve} margin={{ top: 4, right: 8, bottom: 0, left: 0 }}>
@@ -499,9 +510,12 @@ export function Dashboard() {
           <CardHeader title="Daily P&L" subtitle="Last 30 days" />
           <CardBody className="h-56 !p-2">
             {dailyPnl.length === 0 ? (
-              <div className="h-full flex items-center justify-center">
-                <p className="text-xs text-gray-500">No daily P&L data</p>
-              </div>
+              <EmptyState
+                className="h-full"
+                icon={<TrendingUp size={18} />}
+                title="No daily P&L yet"
+                hint="Realized P&L per day appears here after trades settle."
+              />
             ) : (
               <ResponsiveContainer width="100%" height="100%">
                 <BarChart data={dailyPnl} margin={{ top: 4, right: 8, bottom: 0, left: 0 }}>

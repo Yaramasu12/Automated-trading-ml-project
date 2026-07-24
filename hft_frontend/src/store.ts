@@ -69,6 +69,11 @@ interface Store {
   liveFeed: LiveFeedSnapshot | null
   dbSummary: DBSummary | null
   livePortfolio: LivePortfolioSnapshot | null
+  // Freshness bookkeeping: server-stamped time of the snapshot and the local
+  // clock time we received it. The latter is what lets the UI tell "connection
+  // frozen" (no receipt in a while) from "data simply calm".
+  lastSnapshotTs: string | null
+  lastSnapshotAt: number | null
   applyWsSnapshot: (msg: WsDashboardMessage) => void
 
   // ── Equity / PnL ──────────────────────────────────────────────────────────
@@ -148,6 +153,8 @@ export const useStore = create<Store>((set) => ({
   liveFeed: null,
   dbSummary: null,
   livePortfolio: null,
+  lastSnapshotTs: null,
+  lastSnapshotAt: null,
   applyWsSnapshot: (msg) =>
     set({
       runtimeState: msg.state,
@@ -155,6 +162,8 @@ export const useStore = create<Store>((set) => ({
       liveFeed: msg.live_feed,
       dbSummary: msg.db ?? null,
       livePortfolio: msg.portfolio ?? null,
+      lastSnapshotTs: msg.timestamp ?? null,
+      lastSnapshotAt: Date.now(),
     }),
 
   equityCurve: [],
