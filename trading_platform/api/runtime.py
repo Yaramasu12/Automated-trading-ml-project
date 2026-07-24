@@ -1213,6 +1213,10 @@ class TradingRuntime:
         if self.settings.auto_start_agent:
             self.agent.start()
             agent_started = True
+        # Continuously sample equity to the DB so the equity curve is never blank
+        # (previously written only on fills — empty whenever no new trade fills).
+        import asyncio as _aio
+        self._snapshot_task = _aio.create_task(self._periodic_snapshot_loop())
         self.monitor.record_event(
             "async_services_started",
             (
@@ -1237,6 +1241,9 @@ class TradingRuntime:
     async def stop_async_services(self) -> None:
         """Stop scheduler and exit manager gracefully, then persist ML model state."""
         self.agent.stop()
+        snap_task = getattr(self, "_snapshot_task", None)
+        if snap_task is not None:
+            snap_task.cancel()
         await self.scheduler.stop()
         await self.exit_manager.stop()
         self.live_feed.stop()
@@ -2549,6 +2556,38 @@ class TradingRuntime:
                 settled,
             )
         return settled
+
+    async def _periodic_snapshot_loop(self) -> None:
+        """Sample portfolio equity to the DB on a fixed cadence so the equity curve
+        is populated CONTINUOUSLY — not only when a trade fills. Snapshots were
+        written on fills only, so whenever there were open positions but no new
+        fills (e.g. after a restart that restores positions), portfolio_snapshots
+        stayed empty and the dashboard equity-curve chart was blank."""
+        import asyncio as _aio
+        interval = float(os.getenv("SNAPSHOT_INTERVAL_SECONDS", "60"))
+        exec_mode = self.execution_mode.value
+        while True:
+            try:
+                await _aio.sleep(interval)
+                now = datetime.now(timezone.utc)
+                marks: dict[str, float] = {}
+                for sym, pos in list(self.portfolio.positions.items()):
+                    try:
+                        tick = self.live_feed.latest_tick(sym)
+                    except Exception:
+                        tick = None
+                    if tick and getattr(tick, "last_price", 0) and tick.last_price > 0:
+                        marks[sym] = float(tick.last_price)
+                    else:
+                        m = self._theoretical_option_mark(pos, now)
+                        if m is not None and m > 0:
+                            marks[sym] = float(m)
+                snap = self.portfolio.mark_to_market(now, marks)
+                await _aio.to_thread(self.db.save_snapshot, snap, execution_mode=exec_mode)
+            except _aio.CancelledError:
+                break
+            except Exception as exc:
+                note_swallowed("periodic_snapshot", exc)
 
     def _can_submit_live_orders(self) -> bool:
         return (
