@@ -1170,6 +1170,13 @@ class TradingRuntime:
                 rearmed,
             )
 
+        # Any restored position whose contract already EXPIRED can't be traded out
+        # — cash-settle it to intrinsic and remove it (else it stays stuck open).
+        try:
+            self._settle_expired_positions()
+        except Exception as exc:
+            note_swallowed("restore_state.settle_expired", exc)
+
         if restored_positions or restored_plans:
             logger.info(
                 "restore_state: recovered %d position(s) and %d exit plan(s) for mode=%s",
@@ -2480,6 +2487,68 @@ class TradingRuntime:
         if is_call:
             return max(0.0, spot * nd(d1) - K * math.exp(-r * T) * nd(d2))
         return max(0.0, K * math.exp(-r * T) * nd(-d2) - spot * nd(-d1))
+
+    def _settle_expired_positions(self) -> int:
+        """Cash-settle open OPTION positions whose contract has already expired.
+
+        An expired option cannot be TRADED (the exchange delists it and the risk
+        engine rejects it as contract_expired), so the exit monitor's market-order
+        square-off can never fill it — the position gets stuck open forever
+        (observed 2026-07-24: a SENSEX condor that expired 07-23 was still open the
+        next day, its exit retrying 2,668 times). Options are cash-settled at
+        expiry, so we settle each expired leg to its INTRINSIC value, book the P&L
+        through the ledger, drop the position, and clear its exit plan. Uses the
+        live underlying price via _theoretical_option_mark (which returns intrinsic
+        when T<=0); if the underlying price is unavailable, assumes worthless
+        (correct for the common in-range/OTM condor expiry)."""
+        from trading_platform.domain.models import Order
+        from trading_platform.domain.enums import OrderStatus
+        now = datetime.now(timezone.utc)
+        today = now_ist().date()
+        exec_mode = self.execution_mode.value
+        settled = 0
+        for symbol, pos in list(self.portfolio.positions.items()):
+            inst = getattr(pos, "instrument", None)
+            if inst is None or getattr(inst, "option_type", None) is None or inst.expiry is None:
+                continue
+            if inst.expiry >= today or pos.quantity == 0:
+                continue
+            settle = self._theoretical_option_mark(pos, now)
+            if settle is None:
+                settle = 0.0
+            side = Side.SELL if pos.quantity > 0 else Side.BUY
+            qty = abs(pos.quantity)
+            sig = Signal(
+                strategy_name="expiry_settlement", symbol=symbol, side=side,
+                confidence=1.0, price=settle, reason="expiry cash-settlement",
+                created_at=now, metadata={"opens_position": False},
+            )
+            intent = OrderIntent(sig, inst, qty, OrderType.MARKET, ProductType.INTRADAY)
+            order = Order(intent=intent, status=OrderStatus.FILLED)
+            try:
+                self.portfolio.apply_fill(order, float(settle), now)
+            except Exception as exc:
+                note_swallowed("settle_expired.apply_fill", exc)
+                continue
+            self.portfolio.positions.pop(symbol, None)
+            for pd in [p for p in self.exit_manager.active_plans() if p.get("symbol") == symbol]:
+                self.exit_manager.deregister(pd.get("plan_id"))
+            try:
+                self.db.delete_exit_plans_for_symbol(symbol, execution_mode=exec_mode)
+            except Exception as exc:
+                note_swallowed("settle_expired.delete_plan", exc)
+            settled += 1
+        if settled:
+            try:
+                self.db.save_positions(dict(self.portfolio.positions), execution_mode=exec_mode)
+            except Exception as exc:
+                note_swallowed("settle_expired.save_positions", exc)
+            logger.warning(
+                "Settled %d expired option position(s) to intrinsic (cash-settlement) — "
+                "these could not be squared off by trade because the contract had expired",
+                settled,
+            )
+        return settled
 
     def _can_submit_live_orders(self) -> bool:
         return (

@@ -79,16 +79,22 @@ class ComplianceGuard:
             )
 
         # Test/diagnostic strategies are exempt from the daily cap so they never
-        # exhaust the budget available for real production signals.
+        # exhaust the budget available for real production signals. Closing
+        # (position-reducing) orders are ALSO exempt and never counted: an exit
+        # must always be allowed to flow, else a stuck exit that retries can burn
+        # the whole cap and then nothing — including the exit itself — can trade
+        # (observed 2026-07-24: an un-fillable SENSEX expiry exit exhausted 200/200).
         is_test = intent.signal.strategy_name in _TEST_STRATEGY_NAMES
-        if not is_test and self._orders_today >= self.max_orders_per_day:
+        is_closing = not intent.signal.metadata.get("opens_position", True)
+        exempt = is_test or is_closing
+        if not exempt and self._orders_today >= self.max_orders_per_day:
             return ComplianceResult(
                 approved=False,
                 reason=f"Daily order cap reached ({self._orders_today}/{self.max_orders_per_day})",
                 checked_at=now.isoformat(),
             )
 
-        if not is_test:
+        if not exempt:
             self._orders_today += 1
         return ComplianceResult(approved=True, reason="OK", checked_at=now.isoformat())
 

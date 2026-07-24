@@ -52,6 +52,18 @@ class RiskEngineTests(unittest.TestCase):
         self.assertFalse(decision.approved)
         self.assertEqual(decision.reason, "naked_option_selling_blocked")
 
+    def test_allows_selling_option_to_close(self):
+        # Selling a LONG option leg to CLOSE (opens_position=False) — e.g. squaring
+        # off a condor's protective wing at expiry — must NOT be blocked as naked.
+        option = self.master.select_option("NIFTY", date(2026, 1, 5), 22500, OptionType.CE)
+        signal = Signal("exit_manager:expiry", option.symbol, Side.SELL, 1.0, 120,
+                        "close", datetime.now(timezone.utc), metadata={"opens_position": False})
+        intent = OrderIntent(signal, option, 1, OrderType.MARKET, ProductType.INTRADAY)
+        decision = RiskEngine().evaluate(intent, self.snapshot, datetime(2026, 1, 5, 10, 0),
+                                         ExecutionMode.BACKTEST)
+        self.assertTrue(decision.approved, decision.reason)
+        self.assertNotEqual(decision.reason, "naked_option_selling_blocked")
+
     def test_rejects_drawdown_breach(self):
         instrument = self.master.get("TCS")
         intent = self._intent(instrument, Side.BUY, 1, 3500)

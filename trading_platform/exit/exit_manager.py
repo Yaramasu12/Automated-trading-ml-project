@@ -17,6 +17,13 @@ ExitEnqueueFn = Callable[[OrderIntent], Awaitable[None]]
 # trigger fires again. Covers rejected/lost exit orders: the position never
 # silently loses protection just because one exit attempt died downstream.
 PENDING_EXIT_RETRY_SECONDS = 120.0
+# After this many unconfirmed retries the exit is clearly stuck downstream
+# (rejected by risk/compliance, broker down). Keep retrying — the position must
+# not silently lose protection — but back WAY off so a permanently-failing exit
+# can't hammer every 120s forever (2,668 retries in one day exhausted the daily
+# order cap on 2026-07-24) and can't flood the logs. Escalate with a CRITICAL log.
+MAX_EXIT_RETRIES = 5
+EXIT_RETRY_BACKOFF_SECONDS = 1800.0  # 30 min once a exit is deemed stuck
 
 
 class ExitManager:
@@ -75,6 +82,7 @@ class ExitManager:
         self._last_known_marks: dict[str, float] = {}   # sticky prices for fallback
         # plan_id → (monotonic-ish wall time when the exit intent was enqueued, trigger)
         self._pending_exits: dict[str, tuple[datetime, ExitTrigger]] = {}
+        self._exit_retry_count: dict[str, int] = {}   # plan_id → consecutive unconfirmed retries
         self._running = False
         self._task: asyncio.Task | None = None
         # Optional portfolio reference — used to guard against phantom exits for
@@ -93,6 +101,7 @@ class ExitManager:
     def deregister(self, plan_id: str) -> None:
         self._plans.pop(plan_id, None)
         self._pending_exits.pop(plan_id, None)
+        self._exit_retry_count.pop(plan_id, None)
 
     def update_marks(self, prices: dict[str, float]) -> None:
         self._mark_prices.update(prices)
@@ -156,14 +165,27 @@ class ExitManager:
                 pending = self._pending_exits.get(plan_id)
                 if pending is not None:
                     emitted_at, prev_trigger = pending
-                    if (now - emitted_at).total_seconds() < PENDING_EXIT_RETRY_SECONDS:
-                        continue  # exit order in flight — wait for its fill
-                    # No fill confirmation within the window: re-arm and retry.
+                    retries = self._exit_retry_count.get(plan_id, 0)
+                    # Once an exit is deemed stuck (repeatedly unconfirmed), back off
+                    # hard instead of retrying every 120s forever.
+                    window = PENDING_EXIT_RETRY_SECONDS if retries < MAX_EXIT_RETRIES else EXIT_RETRY_BACKOFF_SECONDS
+                    if (now - emitted_at).total_seconds() < window:
+                        continue  # in flight, or backing off after repeated failures
                     self._pending_exits.pop(plan_id, None)
-                    logger.warning(
-                        "ExitPlan %s: exit (%s) unconfirmed after %.0fs — re-arming trigger",
-                        plan_id, prev_trigger.value, PENDING_EXIT_RETRY_SECONDS,
-                    )
+                    self._exit_retry_count[plan_id] = retries + 1
+                    if retries + 1 == MAX_EXIT_RETRIES:
+                        logger.critical(
+                            "ExitPlan %s: exit (%s) failed %d times — the exit order keeps "
+                            "getting rejected downstream (check risk/compliance); backing off to "
+                            "%.0fs. Position %s may be STUCK OPEN and needs attention.",
+                            plan_id, prev_trigger.value, MAX_EXIT_RETRIES,
+                            EXIT_RETRY_BACKOFF_SECONDS, plan.symbol,
+                        )
+                    else:
+                        logger.warning(
+                            "ExitPlan %s: exit (%s) unconfirmed after %.0fs — re-arming trigger (retry %d)",
+                            plan_id, prev_trigger.value, window, retries + 1,
+                        )
                 # Mark price resolution: live tick → sticky last-known → entry price
                 mark = (
                     self._mark_prices.get(plan.symbol)

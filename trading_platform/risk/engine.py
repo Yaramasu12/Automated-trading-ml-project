@@ -75,13 +75,18 @@ class RiskEngine:
             return RiskDecision(False, "max_drawdown_breached", 1.0)
         if portfolio.equity <= 0:
             return RiskDecision(False, "invalid_portfolio_equity", 1.0)
-        if daily_pnl < -(portfolio.equity * self.limits.max_daily_loss):
+        # Loss / margin / order-rate limits gate NEW risk only. A position-reducing
+        # (closing) order must pass even under a daily-loss breach or order-cap —
+        # otherwise an exit (e.g. squaring off an expiring condor) gets trapped and
+        # the monitor retries forever. Closing REDUCES exposure, which is exactly
+        # what these limits want during a drawdown.
+        if is_opening and daily_pnl < -(portfolio.equity * self.limits.max_daily_loss):
             return RiskDecision(False, "max_daily_loss_breached", 1.0)
-        if strategy_daily_pnl < -(portfolio.equity * self.limits.max_loss_per_strategy_pct):
+        if is_opening and strategy_daily_pnl < -(portfolio.equity * self.limits.max_loss_per_strategy_pct):
             return RiskDecision(False, "max_strategy_loss_breached", 0.95)
-        if margin_utilization > self.limits.max_margin_utilization:
+        if is_opening and margin_utilization > self.limits.max_margin_utilization:
             return RiskDecision(False, "max_margin_utilization_breached", min(1.0, margin_utilization))
-        if orders_sent_today >= self.limits.max_orders_per_day:
+        if is_opening and orders_sent_today >= self.limits.max_orders_per_day:
             return RiskDecision(False, "max_orders_per_day_reached", 0.9)
 
         otr = orders_sent_today / max(1, trades_today)
@@ -123,6 +128,12 @@ class RiskEngine:
             return RiskDecision(False, "options_short_exposure_exceeds_limit", 0.9)
         if (
             self.limits.block_naked_option_selling
+            # Only OPENING a short option can be "naked". SELLING TO CLOSE a long
+            # leg (e.g. squaring off a condor's protective wing at expiry) reduces
+            # risk and must never be blocked — otherwise no defined-risk options
+            # structure can ever be exited, and the exit monitor retries forever
+            # (observed 2026-07-24: 2,668 retries burned the daily order cap).
+            and is_opening
             and instrument.instrument_type == InstrumentType.OPTION
             and intent.signal.side == Side.SELL
             and not intent.signal.metadata.get("hedged", False)
