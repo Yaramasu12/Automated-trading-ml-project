@@ -197,7 +197,13 @@ class TradingRuntime:
         self.fill_processor = FillProcessor(self.portfolio, self.oms)
         self.reconciliation = PositionReconciliation(self.portfolio, self.oms)
 
-        self.compliance = ComplianceGuard(max_orders_per_day=200)
+        # Daily order cap. Env-configurable because high-throughput postures
+        # (continuous short-vol rolling across several underlyings/expiries emits
+        # 4-leg structures + their exits) legitimately need a higher ceiling than
+        # the conservative default. Exits and exempt strategies still bypass this.
+        self.compliance = ComplianceGuard(
+            max_orders_per_day=max(1, int(os.getenv("MAX_ORDERS_PER_DAY", "200")))
+        )
         self.manual_approval = ManualApprovalGate(
             approval_threshold_notional=max(250_000.0, self.settings.initial_capital * 0.10)
         )

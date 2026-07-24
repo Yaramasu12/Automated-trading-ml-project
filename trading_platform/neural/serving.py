@@ -291,11 +291,21 @@ class NeuralPredictionService:
         # that passed walk-forward validation has been loaded (else None → MA).
         from trading_platform.neural.return_forecaster import GradientBoostedReturnForecaster
         self._gbm_forecaster = GradientBoostedReturnForecaster()
+        # Validated INTRADAY direction model — only serves when an artifact that
+        # passed walk-forward validation was saved (else is_available()=False →
+        # deferred). Its predict() returns None unless fed same-day intraday bars,
+        # so consulting it first is safe even when the caller passes daily bars.
+        from trading_platform.neural.intraday_forecaster import IntradayReturnForecaster
+        self._intraday_forecaster = IntradayReturnForecaster()
         if model_dir:
             try:
                 self._gbm_forecaster.load(f"{model_dir}/return_forecaster")
             except Exception as exc:
                 logger.debug("ReturnForecaster load skipped: %s", exc)
+            try:
+                self._intraday_forecaster.load(f"{model_dir}/intraday_forecaster")
+            except Exception as exc:
+                logger.debug("IntradayForecaster load skipped: %s", exc)
         self._garch = GARCHVolatilityModel()
         self._tail_risk = TailRiskModel()
         self._corr_graph = RollingCorrelationGraph()
@@ -515,11 +525,23 @@ class NeuralPredictionService:
     def _forecast_with_standby(self, sym: str, bars: list[dict]) -> ForecastPrediction:
         """Try validated GBM → TFT → warm-standby TFT → MA baseline.
 
-        The GBM model is consulted first but ONLY serves a prediction when it
-        passed walk-forward validation (`is_available()`); otherwise we fall
-        through to the deterministic MA baseline so an unvalidated model can
+        The validated INTRADAY model is consulted first (it only returns a
+        prediction when given same-day intraday bars AND it passed validation),
+        then the daily GBM. Both serve ONLY when `is_available()`; otherwise we
+        fall through to the deterministic MA baseline so an unvalidated model can
         never silently drive trades.
         """
+        if self._intraday_forecaster.is_available():
+            try:
+                result = self._intraday_forecaster.predict(sym, bars)
+                if result is not None:
+                    self._failures["intraday"] = 0
+                    return result
+            except Exception as exc:
+                self._failures["intraday"] = self._failures.get("intraday", 0) + 1
+                logger.debug("Intraday forecast failed for %s (fail#%d): %s",
+                             sym, self._failures["intraday"], exc)
+
         if self._gbm_forecaster.is_available():
             try:
                 result = self._gbm_forecaster.predict(sym, bars)
