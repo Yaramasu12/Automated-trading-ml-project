@@ -13,9 +13,11 @@ export function Card({ children, className, elevated, onClick }: CardProps) {
     <div
       onClick={onClick}
       className={clsx(
-        'rounded-lg border border-surface-border',
-        elevated ? 'bg-surface-elevated' : 'bg-surface-card',
-        onClick && 'cursor-pointer hover:border-gray-500 transition-colors',
+        'rounded-xl border shadow-card',
+        elevated
+          ? 'bg-surface-elevated border-surface-border-strong'
+          : 'bg-surface-card border-surface-border',
+        onClick && 'cursor-pointer transition-all hover:border-surface-border-strong hover:shadow-card-hover',
         className,
       )}
     >
@@ -33,15 +35,19 @@ interface CardHeaderProps {
 
 export function CardHeader({ title, subtitle, action, icon }: CardHeaderProps) {
   return (
-    <div className="flex items-center justify-between px-4 py-3 border-b border-surface-border">
-      <div className="flex items-center gap-2">
-        {icon && <span className="text-gray-400">{icon}</span>}
-        <div>
-          <h3 className="text-sm font-semibold text-gray-100">{title}</h3>
-          {subtitle && <p className="text-xs text-gray-500 mt-0.5">{subtitle}</p>}
+    <div className="flex items-center justify-between gap-3 px-4 py-3 border-b border-surface-border">
+      <div className="flex items-center gap-2.5 min-w-0">
+        {icon && (
+          <span className="flex h-7 w-7 flex-shrink-0 items-center justify-center rounded-lg bg-surface-inset text-ink-muted">
+            {icon}
+          </span>
+        )}
+        <div className="min-w-0">
+          <h3 className="text-sm font-semibold text-ink leading-tight truncate">{title}</h3>
+          {subtitle && <p className="text-xs text-ink-faint mt-0.5 truncate">{subtitle}</p>}
         </div>
       </div>
-      {action && <div>{action}</div>}
+      {action && <div className="flex-shrink-0">{action}</div>}
     </div>
   )
 }

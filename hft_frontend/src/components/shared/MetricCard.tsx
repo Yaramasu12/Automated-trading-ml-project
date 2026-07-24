@@ -2,6 +2,8 @@ import { clsx } from 'clsx'
 import type { ReactNode } from 'react'
 import { TrendingDown, TrendingUp } from 'lucide-react'
 
+type Accent = 'green' | 'red' | 'blue' | 'yellow' | 'purple' | 'cyan' | 'gray'
+
 interface MetricCardProps {
   label: string
   value: string | number
@@ -9,54 +11,65 @@ interface MetricCardProps {
   trend?: 'up' | 'down' | 'neutral'
   trendValue?: string
   icon?: ReactNode
-  accent?: 'green' | 'red' | 'blue' | 'yellow' | 'purple' | 'cyan' | 'gray'
-  color?: 'green' | 'red' | 'blue' | 'yellow' | 'purple' | 'cyan' | 'gray'
+  accent?: Accent
+  color?: Accent
   className?: string
 }
 
-const accentBorder: Record<string, string> = {
-  green: 'border-l-brand-green',
-  red: 'border-l-brand-red',
-  blue: 'border-l-brand-blue',
-  yellow: 'border-l-brand-yellow',
-  purple: 'border-l-brand-purple',
-  cyan: 'border-l-brand-cyan',
-  gray: 'border-l-gray-600',
+const accentBar: Record<Accent, string> = {
+  green: 'bg-brand-green',
+  red: 'bg-brand-red',
+  blue: 'bg-brand-blue',
+  yellow: 'bg-brand-yellow',
+  purple: 'bg-brand-purple',
+  cyan: 'bg-brand-cyan',
+  gray: 'bg-surface-border-strong',
+}
+
+const accentText: Record<Accent, string> = {
+  green: 'text-brand-green',
+  red: 'text-brand-red',
+  blue: 'text-brand-blue',
+  yellow: 'text-brand-yellow',
+  purple: 'text-brand-purple',
+  cyan: 'text-brand-cyan',
+  gray: 'text-ink-faint',
 }
 
 export function MetricCard({ label, value, sub, trend, trendValue, icon, accent, color, className }: MetricCardProps) {
-  const resolvedAccent = accent ?? color
+  const resolved = accent ?? color
   return (
     <div
       className={clsx(
-        'bg-surface-card border border-surface-border rounded-lg p-4 flex flex-col gap-1',
-        resolvedAccent && `border-l-2 ${accentBorder[resolvedAccent]}`,
+        'relative overflow-hidden rounded-xl border border-surface-border bg-surface-card p-4 shadow-card',
+        'flex flex-col gap-1.5',
         className,
       )}
     >
+      {resolved && <span className={clsx('absolute inset-y-0 left-0 w-[3px]', accentBar[resolved])} />}
       <div className="flex items-center justify-between">
-        <span className="text-xs text-gray-500 font-medium uppercase tracking-wider">{label}</span>
-        {icon && <span className="text-gray-500">{icon}</span>}
+        <span className="eyebrow">{label}</span>
+        {icon && <span className={clsx(resolved ? accentText[resolved] : 'text-ink-faint')}>{icon}</span>}
       </div>
 
-      <div className="flex items-end gap-2 mt-1">
-        <span className="text-xl font-bold font-mono text-gray-100 leading-none">{value}</span>
+      <div className="flex items-end gap-2">
+        <span className="text-2xl font-bold font-mono text-ink leading-none tracking-tight">{value}</span>
         {trendValue && trend && (
           <span
             className={clsx(
-              'flex items-center gap-0.5 text-xs font-medium mb-0.5',
+              'flex items-center gap-0.5 text-xs font-semibold mb-0.5',
               trend === 'up' && 'text-brand-green',
               trend === 'down' && 'text-brand-red',
-              trend === 'neutral' && 'text-gray-500',
+              trend === 'neutral' && 'text-ink-faint',
             )}
           >
-            {trend === 'up' ? <TrendingUp size={12} /> : trend === 'down' ? <TrendingDown size={12} /> : null}
+            {trend === 'up' ? <TrendingUp size={13} /> : trend === 'down' ? <TrendingDown size={13} /> : null}
             {trendValue}
           </span>
         )}
       </div>
 
-      {sub && <span className="text-xs text-gray-500 truncate">{sub}</span>}
+      {sub && <span className="text-xs text-ink-faint truncate">{sub}</span>}
     </div>
   )
 }

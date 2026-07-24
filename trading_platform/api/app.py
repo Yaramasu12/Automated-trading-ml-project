@@ -886,6 +886,12 @@ async def ws_dashboard(websocket: WebSocket):
     authed = verify_token(query_token)
     _last_snapshot_hash: str = ""
     _push_interval = 5.0  # push at most every 5 seconds to reduce serialization load
+    # Heartbeat: resend at least this often even when content is unchanged, so the
+    # client always has a fresh receipt time and can distinguish "connection alive,
+    # data simply calm" from "connection frozen / backend gone" — the ambiguity
+    # that made the dashboard show stale data behind a green LIVE badge.
+    _heartbeat_interval = 15.0
+    _last_send_monotonic = 0.0
     try:
         while True:
             # Snapshot building hits SQLite and marks the portfolio — run it in
@@ -896,14 +902,18 @@ async def ws_dashboard(websocket: WebSocket):
             # look "changed" and defeat the dedup entirely.
             content_text = json.dumps(content)
             snapshot_hash = hashlib.md5(content_text.encode(), usedforsecurity=False).hexdigest()
-            if snapshot_hash != _last_snapshot_hash:
+            now_mono = asyncio.get_event_loop().time()
+            heartbeat_due = (now_mono - _last_send_monotonic) >= _heartbeat_interval
+            if snapshot_hash != _last_snapshot_hash or heartbeat_due:
                 snapshot = {
                     "type": "snapshot",
                     "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "heartbeat": snapshot_hash == _last_snapshot_hash,
                     **content,
                 }
                 await websocket.send_text(json.dumps(snapshot))
                 _last_snapshot_hash = snapshot_hash
+                _last_send_monotonic = now_mono
             try:
                 raw = await asyncio.wait_for(websocket.receive_text(), timeout=_push_interval)
             except asyncio.TimeoutError:

@@ -64,9 +64,14 @@ export default defineConfig({
     chunkSizeWarningLimit: 700,
     rollupOptions: {
       output: {
-        manualChunks: {
-          charts: ['recharts'],
-          icons: ['lucide-react'],
+        // Vite 8 / rolldown requires manualChunks as a function (the object form
+        // is no longer accepted and fails the build with "manualChunks is not a
+        // function"). Same split as before: heavy chart + icon libs in their own
+        // chunks so the app shell stays small.
+        manualChunks: (id: string) => {
+          if (id.includes('node_modules/recharts')) return 'charts'
+          if (id.includes('node_modules/lucide-react')) return 'icons'
+          return undefined
         },
       },
     },

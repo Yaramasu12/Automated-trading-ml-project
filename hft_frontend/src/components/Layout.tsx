@@ -12,8 +12,6 @@ import {
   Newspaper,
   Power,
   Shield,
-  Wifi,
-  WifiOff,
   Zap,
   Bot,
   Menu,
@@ -31,6 +29,7 @@ import { getApiToken, promptForApiToken } from '../auth'
 import { useStore } from '../store'
 import type { NavView } from '../store'
 import { execModeBadge } from './shared/Badge'
+import { FreshnessBadge, StaleBanner } from './shared/Freshness'
 import { useDashboardWs } from '../ws'
 
 interface NavItem {
@@ -66,26 +65,6 @@ const NAV: NavItem[] = [
 ]
 
 const findNav = (id: NavView) => NAV.find(n => n.id === id)!
-
-const TOP_RAIL_NAV: NavItem[] = [
-  findNav('dashboard'),
-  findNav('ai-lab'),
-  findNav('ai-council'),
-  findNav('neural'),
-  findNav('engine'),
-  findNav('signals'),
-  findNav('strategies'),
-  findNav('backtest'),
-  findNav('models'),
-  findNav('risk'),
-  findNav('execution'),
-  findNav('account'),
-  findNav('goal-governor'),
-  findNav('policies'),
-  findNav('traces'),
-  findNav('tournament'),
-  findNav('intelligence'),
-]
 
 // Bottom tab bar: AI labs are first-class on mobile, with the rest in More.
 const BOTTOM_TABS: NavItem[] = [
@@ -132,12 +111,14 @@ export function Layout({ children }: { children: ReactNode }) {
 
   const activeView    = useStore((s) => s.activeView)
   const setActiveView = useStore((s) => s.setActiveView)
-  const wsConnected   = useStore((s) => s.wsConnected)
   const runtimeState  = useStore((s) => s.runtimeState)
   const monitoring    = useStore((s) => s.monitoring)
+  const liveFeed      = useStore((s) => s.liveFeed)
 
-  const mode       = runtimeState?.execution_mode ?? '...'
-  const killActive = runtimeState?.kill_switch_active ?? false
+  const mode        = runtimeState?.execution_mode ?? '...'
+  const killActive  = runtimeState?.kill_switch_active ?? false
+  const activeLabel = findNav(activeView).label
+  const marketStatus = liveFeed?.freshness?.market_status ?? null
 
   function toggleKillSwitch() {
     send({ action: 'kill_switch', active: !killActive })
@@ -182,24 +163,17 @@ export function Layout({ children }: { children: ReactNode }) {
         {/* Status footer */}
         <div className="px-3 py-3 border-t border-surface-border space-y-2">
           <div className="flex items-center justify-between">
-            <span className="text-[10px] text-gray-500 uppercase tracking-wider">WS</span>
-            <div className="flex items-center gap-1">
-              {wsConnected
-                ? <Wifi size={11} className="text-brand-green" />
-                : <WifiOff size={11} className="text-brand-red" />}
-              <span className={clsx('text-[10px] font-mono', wsConnected ? 'text-brand-green' : 'text-brand-red')}>
-                {wsConnected ? 'LIVE' : 'OFF'}
-              </span>
-            </div>
+            <span className="eyebrow">Feed</span>
+            <FreshnessBadge />
           </div>
           <div className="flex items-center justify-between">
-            <span className="text-[10px] text-gray-500 uppercase tracking-wider">Mode</span>
+            <span className="eyebrow">Mode</span>
             <div className="scale-90 origin-right">{execModeBadge(mode)}</div>
           </div>
           {monitoring && (
             <div className="flex items-center justify-between">
-              <span className="text-[10px] text-gray-500 uppercase tracking-wider">Orders</span>
-              <span className="text-[10px] font-mono text-gray-300">{monitoring.total_orders}</span>
+              <span className="eyebrow">Orders</span>
+              <span className="text-[10px] font-mono text-ink-muted">{monitoring.total_orders}</span>
             </div>
           )}
           <button
@@ -262,18 +236,11 @@ export function Layout({ children }: { children: ReactNode }) {
 
         <div className="px-4 py-4 border-t border-surface-border space-y-3">
           <div className="flex items-center justify-between">
-            <span className="text-xs text-gray-500">Connection</span>
-            <div className="flex items-center gap-1.5">
-              {wsConnected
-                ? <Wifi size={12} className="text-brand-green" />
-                : <WifiOff size={12} className="text-brand-red" />}
-              <span className={clsx('text-xs font-mono', wsConnected ? 'text-brand-green' : 'text-brand-red')}>
-                {wsConnected ? 'LIVE' : 'OFFLINE'}
-              </span>
-            </div>
+            <span className="text-xs text-ink-faint">Connection</span>
+            <FreshnessBadge />
           </div>
           <div className="flex items-center justify-between">
-            <span className="text-xs text-gray-500">Mode</span>
+            <span className="text-xs text-ink-faint">Mode</span>
             {execModeBadge(mode)}
           </div>
           <button
@@ -293,45 +260,45 @@ export function Layout({ children }: { children: ReactNode }) {
 
       {/* ── MAIN CONTENT AREA ────────────────────────────────────────────────── */}
       <div className="flex-1 flex flex-col min-w-0">
-        {/* Top bar */}
-        <header className="h-12 flex-shrink-0 flex items-center justify-between px-4 border-b border-surface-border bg-surface-card">
-          <div className="flex items-center gap-3">
+        {/* Top status bar */}
+        <header className="h-14 flex-shrink-0 flex items-center justify-between gap-3 px-4 border-b border-surface-border bg-surface-card/80 backdrop-blur-md">
+          <div className="flex items-center gap-3 min-w-0">
             <button
-              className="md:hidden p-1 rounded-md text-gray-400 hover:text-gray-200 active:bg-surface-elevated"
+              className="md:hidden p-1.5 -ml-1 rounded-md text-ink-muted hover:text-ink active:bg-surface-elevated"
               onClick={() => setDrawerOpen(true)}
               aria-label="Open menu"
             >
               <Menu size={18} />
             </button>
-            <CircleDot
-              size={14}
-              className={clsx(
-                monitoring?.status === 'HEALTHY' ? 'text-brand-green' : 'text-brand-red',
-                'animate-pulse-slow',
-              )}
-            />
-            <span className="text-xs text-gray-400 font-mono hidden sm:block">
-              {monitoring?.status ?? 'CONNECTING'}
-            </span>
-            <span className="text-xs text-gray-600 font-mono hidden md:block">
-              latency {monitoring?.average_latency_ms.toFixed(1) ?? '—'}ms
-            </span>
+            <div className="min-w-0">
+              <div className="text-sm font-semibold text-ink leading-none truncate">{activeLabel}</div>
+              <div className="mt-1 hidden sm:flex items-center gap-1.5 text-[10px] text-ink-faint font-mono">
+                <CircleDot
+                  size={9}
+                  className={monitoring?.status === 'HEALTHY' ? 'text-brand-green' : 'text-brand-yellow'}
+                />
+                <span>{monitoring?.status ?? 'CONNECTING'}</span>
+                <span className="text-surface-border-strong">·</span>
+                <span>{monitoring?.average_latency_ms != null ? `${monitoring.average_latency_ms.toFixed(1)}ms` : '—'}</span>
+              </div>
+            </div>
           </div>
 
           <div className="flex items-center gap-2">
-            <div className="md:hidden flex items-center gap-1">
-              {wsConnected
-                ? <Wifi size={12} className="text-brand-green" />
-                : <WifiOff size={12} className="text-brand-red" />}
-            </div>
+            {marketStatus && (
+              <span className="hidden lg:inline text-[11px] text-ink-muted font-mono">{marketStatus}</span>
+            )}
+            <FreshnessBadge />
+            <div className="hidden sm:block scale-95 origin-right">{execModeBadge(mode)}</div>
             <button
               onClick={toggleKillSwitch}
               className={clsx(
-                'flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-medium border transition-all',
+                'flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-semibold border transition-all',
                 killActive
                   ? 'bg-brand-red/20 border-brand-red/50 text-brand-red'
-                  : 'bg-surface-elevated border-surface-border text-gray-400 hover:text-gray-200',
+                  : 'bg-surface-elevated border-surface-border text-ink-muted hover:text-ink hover:border-surface-border-strong',
               )}
+              title={killActive ? 'Kill switch is ACTIVE — no new entries' : 'Halt all new entries'}
             >
               <Power size={12} />
               <span className="hidden sm:inline">{killActive ? 'KILL ACTIVE' : 'Kill Switch'}</span>
@@ -339,29 +306,9 @@ export function Layout({ children }: { children: ReactNode }) {
           </div>
         </header>
 
-        <nav className="flex-shrink-0 border-b border-surface-border bg-surface-card/90">
-          <div className="flex items-center gap-1 overflow-x-auto px-2 py-2 md:px-4">
-            {TOP_RAIL_NAV.map((item) => (
-              <button
-                key={item.id}
-                onClick={() => navigate(item.id)}
-                className={clsx(
-                  'flex items-center gap-1.5 whitespace-nowrap rounded-md border px-2.5 py-1.5 text-[11px] font-medium transition-colors',
-                  activeView === item.id
-                    ? 'border-brand-blue/40 bg-brand-blue/15 text-brand-blue'
-                    : 'border-surface-border bg-surface-elevated/50 text-gray-400 hover:text-gray-200',
-                )}
-                aria-current={activeView === item.id ? 'page' : undefined}
-              >
-                {item.icon}
-                <span>{item.shortLabel ?? item.label}</span>
-              </button>
-            ))}
-          </div>
-        </nav>
-
         {/* Page content */}
-        <main className="flex-1 overflow-y-auto p-4 md:p-5 pb-20 md:pb-5 animate-fade-in">
+        <main className="flex-1 overflow-y-auto p-4 md:p-6 pb-20 md:pb-6 animate-fade-in">
+          <StaleBanner className="mb-4" />
           {children}
         </main>
       </div>

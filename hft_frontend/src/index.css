@@ -7,26 +7,72 @@
     box-sizing: border-box;
   }
 
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+
+  body {
+    margin: 0;
+    background: #0b0e14;
+    color: #e6edf3;
+    font-family: Inter, ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeLegibility;
+  }
+
   ::-webkit-scrollbar {
-    width: 6px;
-    height: 6px;
+    width: 8px;
+    height: 8px;
   }
 
   ::-webkit-scrollbar-track {
-    background: #0d1117;
+    background: transparent;
   }
 
   ::-webkit-scrollbar-thumb {
-    background: #30363d;
-    border-radius: 3px;
+    background: #2b333f;
+    border-radius: 4px;
+    border: 2px solid transparent;
+    background-clip: padding-box;
   }
 
   ::-webkit-scrollbar-thumb:hover {
-    background: #484f58;
+    background: #3d4757;
+    background-clip: padding-box;
   }
 
   ::selection {
     background: #58a6ff33;
     color: #e6edf3;
+  }
+
+  /* Tabular figures everywhere numbers matter, so columns line up. */
+  .font-mono {
+    font-variant-numeric: tabular-nums;
+    font-feature-settings: 'tnum' 1;
+  }
+}
+
+@layer components {
+  /* Panel: the standard surface for cards/sections across every view. */
+  .panel {
+    @apply rounded-xl border border-surface-border bg-surface-card shadow-card;
+  }
+
+  /* Subtle top-highlight used on hero/status surfaces. */
+  .panel-raised {
+    @apply rounded-xl border border-surface-border bg-surface-elevated shadow-card;
+  }
+
+  .hairline {
+    @apply border-surface-border;
+  }
+
+  /* Uppercase eyebrow label used on metric tiles and section headers. */
+  .eyebrow {
+    @apply text-[10px] font-semibold uppercase tracking-[0.12em] text-ink-faint;
   }
 }
