@@ -1,16 +1,18 @@
 import { useEffect, useState, useCallback } from 'react'
 import {
-  Activity, RefreshCw, TrendingUp, TrendingDown, Wifi, WifiOff,
-  ToggleLeft, ToggleRight, CircleDot, Clock, Layers, IndianRupee,
+  Activity, RefreshCw, Wifi, WifiOff,
+  ToggleLeft, ToggleRight, CircleDot, Clock, Layers,
   AlertTriangle, CheckCircle2, ArrowUpRight, ArrowDownRight,
 } from 'lucide-react'
 import { clsx } from 'clsx'
 import { Card, CardBody } from '../components/shared/Card'
 import { Table } from '../components/shared/Table'
+import { PageHeader } from '../components/shared/PageHeader'
+import { EmptyState } from '../components/shared/States'
 import { fmtDateTime, inr, pct } from '../utils'
 import {
   getPortfolioPositions, getRecentTrades, getFeedSnapshot,
-  getOmsEvents, getSchedulerStats,
+  getOmsEvents,
 } from '../api'
 import type { LivePosition, LivePortfolioMetrics, Trade } from '../types'
 
@@ -19,7 +21,7 @@ import type { LivePosition, LivePortfolioMetrics, Trade } from '../types'
 function PnlCell({ value }: { value: number }) {
   const pos = value >= 0
   return (
-    <span className={clsx('font-mono font-semibold', pos ? 'text-emerald-400' : 'text-red-400')}>
+    <span className={clsx('font-mono font-semibold', pos ? 'text-brand-green' : 'text-brand-red')}>
       {pos ? '+' : ''}{inr(value)}
     </span>
   )
@@ -28,7 +30,7 @@ function PnlCell({ value }: { value: number }) {
 function PctCell({ value }: { value: number }) {
   const pos = value >= 0
   return (
-    <span className={clsx('font-mono text-xs', pos ? 'text-emerald-400' : 'text-red-400')}>
+    <span className={clsx('font-mono text-xs', pos ? 'text-brand-green' : 'text-brand-red')}>
       {pos ? '+' : ''}{pct(value / 100)}
     </span>
   )
@@ -39,7 +41,7 @@ function SideBadge({ side }: { side: string }) {
   return (
     <span className={clsx(
       'inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-bold uppercase tracking-wide',
-      isBuy ? 'bg-emerald-500/15 text-emerald-400' : 'bg-red-500/15 text-red-400'
+      isBuy ? 'bg-brand-green/15 text-brand-green' : 'bg-brand-red/15 text-brand-red'
     )}>
       {isBuy ? <ArrowUpRight size={10} /> : <ArrowDownRight size={10} />}
       {side.toUpperCase()}
@@ -51,7 +53,7 @@ function LiveDot({ live }: { live: boolean }) {
   return (
     <span className={clsx(
       'inline-flex items-center gap-1 text-xs',
-      live ? 'text-emerald-400' : 'text-gray-500'
+      live ? 'text-brand-green' : 'text-ink-faint'
     )}>
       <CircleDot size={9} className={live ? 'animate-pulse' : ''} />
       {live ? 'Live' : 'Stale'}
@@ -68,11 +70,11 @@ function PaperSimBadge({ active, onToggle }: { active: boolean; onToggle: () => 
       className={clsx(
         'flex items-center gap-2 px-3 py-1.5 rounded-full border text-xs font-semibold transition-all select-none',
         active
-          ? 'bg-violet-500/20 border-violet-500/50 text-violet-300 shadow-[0_0_12px_rgba(139,92,246,0.25)]'
-          : 'bg-gray-800 border-gray-700 text-gray-500 hover:text-gray-300'
+          ? 'bg-brand-purple/15 border-brand-purple/40 text-brand-purple'
+          : 'bg-surface-elevated border-surface-border text-ink-faint hover:text-ink-muted'
       )}
     >
-      {active ? <ToggleRight size={14} className="text-violet-400" /> : <ToggleLeft size={14} />}
+      {active ? <ToggleRight size={14} className="text-brand-purple" /> : <ToggleLeft size={14} />}
       PAPER SIM
     </button>
   )
@@ -84,15 +86,15 @@ function PortfolioBar({ p }: { p: LivePortfolioMetrics }) {
   return (
     <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
       {[
-        { label: 'Equity', value: inr(p.equity), sub: null, color: 'text-white' },
-        { label: 'Cash', value: inr(p.cash), sub: null, color: 'text-gray-300' },
-        { label: 'Unrealised P&L', value: inr(p.unrealized_pnl), sub: null, color: p.unrealized_pnl >= 0 ? 'text-emerald-400' : 'text-red-400' },
-        { label: 'Realised P&L', value: inr(p.realized_pnl), sub: null, color: p.realized_pnl >= 0 ? 'text-emerald-400' : 'text-red-400' },
-        { label: 'Drawdown', value: pct(p.drawdown / 100), sub: null, color: p.drawdown > 5 ? 'text-red-400' : 'text-gray-300' },
-        { label: 'Open Positions', value: String(p.open_positions), sub: null, color: 'text-blue-300' },
+        { label: 'Equity', value: inr(p.equity), color: 'text-ink' },
+        { label: 'Cash', value: inr(p.cash), color: 'text-ink-muted' },
+        { label: 'Unrealised P&L', value: inr(p.unrealized_pnl), color: p.unrealized_pnl >= 0 ? 'text-brand-green' : 'text-brand-red' },
+        { label: 'Realised P&L', value: inr(p.realized_pnl), color: p.realized_pnl >= 0 ? 'text-brand-green' : 'text-brand-red' },
+        { label: 'Drawdown', value: pct(p.drawdown / 100), color: p.drawdown > 5 ? 'text-brand-red' : 'text-ink-muted' },
+        { label: 'Open Positions', value: String(p.open_positions), color: 'text-brand-blue' },
       ].map(m => (
-        <div key={m.label} className="bg-[#161b22] border border-[#30363d] rounded-lg p-3">
-          <p className="text-[10px] text-gray-500 uppercase tracking-wider mb-1">{m.label}</p>
+        <div key={m.label} className="bg-surface-card border border-surface-border rounded-xl p-3 shadow-card">
+          <p className="eyebrow mb-1">{m.label}</p>
           <p className={clsx('text-sm font-bold font-mono', m.color)}>{m.value}</p>
         </div>
       ))}
@@ -116,16 +118,16 @@ const POS_COLS = [
 function PositionsTable({ positions }: { positions: LivePosition[] }) {
   if (positions.length === 0) {
     return (
-      <div className="flex flex-col items-center justify-center py-12 text-gray-600">
-        <Layers size={32} className="mb-3 opacity-40" />
-        <p className="text-sm">No open paper positions yet</p>
-        <p className="text-xs mt-1">The agent will populate this once it generates trades</p>
-      </div>
+      <EmptyState
+        icon={<Layers size={20} />}
+        title="No open paper positions yet"
+        hint="The agent will populate this once it generates trades."
+      />
     )
   }
 
   const rows = positions.map(p => ({
-    symbol:         <span className="font-mono text-blue-300 text-xs">{p.symbol}</span>,
+    symbol:         <span className="font-mono text-brand-blue text-xs">{p.symbol}</span>,
     side:           <SideBadge side={p.side} />,
     quantity:       <span className="font-mono text-xs">{p.quantity}</span>,
     average_price:  <span className="font-mono text-xs">{inr(p.average_price)}</span>,
@@ -153,24 +155,19 @@ const FILL_COLS = [
 
 function FillsTable({ trades }: { trades: Trade[] }) {
   if (trades.length === 0) {
-    return (
-      <div className="flex flex-col items-center justify-center py-10 text-gray-600">
-        <Activity size={28} className="mb-3 opacity-40" />
-        <p className="text-sm">No paper fills yet</p>
-      </div>
-    )
+    return <EmptyState icon={<Activity size={20} />} title="No paper fills yet" />
   }
 
   const rows = trades.map(t => ({
-    ts:       <span className="text-xs text-gray-500 font-mono">{fmtDateTime(t.timestamp)}</span>,
-    symbol:   <span className="font-mono text-blue-300 text-xs">{t.symbol}</span>,
+    ts:       <span className="text-xs text-ink-faint font-mono">{fmtDateTime(t.timestamp)}</span>,
+    symbol:   <span className="font-mono text-brand-blue text-xs">{t.symbol}</span>,
     side:     <SideBadge side={t.side} />,
     quantity: <span className="font-mono text-xs">{t.quantity}</span>,
     price:    <span className="font-mono text-xs">{inr(t.price)}</span>,
-    charges:  <span className="font-mono text-xs text-gray-500">{inr(t.charges ?? 0)}</span>,
-    strategy: <span className="text-xs text-gray-400">{t.strategy_name ?? '—'}</span>,
+    charges:  <span className="font-mono text-xs text-ink-faint">{inr(t.charges ?? 0)}</span>,
+    strategy: <span className="text-xs text-ink-muted">{t.strategy_name ?? '—'}</span>,
     mode:     (
-      <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] bg-violet-500/15 text-violet-300 font-semibold">
+      <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] bg-brand-purple/15 text-brand-purple font-semibold">
         <CircleDot size={8} />
         PAPER SIM
       </span>
@@ -187,27 +184,24 @@ function FeedStatusBar({
 }: { running: boolean; symbols: string[]; tickCount: number }) {
   return (
     <div className={clsx(
-      'flex items-center gap-3 px-4 py-2 rounded-lg border text-xs',
+      'flex flex-wrap items-center gap-2 px-4 py-2.5 rounded-lg border text-xs',
       running
-        ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-300'
-        : 'bg-gray-800 border-gray-700 text-gray-500'
+        ? 'bg-brand-green/10 border-brand-green/30 text-brand-green'
+        : 'bg-surface-elevated border-surface-border text-ink-faint'
     )}>
-      {running
-        ? <Wifi size={13} className="animate-pulse" />
-        : <WifiOff size={13} />}
+      {running ? <Wifi size={13} className="animate-pulse" /> : <WifiOff size={13} />}
       <span className="font-semibold">{running ? 'Angel One Live Feed Active' : 'Live Feed Offline'}</span>
-      {running && (
+      {running ? (
         <>
-          <span className="text-gray-500">·</span>
+          <span className="text-ink-faint">·</span>
           <span>{symbols.length} symbols subscribed</span>
-          <span className="text-gray-500">·</span>
+          <span className="text-ink-faint">·</span>
           <span>{tickCount.toLocaleString()} ticks received</span>
-          <span className="text-gray-500">·</span>
-          <span className="text-gray-400">Fills use real market prices</span>
+          <span className="text-ink-faint">·</span>
+          <span className="text-ink-muted">Fills use real market prices</span>
         </>
-      )}
-      {!running && (
-        <span className="text-gray-600">— Fills will use signal prices until feed starts</span>
+      ) : (
+        <span className="text-ink-faint">— Fills will use signal prices until feed starts</span>
       )}
     </div>
   )
@@ -216,22 +210,24 @@ function FeedStatusBar({
 // ── OMS queue ─────────────────────────────────────────────────────────────────
 
 function OmsPanel({ events }: { events: unknown[] }) {
-  if (events.length === 0) return null
+  if (events.length === 0) {
+    return <EmptyState icon={<Layers size={20} />} title="OMS queue is empty" />
+  }
   return (
-    <div className="space-y-1 max-h-48 overflow-y-auto">
+    <div className="space-y-1 max-h-64 overflow-y-auto">
       {events.slice(0, 20).map((e: any, i) => (
-        <div key={i} className="flex items-center gap-2 text-xs px-3 py-1.5 bg-[#161b22] rounded border border-[#30363d]">
+        <div key={i} className="flex items-center gap-2 text-xs px-3 py-1.5 bg-surface-inset rounded-lg border border-surface-border">
           <span className={clsx(
             'w-2 h-2 rounded-full flex-shrink-0',
-            e.status === 'FILLED' ? 'bg-emerald-400' :
-            e.status === 'REJECTED' ? 'bg-red-400' :
-            'bg-yellow-400 animate-pulse'
+            e.status === 'FILLED' ? 'bg-brand-green' :
+            e.status === 'REJECTED' ? 'bg-brand-red' :
+            'bg-brand-yellow animate-pulse'
           )} />
-          <span className="font-mono text-blue-300">{e.symbol ?? e.order_id ?? '—'}</span>
-          <span className="text-gray-500">{e.side ?? ''}</span>
-          <span className="text-gray-300">{e.status ?? ''}</span>
-          {e.fill_price && <span className="font-mono text-gray-400">@ {inr(e.fill_price)}</span>}
-          <span className="ml-auto text-gray-600">{e.ts ? fmtDateTime(e.ts) : ''}</span>
+          <span className="font-mono text-brand-blue">{e.symbol ?? e.order_id ?? '—'}</span>
+          <span className="text-ink-faint">{e.side ?? ''}</span>
+          <span className="text-ink-muted">{e.status ?? ''}</span>
+          {e.fill_price && <span className="font-mono text-ink-muted">@ {inr(e.fill_price)}</span>}
+          <span className="ml-auto text-ink-faint">{e.ts ? fmtDateTime(e.ts) : ''}</span>
         </div>
       ))}
     </div>
@@ -301,31 +297,31 @@ export function Execution() {
   ] as const
 
   return (
-    <div className="p-6 space-y-5">
+    <div className="space-y-6">
 
-      {/* ── header ── */}
-      <div className="flex items-center justify-between flex-wrap gap-3">
-        <div className="flex items-center gap-3">
-          <Activity size={18} className="text-violet-400" />
-          <h1 className="text-lg font-bold text-white">Execution</h1>
-          <PaperSimBadge active={showPaperSim} onToggle={() => setShowPaperSim(v => !v)} />
-        </div>
-        <div className="flex items-center gap-3 text-xs text-gray-500">
-          {lastRefresh && (
-            <span className="flex items-center gap-1">
-              <Clock size={11} />
-              {fmtDateTime(lastRefresh.toISOString())}
-            </span>
-          )}
-          <button
-            onClick={refresh}
-            className="flex items-center gap-1.5 px-2.5 py-1.5 rounded bg-[#21262d] hover:bg-[#30363d] text-gray-400 hover:text-white transition-colors"
-          >
-            <RefreshCw size={12} className={loading ? 'animate-spin' : ''} />
-            Refresh
-          </button>
-        </div>
-      </div>
+      <PageHeader
+        title="Execution"
+        subtitle="Paper-simulated fills at real Angel One prices"
+        icon={<Activity size={18} />}
+        actions={
+          <>
+            <PaperSimBadge active={showPaperSim} onToggle={() => setShowPaperSim(v => !v)} />
+            {lastRefresh && (
+              <span className="hidden md:flex items-center gap-1 text-xs text-ink-faint">
+                <Clock size={11} />
+                {fmtDateTime(lastRefresh.toISOString())}
+              </span>
+            )}
+            <button
+              onClick={refresh}
+              className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-surface-card border border-surface-border text-ink-muted hover:text-ink hover:border-surface-border-strong transition-all text-xs"
+            >
+              <RefreshCw size={12} className={loading ? 'animate-spin' : ''} />
+              <span className="hidden sm:inline">Refresh</span>
+            </button>
+          </>
+        }
+      />
 
       {/* ── live feed status ── */}
       <FeedStatusBar running={feedRunning} symbols={feedSymbols} tickCount={tickCount} />
@@ -335,8 +331,8 @@ export function Execution() {
         <div className="space-y-4">
 
           {/* how it works banner */}
-          <div className="flex items-start gap-3 px-4 py-3 rounded-lg border border-violet-500/20 bg-violet-500/5 text-xs text-violet-300">
-            <CheckCircle2 size={14} className="mt-0.5 flex-shrink-0 text-violet-400" />
+          <div className="flex items-start gap-3 px-4 py-3 rounded-lg border border-brand-purple/20 bg-brand-purple/5 text-xs text-brand-purple">
+            <CheckCircle2 size={14} className="mt-0.5 flex-shrink-0" />
             <div>
               <span className="font-semibold">Paper Simulation Mode</span>
               {' '}— trades are generated by the AI orchestrator and filled at real Angel One market prices,
@@ -350,22 +346,21 @@ export function Execution() {
 
           {/* tabs */}
           <Card>
-            {/* tab strip */}
-            <div className="flex gap-1 px-3 pt-3 border-b border-[#30363d] pb-0">
+            <div className="flex gap-1 px-3 pt-3 border-b border-surface-border">
               {tabs.map(t => (
                 <button
                   key={t.id}
                   onClick={() => setTab(t.id)}
                   className={clsx(
-                    'px-4 py-2 rounded-t-md text-xs font-semibold transition-colors flex items-center gap-1.5 -mb-px border border-transparent',
+                    'px-4 py-2 rounded-t-lg text-xs font-semibold transition-colors flex items-center gap-1.5 -mb-px border border-transparent',
                     tab === t.id
-                      ? 'bg-[#0d1117] border-[#30363d] border-b-[#0d1117] text-violet-300'
-                      : 'text-gray-500 hover:text-gray-300'
+                      ? 'bg-surface-inset border-surface-border border-b-surface-inset text-brand-purple'
+                      : 'text-ink-faint hover:text-ink-muted'
                   )}
                 >
                   {t.label}
                   {t.count > 0 && (
-                    <span className="px-1.5 py-0.5 rounded-full bg-[#30363d] text-[10px]">
+                    <span className="px-1.5 py-0.5 rounded-full bg-surface-elevated text-[10px]">
                       {t.count}
                     </span>
                   )}
@@ -381,7 +376,7 @@ export function Execution() {
 
           {/* no-live-feed warning */}
           {!feedRunning && (
-            <div className="flex items-center gap-2 px-4 py-3 rounded-lg border border-yellow-500/30 bg-yellow-500/5 text-xs text-yellow-300">
+            <div className="flex items-center gap-2 px-4 py-3 rounded-lg border border-brand-yellow/30 bg-brand-yellow/5 text-xs text-brand-yellow">
               <AlertTriangle size={13} className="flex-shrink-0" />
               Live feed is not running — fills will use last signal price, not real-time Angel One price.
               Start the live feed from the Engine page to enable real-price simulation.
@@ -390,12 +385,12 @@ export function Execution() {
 
         </div>
       ) : (
-        /* collapsed state */
-        <div className="flex flex-col items-center justify-center py-16 text-gray-600 gap-3">
-          <ToggleLeft size={36} className="opacity-30" />
-          <p className="text-sm">Paper Simulation is hidden</p>
-          <p className="text-xs">Toggle <span className="text-violet-400 font-semibold">PAPER SIM</span> above to see live positions and fills</p>
-        </div>
+        <EmptyState
+          className="py-16"
+          icon={<ToggleLeft size={22} />}
+          title="Paper Simulation is hidden"
+          hint="Toggle PAPER SIM above to see live positions and fills."
+        />
       )}
 
     </div>

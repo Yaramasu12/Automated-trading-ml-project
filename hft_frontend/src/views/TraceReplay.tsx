@@ -72,7 +72,7 @@ export function TraceReplay() {
           <button
             onClick={load}
             disabled={loading}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-surface-elevated border border-surface-border text-xs text-gray-400 hover:text-gray-200 disabled:opacity-50"
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-surface-elevated border border-surface-border text-xs text-ink-muted hover:text-ink disabled:opacity-50"
           >
             {loading ? <Loader2 size={12} className="animate-spin" /> : <RefreshCw size={12} />}
             Refresh
@@ -95,11 +95,11 @@ export function TraceReplay() {
             icon={<Database size={14} />}
             action={
               <div className="flex items-center gap-1.5 px-2 py-1 rounded-md bg-surface-elevated border border-surface-border">
-                <Search size={12} className="text-gray-500" />
+                <Search size={12} className="text-ink-faint" />
                 <input
                   value={selectedId}
                   onChange={(e) => setSelectedId(e.target.value)}
-                  className="w-44 bg-transparent text-xs text-gray-300 font-mono outline-none"
+                  className="w-44 bg-transparent text-xs text-ink-muted font-mono outline-none"
                   placeholder="trace id"
                 />
               </div>
@@ -121,7 +121,7 @@ export function TraceReplay() {
                     <span className="font-mono text-xs text-brand-yellow truncate">{trace.trace_id}</span>
                     <Tag label={trace.execution_mode} color={modeColor(trace.execution_mode) as 'red' | 'yellow' | 'orange' | 'blue'} />
                   </div>
-                  <div className="mt-2 text-xs text-gray-500">{fmtDateTime(trace.created_at)}</div>
+                  <div className="mt-2 text-xs text-ink-faint">{fmtDateTime(trace.created_at)}</div>
                   <div className="mt-2 flex flex-wrap gap-1">
                     {trace.symbol_universe.slice(0, 5).map((symbol) => <Tag key={symbol} label={symbol} color="blue" />)}
                   </div>
@@ -129,7 +129,7 @@ export function TraceReplay() {
               )
             })}
             {traces.length === 0 && (
-              <div className="text-xs text-gray-500 text-center py-8">No traces found</div>
+              <div className="text-xs text-ink-faint text-center py-8">No traces found</div>
             )}
           </CardBody>
         </Card>
@@ -144,7 +144,7 @@ export function TraceReplay() {
             <CardBody className="space-y-4">
               {detailLoading ? (
                 <div className="flex items-center justify-center py-12">
-                  <Loader2 size={18} className="animate-spin text-gray-500" />
+                  <Loader2 size={18} className="animate-spin text-ink-faint" />
                 </div>
               ) : selected ? (
                 <>
@@ -167,7 +167,7 @@ export function TraceReplay() {
                   </div>
                 </>
               ) : (
-                <div className="text-xs text-gray-500 text-center py-12">Select or search a trace</div>
+                <div className="text-xs text-ink-faint text-center py-12">Select or search a trace</div>
               )}
             </CardBody>
           </Card>
@@ -184,16 +184,16 @@ export function TraceReplay() {
                     </div>
                     <div className="min-w-0 pb-3">
                       <div className="flex items-center gap-2 flex-wrap">
-                        <span className="text-xs font-semibold text-gray-200">{String(event.event_type ?? '')}</span>
+                        <span className="text-xs font-semibold text-ink">{String(event.event_type ?? '')}</span>
                         <Tag label={String(event.component ?? event.source ?? '')} color={event.source === 'oms' ? 'blue' : event.source === 'label' ? 'green' : 'yellow'} />
                         {!!event.order_id && <Tag label={String(event.order_id).slice(0, 8)} color="gray" />}
                       </div>
-                      <div className="mt-1 text-[10px] text-gray-600 font-mono">{event.ts ? fmtDateTime(String(event.ts)) : '--'}</div>
-                      {!!event.reason && <div className="mt-1 text-xs text-gray-500">{String(event.reason)}</div>}
+                      <div className="mt-1 text-[10px] text-ink-faint font-mono">{event.ts ? fmtDateTime(String(event.ts)) : '--'}</div>
+                      {!!event.reason && <div className="mt-1 text-xs text-ink-faint">{String(event.reason)}</div>}
                     </div>
                   </div>
                 ))}
-                {events.length === 0 && <div className="text-xs text-gray-500 text-center py-8">No events persisted for this trace</div>}
+                {events.length === 0 && <div className="text-xs text-ink-faint text-center py-8">No events persisted for this trace</div>}
               </CardBody>
             </Card>
 
@@ -203,7 +203,7 @@ export function TraceReplay() {
                 columns={[
                   { key: 'component', label: 'Component', render: (v) => String(v ?? '--') },
                   { key: 'approved', label: 'Approved', render: (v) => <Tag label={String(v ?? '--')} color={v === false ? 'red' : 'green'} /> },
-                  { key: 'reason', label: 'Reason', render: (v) => <span className="text-xs text-gray-500">{String(v ?? '--')}</span> },
+                  { key: 'reason', label: 'Reason', render: (v) => <span className="text-xs text-ink-faint">{String(v ?? '--')}</span> },
                 ]}
                 rows={riskDecisions}
                 keyFn={(_, index) => String(index)}

@@ -67,23 +67,23 @@ export function Strategies() {
 
   const leaderboardColumns = [
     { key: 'rank', label: '#', align: 'center' as const, render: (v: unknown, r: StrategyScore) => (
-      <span className={clsx('font-bold font-mono', r.rank === 1 ? 'text-brand-yellow' : 'text-gray-400')}>
+      <span className={clsx('font-bold font-mono', r.rank === 1 ? 'text-brand-yellow' : 'text-ink-muted')}>
         {String(v)}
       </span>
     )},
     { key: 'strategy_name', label: 'Strategy', render: (v: unknown, r: StrategyScore) => (
-      <span className={r.rank === 1 ? 'text-brand-yellow font-semibold' : 'text-gray-200'}>{String(v)}</span>
+      <span className={r.rank === 1 ? 'text-brand-yellow font-semibold' : 'text-ink'}>{String(v)}</span>
     )},
     { key: 'family', label: 'Family', render: (v: unknown) => (
       <Tag label={String(v)} color="purple" />
     )},
     { key: 'sharpe', label: 'Sharpe', align: 'right' as const, render: (_: unknown, r: StrategyScore) => (
-      <span className={clsx('font-mono', r.metrics.sharpe_like > 1 ? 'text-brand-green' : 'text-gray-300')}>
+      <span className={clsx('font-mono', r.metrics.sharpe_like > 1 ? 'text-brand-green' : 'text-ink-muted')}>
         {r.metrics.sharpe_like.toFixed(2)}
       </span>
     )},
     { key: 'win_rate', label: 'Win Rate', align: 'right' as const, render: (_: unknown, r: StrategyScore) => (
-      <span className={clsx('font-mono', r.metrics.win_rate > 0.6 ? 'text-brand-green' : 'text-gray-300')}>
+      <span className={clsx('font-mono', r.metrics.win_rate > 0.6 ? 'text-brand-green' : 'text-ink-muted')}>
         {pct(r.metrics.win_rate * 100)}
       </span>
     )},
@@ -93,17 +93,17 @@ export function Strategies() {
       </span>
     )},
     { key: 'profit_factor', label: 'Profit Factor', align: 'right' as const, render: (_: unknown, r: StrategyScore) => (
-      <span className={clsx('font-mono', r.metrics.profit_factor > 1.5 ? 'text-brand-green' : 'text-gray-300')}>
+      <span className={clsx('font-mono', r.metrics.profit_factor > 1.5 ? 'text-brand-green' : 'text-ink-muted')}>
         {r.metrics.profit_factor.toFixed(2)}
       </span>
     )},
     { key: 'drawdown', label: 'Max DD', align: 'right' as const, render: (_: unknown, r: StrategyScore) => (
-      <span className={clsx('font-mono', r.metrics.max_drawdown > 0.1 ? 'text-brand-red' : 'text-gray-300')}>
+      <span className={clsx('font-mono', r.metrics.max_drawdown > 0.1 ? 'text-brand-red' : 'text-ink-muted')}>
         {pct(r.metrics.max_drawdown * 100)}
       </span>
     )},
     { key: 'trade_count', label: 'Trades', align: 'right' as const, render: (_: unknown, r: StrategyScore) => (
-      <span className="font-mono text-gray-400">{r.metrics.trade_count}</span>
+      <span className="font-mono text-ink-muted">{r.metrics.trade_count}</span>
     )},
   ]
 
@@ -114,8 +114,8 @@ export function Strategies() {
       <div className="flex items-center gap-2">
         <BarChart2 size={16} className="text-brand-blue" />
         <div>
-          <h1 className="text-lg font-bold text-gray-100">Strategy Evaluation</h1>
-          <p className="text-xs text-gray-500 mt-0.5">Leaderboard across instruments and lookback periods</p>
+          <h1 className="text-lg font-bold text-ink">Strategy Evaluation</h1>
+          <p className="text-xs text-ink-faint mt-0.5">Leaderboard across instruments and lookback periods</p>
         </div>
       </div>
 
@@ -128,7 +128,7 @@ export function Strategies() {
         <CardBody className="space-y-4">
           {/* Underlyings */}
           <div>
-            <label className="block text-xs text-gray-400 mb-2 font-semibold uppercase tracking-wider">Underlyings</label>
+            <label className="block text-xs text-ink-muted mb-2 font-semibold uppercase tracking-wider">Underlyings</label>
             <div className="flex flex-wrap gap-1.5">
               {UNDERLYINGS.map((u) => (
                 <button
@@ -138,7 +138,7 @@ export function Strategies() {
                     'px-2.5 py-1 rounded text-xs font-mono border transition-colors',
                     selectedUnderlyings.includes(u)
                       ? 'bg-brand-blue/15 border-brand-blue/30 text-brand-blue'
-                      : 'bg-surface-elevated border-surface-border text-gray-400 hover:text-gray-200',
+                      : 'bg-surface-elevated border-surface-border text-ink-muted hover:text-ink',
                   )}
                 >
                   {u}
@@ -149,7 +149,7 @@ export function Strategies() {
 
           {/* Days */}
           <div>
-            <label className="block text-xs text-gray-400 mb-2 font-semibold uppercase tracking-wider">Lookback</label>
+            <label className="block text-xs text-ink-muted mb-2 font-semibold uppercase tracking-wider">Lookback</label>
             <div className="flex gap-1.5">
               {DAY_OPTIONS.map((d) => (
                 <button
@@ -159,7 +159,7 @@ export function Strategies() {
                     'px-3 py-1 rounded text-xs font-mono border transition-colors',
                     days === d
                       ? 'bg-brand-cyan/15 border-brand-cyan/30 text-brand-cyan'
-                      : 'bg-surface-elevated border-surface-border text-gray-400 hover:text-gray-200',
+                      : 'bg-surface-elevated border-surface-border text-ink-muted hover:text-ink',
                   )}
                 >
                   {d}d
@@ -170,7 +170,7 @@ export function Strategies() {
 
           {/* Strategy family filter */}
           <div>
-            <label className="block text-xs text-gray-400 mb-2 font-semibold uppercase tracking-wider">Family Filter</label>
+            <label className="block text-xs text-ink-muted mb-2 font-semibold uppercase tracking-wider">Family Filter</label>
             <div className="flex gap-1.5">
               {STRATEGY_FAMILIES.map((f) => (
                 <button
@@ -180,7 +180,7 @@ export function Strategies() {
                     'px-3 py-1 rounded text-xs font-mono border transition-colors',
                     familyFilter === f
                       ? 'bg-brand-purple/15 border-brand-purple/30 text-brand-purple'
-                      : 'bg-surface-elevated border-surface-border text-gray-400 hover:text-gray-200',
+                      : 'bg-surface-elevated border-surface-border text-ink-muted hover:text-ink',
                   )}
                 >
                   {f}
@@ -203,7 +203,7 @@ export function Strategies() {
                 walkForward ? 'left-[22px]' : 'left-0.5',
               )} />
             </button>
-            <span className="text-xs text-gray-400">Walk-Forward Analysis</span>
+            <span className="text-xs text-ink-muted">Walk-Forward Analysis</span>
           </div>
 
           <button
@@ -224,7 +224,7 @@ export function Strategies() {
           {strategyResult.best_strategy && (
             <div className="flex items-center gap-3 p-3 rounded-lg bg-brand-yellow/5 border border-brand-yellow/20">
               <Award size={16} className="text-brand-yellow" />
-              <span className="text-sm text-gray-300">Best Strategy:</span>
+              <span className="text-sm text-ink-muted">Best Strategy:</span>
               <span className="text-sm font-bold text-brand-yellow">{strategyResult.best_strategy}</span>
             </div>
           )}
@@ -262,24 +262,24 @@ export function Strategies() {
               <CardBody>
                 <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
                   <div className="bg-surface-elevated rounded p-2">
-                    <div className="text-[10px] text-gray-500 uppercase">Mean Sharpe</div>
-                    <div className="text-sm font-bold font-mono text-gray-100 mt-1">
+                    <div className="text-[10px] text-ink-faint uppercase">Mean Sharpe</div>
+                    <div className="text-sm font-bold font-mono text-ink mt-1">
                       {walkForwardResult.mean_test_sharpe.toFixed(2)}
                     </div>
                   </div>
                   <div className="bg-surface-elevated rounded p-2">
-                    <div className="text-[10px] text-gray-500 uppercase">Mean Return</div>
-                    <div className="text-sm font-bold font-mono text-gray-100 mt-1">
+                    <div className="text-[10px] text-ink-faint uppercase">Mean Return</div>
+                    <div className="text-sm font-bold font-mono text-ink mt-1">
                       {pct(walkForwardResult.mean_test_return)}
                     </div>
                   </div>
                   <div className="bg-surface-elevated rounded p-2">
-                    <div className="text-[10px] text-gray-500 uppercase">Windows</div>
-                    <div className="text-sm font-bold font-mono text-gray-100 mt-1">{walkForwardResult.window_count}</div>
+                    <div className="text-[10px] text-ink-faint uppercase">Windows</div>
+                    <div className="text-sm font-bold font-mono text-ink mt-1">{walkForwardResult.window_count}</div>
                   </div>
                   <div className="bg-surface-elevated rounded p-2">
-                    <div className="text-[10px] text-gray-500 uppercase">Total Days</div>
-                    <div className="text-sm font-bold font-mono text-gray-100 mt-1">{walkForwardResult.total_days}</div>
+                    <div className="text-[10px] text-ink-faint uppercase">Total Days</div>
+                    <div className="text-sm font-bold font-mono text-ink mt-1">{walkForwardResult.total_days}</div>
                   </div>
                 </div>
                 <Table

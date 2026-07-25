@@ -79,8 +79,8 @@ export function Intelligence() {
       <div className="flex items-center gap-2">
         <Newspaper size={16} className="text-brand-yellow" />
         <div>
-          <h1 className="text-lg font-bold text-gray-100">Market Intelligence</h1>
-          <p className="text-xs text-gray-500 mt-0.5">News analysis, regime detection, economic calendar</p>
+          <h1 className="text-lg font-bold text-ink">Market Intelligence</h1>
+          <p className="text-xs text-ink-faint mt-0.5">News analysis, regime detection, economic calendar</p>
         </div>
       </div>
 
@@ -94,7 +94,7 @@ export function Intelligence() {
               'flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium border transition-colors',
               tab === t
                 ? 'bg-brand-yellow/15 border-brand-yellow/30 text-brand-yellow'
-                : 'text-gray-400 hover:text-gray-200 hover:bg-surface-elevated border-transparent',
+                : 'text-ink-muted hover:text-ink hover:bg-surface-elevated border-transparent',
             )}
           >
             {t === 'News'     && <Newspaper size={12} />}
@@ -112,13 +112,13 @@ export function Intelligence() {
             <CardHeader title="News Sentiment Analysis" icon={<Newspaper size={14} />} />
             <CardBody className="space-y-3">
               <div>
-                <label className="block text-xs text-gray-400 mb-2 uppercase tracking-wider">Headline / Article Text</label>
+                <label className="block text-xs text-ink-muted mb-2 uppercase tracking-wider">Headline / Article Text</label>
                 <textarea
                   value={headline}
                   onChange={(e) => setHeadline(e.target.value)}
                   rows={3}
                   placeholder="Enter news headline or article..."
-                  className="w-full bg-surface-elevated border border-surface-border text-xs text-gray-200 rounded px-3 py-2 font-mono focus:outline-none focus:border-brand-yellow resize-none"
+                  className="w-full bg-surface-elevated border border-surface-border text-xs text-ink rounded px-3 py-2 font-mono focus:outline-none focus:border-brand-yellow resize-none"
                 />
               </div>
               <button
@@ -142,19 +142,19 @@ export function Intelligence() {
                       }
                     />
                     {newsResult.score != null && (
-                      <span className="text-sm font-mono text-gray-200">
+                      <span className="text-sm font-mono text-ink">
                         Score: <strong>{Number(newsResult.score).toFixed(3)}</strong>
                       </span>
                     )}
                   </div>
                   {Boolean(newsResult.features) && (
                     <div>
-                      <div className="text-xs text-gray-400 mb-1">Features</div>
+                      <div className="text-xs text-ink-muted mb-1">Features</div>
                       <div className="grid grid-cols-2 gap-2">
                         {Object.entries(newsResult.features as Record<string, unknown>).slice(0, 6).map(([k, v]) => (
                           <div key={k} className="text-xs bg-surface-elevated rounded p-1.5">
-                            <span className="text-gray-500">{k}: </span>
-                            <span className="text-gray-200 font-mono">{String(v)}</span>
+                            <span className="text-ink-faint">{k}: </span>
+                            <span className="text-ink font-mono">{String(v)}</span>
                           </div>
                         ))}
                       </div>
@@ -162,7 +162,7 @@ export function Intelligence() {
                   )}
                   {Array.isArray(newsResult.entities) && newsResult.entities.length > 0 && (
                     <div>
-                      <div className="text-xs text-gray-400 mb-1">Entities</div>
+                      <div className="text-xs text-ink-muted mb-1">Entities</div>
                       <div className="flex flex-wrap gap-1.5">
                         {(newsResult.entities as string[]).map((e, i) => (
                           <Tag key={i} label={e} color="blue" />
@@ -179,14 +179,14 @@ export function Intelligence() {
             <CardHeader title="Recent News Events" subtitle={`${newsEvents.length} events`} />
             {eventsLoading ? (
               <div className="flex items-center justify-center py-8">
-                <Loader2 size={16} className="animate-spin text-gray-500" />
+                <Loader2 size={16} className="animate-spin text-ink-faint" />
               </div>
             ) : (
               <Table
                 columns={[
                   {
                     key: 'timestamp', label: 'Time',
-                    render: (v) => <span className="text-xs text-gray-500">{fmtDateTime(String(v))}</span>,
+                    render: (v) => <span className="text-xs text-ink-faint">{fmtDateTime(String(v))}</span>,
                   },
                   { key: 'headline', label: 'Headline' },
                   {
@@ -200,7 +200,7 @@ export function Intelligence() {
                           : 'gray'
                         }
                       />
-                    ) : <span className="text-gray-600">—</span>,
+                    ) : <span className="text-ink-faint">—</span>,
                   },
                 ]}
                 rows={newsEvents.slice(0, 30)}
@@ -219,7 +219,7 @@ export function Intelligence() {
           <CardHeader title="Regime Detection" icon={<Brain size={14} />} />
           <CardBody className="space-y-4">
             <div className="flex flex-wrap items-center gap-3">
-              <span className="text-xs text-gray-400">Symbol:</span>
+              <span className="text-xs text-ink-muted">Symbol:</span>
               {REGIME_SYMBOLS.map((s) => (
                 <button
                   key={s}
@@ -228,7 +228,7 @@ export function Intelligence() {
                     'px-2.5 py-1 rounded text-xs font-mono border transition-colors',
                     regimeSymbol === s
                       ? 'bg-brand-blue/15 border-brand-blue/30 text-brand-blue'
-                      : 'bg-surface-elevated border-surface-border text-gray-400 hover:text-gray-200',
+                      : 'bg-surface-elevated border-surface-border text-ink-muted hover:text-ink',
                   )}
                 >
                   {s}
@@ -247,20 +247,20 @@ export function Intelligence() {
             {regimeResult && (
               <div className="space-y-4 pt-3 border-t border-surface-border">
                 <div className="flex items-center gap-3">
-                  <span className="text-sm text-gray-400">Current Regime:</span>
+                  <span className="text-sm text-ink-muted">Current Regime:</span>
                   {regimeBadge(String(regimeResult.regime ?? 'UNKNOWN'))}
                 </div>
 
                 {Boolean(regimeResult.probabilities) && (
                   <div className="space-y-2">
-                    <div className="text-xs text-gray-400 uppercase tracking-wider">Probability Breakdown</div>
+                    <div className="text-xs text-ink-muted uppercase tracking-wider">Probability Breakdown</div>
                     {Object.entries(regimeResult.probabilities as Record<string, number>)
                       .sort(([, a], [, b]) => b - a)
                       .map(([regime, prob]) => (
                         <div key={regime} className="space-y-1">
                           <div className="flex items-center justify-between text-xs">
-                            <span className="text-gray-300">{regime}</span>
-                            <span className="font-mono text-gray-400">{(prob * 100).toFixed(1)}%</span>
+                            <span className="text-ink-muted">{regime}</span>
+                            <span className="font-mono text-ink-muted">{(prob * 100).toFixed(1)}%</span>
                           </div>
                           <div className="h-1.5 bg-surface-elevated rounded-full overflow-hidden">
                             <div
@@ -289,14 +289,14 @@ export function Intelligence() {
           <CardHeader title="Economic Calendar" subtitle={`${calendarEvents.length} events`} icon={<Calendar size={14} />} />
           {calendarLoading ? (
             <div className="flex items-center justify-center py-8">
-              <Loader2 size={16} className="animate-spin text-gray-500" />
+              <Loader2 size={16} className="animate-spin text-ink-faint" />
             </div>
           ) : (
             <Table
               columns={[
                 {
                   key: 'date', label: 'Date',
-                  render: (v) => <span className="text-xs font-mono text-gray-300">{String(v)}</span>,
+                  render: (v) => <span className="text-xs font-mono text-ink-muted">{String(v)}</span>,
                 },
                 { key: 'event', label: 'Event' },
                 { key: 'country', label: 'Country' },

@@ -66,13 +66,13 @@ export function Signals() {
     },
     {
       key: 'strategy_name', label: 'Strategy',
-      render: (_: unknown, r: Candidate) => <span className="text-xs text-gray-400">{r.strategy_name}</span>,
+      render: (_: unknown, r: Candidate) => <span className="text-xs text-ink-muted">{r.strategy_name}</span>,
     },
     {
       key: 'side', label: 'Side',
       render: (_: unknown, r: Candidate) => r.signal ? (
         <span className={r.signal.side === 'BUY' ? 'text-brand-green' : 'text-brand-red'}>{r.signal.side}</span>
-      ) : <span className="text-gray-600">—</span>,
+      ) : <span className="text-ink-faint">—</span>,
     },
     {
       key: 'confidence', label: 'Confidence', align: 'right' as const,
@@ -83,7 +83,7 @@ export function Signals() {
         )}>
           {pct(r.signal.confidence * 100)}
         </span>
-      ) : <span className="text-gray-600">—</span>,
+      ) : <span className="text-ink-faint">—</span>,
     },
     {
       key: 'risk_decision', label: 'Risk Decision',
@@ -96,7 +96,7 @@ export function Signals() {
     {
       key: 'reason', label: 'Reason',
       render: (_: unknown, r: Candidate) => (
-        <span className="text-xs text-gray-500 truncate">{r.risk_decision?.reason ?? r.reason}</span>
+        <span className="text-xs text-ink-faint truncate">{r.risk_decision?.reason ?? r.reason}</span>
       ),
     },
   ]
@@ -108,8 +108,8 @@ export function Signals() {
       <div className="flex items-center gap-2">
         <Zap size={16} className="text-brand-yellow" />
         <div>
-          <h1 className="text-lg font-bold text-gray-100">Signal Scanner</h1>
-          <p className="text-xs text-gray-500 mt-0.5">Multi-strategy signal detection across the universe</p>
+          <h1 className="text-lg font-bold text-ink">Signal Scanner</h1>
+          <p className="text-xs text-ink-faint mt-0.5">Multi-strategy signal detection across the universe</p>
         </div>
       </div>
 
@@ -119,7 +119,7 @@ export function Signals() {
         <CardBody className="space-y-4">
           {/* Underlying chips */}
           <div>
-            <label className="block text-xs text-gray-400 mb-2 font-semibold uppercase tracking-wider">Underlyings</label>
+            <label className="block text-xs text-ink-muted mb-2 font-semibold uppercase tracking-wider">Underlyings</label>
             <div className="flex flex-wrap gap-1.5">
               {UNDERLYINGS.map((u) => (
                 <button
@@ -129,7 +129,7 @@ export function Signals() {
                     'px-2.5 py-1 rounded text-xs font-mono border transition-colors',
                     selectedUnderlyings.includes(u)
                       ? 'bg-brand-blue/15 border-brand-blue/30 text-brand-blue'
-                      : 'bg-surface-elevated border-surface-border text-gray-400 hover:text-gray-200',
+                      : 'bg-surface-elevated border-surface-border text-ink-muted hover:text-ink',
                   )}
                 >
                   {u}
@@ -140,7 +140,7 @@ export function Signals() {
 
           {/* Days */}
           <div>
-            <label className="block text-xs text-gray-400 mb-2 font-semibold uppercase tracking-wider">Lookback</label>
+            <label className="block text-xs text-ink-muted mb-2 font-semibold uppercase tracking-wider">Lookback</label>
             <div className="flex gap-1.5">
               {DAY_OPTIONS.map((d) => (
                 <button
@@ -150,7 +150,7 @@ export function Signals() {
                     'px-3 py-1 rounded text-xs font-mono border transition-colors',
                     days === d
                       ? 'bg-brand-cyan/15 border-brand-cyan/30 text-brand-cyan'
-                      : 'bg-surface-elevated border-surface-border text-gray-400 hover:text-gray-200',
+                      : 'bg-surface-elevated border-surface-border text-ink-muted hover:text-ink',
                   )}
                 >
                   {d}d
@@ -161,8 +161,8 @@ export function Signals() {
 
           {/* Strategy filter */}
           <div>
-            <label className="block text-xs text-gray-400 mb-2 font-semibold uppercase tracking-wider">
-              Strategies <span className="text-gray-600 normal-case">(optional)</span>
+            <label className="block text-xs text-ink-muted mb-2 font-semibold uppercase tracking-wider">
+              Strategies <span className="text-ink-faint normal-case">(optional)</span>
             </label>
             <div className="flex flex-wrap gap-1.5">
               {STRATEGIES.map((s) => (
@@ -173,7 +173,7 @@ export function Signals() {
                     'px-2 py-1 rounded text-[11px] font-mono border transition-colors',
                     selectedStrategies.includes(s)
                       ? 'bg-brand-purple/15 border-brand-purple/30 text-brand-purple'
-                      : 'bg-surface-elevated border-surface-border text-gray-500 hover:text-gray-300',
+                      : 'bg-surface-elevated border-surface-border text-ink-faint hover:text-ink-muted',
                   )}
                 >
                   {s.replace('Strategy', '')}
@@ -209,7 +209,7 @@ export function Signals() {
         <div className="space-y-4">
           {/* Summary row */}
           <div className="flex items-center gap-3 flex-wrap">
-            <span className="text-xs text-gray-400">Mode: <span className="text-gray-200 font-mono">{signalResult.mode}</span></span>
+            <span className="text-xs text-ink-muted">Mode: <span className="text-ink font-mono">{signalResult.mode}</span></span>
             <Tag label={`${signalResult.approved_candidates} Approved`}  color="green" />
             <Tag label={`${signalResult.rejected_candidates} Rejected`}  color="red"   />
             <Tag label={`${signalResult.submitted_orders} Submitted`}    color="blue"  />
@@ -223,21 +223,21 @@ export function Signals() {
                 onClick={() => setExpandedIdx(expandedIdx === idx ? null : idx)}
               >
                 <div className="flex items-center gap-3 flex-wrap">
-                  <span className="text-sm font-semibold text-gray-100">{scan.underlying}</span>
+                  <span className="text-sm font-semibold text-ink">{scan.underlying}</span>
                   {regimeBadge(scan.regime)}
-                  <span className="text-xs text-gray-500 font-mono">
+                  <span className="text-xs text-ink-faint font-mono">
                     Vol: {(scan.volatility_forecast.annualized_volatility * 100).toFixed(1)}%
                   </span>
-                  <span className="text-xs text-gray-600">{scan.candidates.length} candidates</span>
+                  <span className="text-xs text-ink-faint">{scan.candidates.length} candidates</span>
                 </div>
                 {expandedIdx === idx
-                  ? <ChevronDown size={14} className="text-gray-500 flex-shrink-0" />
-                  : <ChevronRight size={14} className="text-gray-500 flex-shrink-0" />}
+                  ? <ChevronDown size={14} className="text-ink-faint flex-shrink-0" />
+                  : <ChevronRight size={14} className="text-ink-faint flex-shrink-0" />}
               </button>
               {expandedIdx === idx && (
                 <div className="border-t border-surface-border">
                   <div className="px-4 py-2 bg-surface-elevated/30">
-                    <span className="text-xs text-gray-500">
+                    <span className="text-xs text-ink-faint">
                       Strategies: {scan.selected_strategies.join(', ') || 'none selected'}
                     </span>
                   </div>

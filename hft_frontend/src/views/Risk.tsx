@@ -4,6 +4,7 @@ import { clsx } from 'clsx'
 import { Card, CardBody, CardHeader } from '../components/shared/Card'
 import { Table } from '../components/shared/Table'
 import { Tag } from '../components/shared/Badge'
+import { PageHeader } from '../components/shared/PageHeader'
 import { useStore } from '../store'
 import { getHealth, getCompliance, getEventRisk, getRiskEvents } from '../api'
 import { fmtDateTime, pct } from '../utils'
@@ -56,26 +57,23 @@ export function Risk() {
   ] : []
 
   return (
-    <div className="space-y-5">
+    <div className="space-y-6">
 
-      {/* Header */}
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-2">
-          <Shield size={16} className="text-brand-red" />
-          <div>
-            <h1 className="text-lg font-bold text-gray-100">Risk Management</h1>
-            <p className="text-xs text-gray-500 mt-0.5">Active risk limits, compliance, event guards</p>
-          </div>
-        </div>
-        <button
-          onClick={load}
-          disabled={loading}
-          className="flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-surface-elevated border border-surface-border text-xs text-gray-400 hover:text-gray-200 transition-colors"
-        >
-          {loading ? <Loader2 size={12} className="animate-spin" /> : <RefreshCw size={12} />}
-          Refresh
-        </button>
-      </div>
+      <PageHeader
+        title="Risk Management"
+        subtitle="Active risk limits, compliance, event guards"
+        icon={<Shield size={18} />}
+        actions={
+          <button
+            onClick={load}
+            disabled={loading}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-surface-card border border-surface-border text-xs text-ink-muted hover:text-ink hover:border-surface-border-strong transition-all disabled:opacity-50"
+          >
+            {loading ? <Loader2 size={12} className="animate-spin" /> : <RefreshCw size={12} />}
+            <span className="hidden sm:inline">Refresh</span>
+          </button>
+        }
+      />
 
       {/* System status */}
       {monitoring && (
@@ -113,8 +111,8 @@ export function Risk() {
               return (
                 <div key={bar.label} className="space-y-1.5">
                   <div className="flex items-center justify-between text-xs">
-                    <span className="text-gray-400">{bar.label}</span>
-                    <span className="font-mono text-gray-300">
+                    <span className="text-ink-muted">{bar.label}</span>
+                    <span className="font-mono text-ink-muted">
                       {bar.value.toFixed(1)}{bar.unit} / {bar.max.toFixed(1)}{bar.unit}
                     </span>
                   </div>
@@ -132,17 +130,17 @@ export function Risk() {
                 </div>
               )
             }) : (
-              <div className="text-xs text-gray-500 text-center py-4">Loading risk limits...</div>
+              <div className="text-xs text-ink-faint text-center py-4">Loading risk limits...</div>
             )}
 
             {riskLimits && (
               <div className="pt-2 border-t border-surface-border space-y-1.5">
                 <div className="flex items-center justify-between text-xs">
-                  <span className="text-gray-400">Max Orders/Day</span>
-                  <span className="font-mono text-gray-300">{riskLimits.max_orders_per_day}</span>
+                  <span className="text-ink-muted">Max Orders/Day</span>
+                  <span className="font-mono text-ink-muted">{riskLimits.max_orders_per_day}</span>
                 </div>
                 <div className="flex items-center justify-between text-xs">
-                  <span className="text-gray-400">Block Naked Options</span>
+                  <span className="text-ink-muted">Block Naked Options</span>
                   <Tag label={riskLimits.block_naked_option_selling ? 'BLOCKED' : 'ALLOWED'} color={riskLimits.block_naked_option_selling ? 'red' : 'green'} />
                 </div>
               </div>
@@ -158,13 +156,13 @@ export function Risk() {
               <div className="space-y-2">
                 {Object.entries(compliance).slice(0, 8).map(([k, v]) => (
                   <div key={k} className="flex items-center justify-between text-xs py-1.5 border-b border-surface-border/50">
-                    <span className="text-gray-400 capitalize">{k.replace(/_/g, ' ')}</span>
-                    <span className="font-mono text-gray-200">{String(v)}</span>
+                    <span className="text-ink-muted capitalize">{k.replace(/_/g, ' ')}</span>
+                    <span className="font-mono text-ink">{String(v)}</span>
                   </div>
                 ))}
               </div>
             ) : (
-              <div className="text-xs text-gray-500 text-center py-4">Loading compliance data...</div>
+              <div className="text-xs text-ink-faint text-center py-4">Loading compliance data...</div>
             )}
           </CardBody>
         </Card>
@@ -176,19 +174,19 @@ export function Risk() {
             {monitoring ? (
               <div className="space-y-2">
                 <div className="flex items-center justify-between text-xs py-1.5 border-b border-surface-border/50">
-                  <span className="text-gray-400">Total Orders</span>
-                  <span className="font-mono text-gray-200">{monitoring.total_orders}</span>
+                  <span className="text-ink-muted">Total Orders</span>
+                  <span className="font-mono text-ink">{monitoring.total_orders}</span>
                 </div>
                 <div className="flex items-center justify-between text-xs py-1.5 border-b border-surface-border/50">
-                  <span className="text-gray-400">Filled Orders</span>
+                  <span className="text-ink-muted">Filled Orders</span>
                   <span className="font-mono text-brand-green">{monitoring.filled_orders}</span>
                 </div>
                 <div className="flex items-center justify-between text-xs py-1.5 border-b border-surface-border/50">
-                  <span className="text-gray-400">Rejected Orders</span>
+                  <span className="text-ink-muted">Rejected Orders</span>
                   <span className="font-mono text-brand-red">{monitoring.rejected_orders}</span>
                 </div>
                 <div className="flex items-center justify-between text-xs py-1.5 border-b border-surface-border/50">
-                  <span className="text-gray-400">Rejection Rate</span>
+                  <span className="text-ink-muted">Rejection Rate</span>
                   <span className={clsx(
                     'font-mono font-bold',
                     monitoring.rejection_rate > 0.1 ? 'text-brand-red'
@@ -199,7 +197,7 @@ export function Risk() {
                   </span>
                 </div>
                 <div className="flex items-center justify-between text-xs py-1.5">
-                  <span className="text-gray-400">Kill Switch</span>
+                  <span className="text-ink-muted">Kill Switch</span>
                   <Tag
                     label={runtimeState?.kill_switch_active ? 'ACTIVE' : 'OFF'}
                     color={runtimeState?.kill_switch_active ? 'red' : 'gray'}
@@ -207,7 +205,7 @@ export function Risk() {
                 </div>
               </div>
             ) : (
-              <div className="text-xs text-gray-500 text-center py-4">No monitoring data</div>
+              <div className="text-xs text-ink-faint text-center py-4">No monitoring data</div>
             )}
           </CardBody>
         </Card>
@@ -220,13 +218,13 @@ export function Risk() {
               <div className="space-y-2">
                 {Object.entries(eventRisk).slice(0, 8).map(([k, v]) => (
                   <div key={k} className="flex items-center justify-between text-xs py-1.5 border-b border-surface-border/50">
-                    <span className="text-gray-400 capitalize">{k.replace(/_/g, ' ')}</span>
-                    <span className="font-mono text-gray-200">{String(v)}</span>
+                    <span className="text-ink-muted capitalize">{k.replace(/_/g, ' ')}</span>
+                    <span className="font-mono text-ink">{String(v)}</span>
                   </div>
                 ))}
               </div>
             ) : (
-              <div className="text-xs text-gray-500 text-center py-4">Loading event risk data...</div>
+              <div className="text-xs text-ink-faint text-center py-4">Loading event risk data...</div>
             )}
           </CardBody>
         </Card>
@@ -243,7 +241,7 @@ export function Risk() {
           columns={[
             {
               key: 'timestamp', label: 'Time',
-              render: (v) => <span className="text-xs text-gray-500">{fmtDateTime(String(v))}</span>,
+              render: (v) => <span className="text-xs text-ink-faint">{fmtDateTime(String(v))}</span>,
             },
             {
               key: 'symbol', label: 'Symbol',
@@ -255,7 +253,7 @@ export function Risk() {
               render: (v) => v != null ? (
                 <span className={clsx(
                   'font-mono font-bold',
-                  Number(v) > 0.8 ? 'text-brand-red' : Number(v) > 0.5 ? 'text-brand-yellow' : 'text-gray-400',
+                  Number(v) > 0.8 ? 'text-brand-red' : Number(v) > 0.5 ? 'text-brand-yellow' : 'text-ink-muted',
                 )}>
                   {Number(v).toFixed(2)}
                 </span>

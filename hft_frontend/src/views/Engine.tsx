@@ -6,6 +6,7 @@ import {
 } from 'lucide-react'
 import { clsx } from 'clsx'
 import { Card, CardBody, CardHeader } from '../components/shared/Card'
+import { PageHeader } from '../components/shared/PageHeader'
 import { Table } from '../components/shared/Table'
 import { MetricCard } from '../components/shared/MetricCard'
 import { execModeBadge, Tag } from '../components/shared/Badge'
@@ -99,7 +100,7 @@ function tickAgeSeconds(t: Tick | undefined): number | null {
 
 function tickStatus(t: Tick | undefined): { label: string; className: string } {
   if (!t || t.available === false) {
-    return { label: 'NOT SUBSCRIBED', className: 'text-gray-500 border-gray-700 bg-surface' }
+    return { label: 'NOT SUBSCRIBED', className: 'text-ink-faint border-surface-border bg-surface' }
   }
 
   const age = tickAgeSeconds(t)
@@ -107,7 +108,7 @@ function tickStatus(t: Tick | undefined): { label: string; className: string } {
     return { label: 'STALE', className: 'text-brand-red border-brand-red/40 bg-brand-red/10' }
   }
   if (age !== null && age > 15) {
-    return { label: `${age}s`, className: 'text-yellow-300 border-yellow-400/40 bg-yellow-400/10' }
+    return { label: `${age}s`, className: 'text-brand-yellow border-brand-yellow/40 bg-brand-yellow/10' }
   }
   return { label: age === null ? 'LIVE' : `${age}s`, className: 'text-brand-green border-brand-green/40 bg-brand-green/10' }
 }
@@ -371,14 +372,14 @@ export function Engine() {
     return (
       <div className="flex items-center justify-between px-2 py-1.5 rounded bg-surface-elevated hover:bg-surface-border/30 transition-colors">
         <div className="min-w-0">
-          <span className="block text-xs font-mono text-gray-300 truncate">{sym}</span>
+          <span className="block text-xs font-mono text-ink-muted truncate">{sym}</span>
           <span className={clsx('mt-0.5 inline-flex rounded border px-1 py-0.5 text-[9px] font-mono leading-none', status.className)}>
             {status.label}
           </span>
         </div>
         <div className="text-right">
-          <div className="text-xs font-mono font-semibold text-gray-100">{price === null ? '—' : inr(price, 2)}</div>
-          <div className={clsx('text-[10px] font-mono', (chg ?? 0) > 0 ? 'text-brand-green' : (chg ?? 0) < 0 ? 'text-brand-red' : 'text-gray-500')}>
+          <div className="text-xs font-mono font-semibold text-ink">{price === null ? '—' : inr(price, 2)}</div>
+          <div className={clsx('text-[10px] font-mono', (chg ?? 0) > 0 ? 'text-brand-green' : (chg ?? 0) < 0 ? 'text-brand-red' : 'text-ink-faint')}>
             {chg !== null && chg !== 0 ? pct(chg) : '—'}
           </div>
         </div>
@@ -387,18 +388,13 @@ export function Engine() {
   }
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-5">
 
-      {/* ── Header ──────────────────────────────────────────────────────────── */}
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-2">
-          <Bot size={16} className="text-brand-blue" />
-          <div>
-            <h1 className="text-lg font-bold text-gray-100">Trading Engine</h1>
-            <p className="text-xs text-gray-500 mt-0.5">Agent control · market data · portfolio · governance</p>
-          </div>
-        </div>
-      </div>
+      <PageHeader
+        title="Trading Engine"
+        subtitle="Agent control · market data · portfolio · governance"
+        icon={<Bot size={18} />}
+      />
 
       {/* ── Control Bar ─────────────────────────────────────────────────────── */}
       <Card>
@@ -406,16 +402,16 @@ export function Engine() {
           <div className="flex flex-wrap items-center gap-3">
             {/* Execution mode */}
             <div className="flex items-center gap-2">
-              <span className="text-xs text-gray-500">Mode:</span>
+              <span className="text-xs text-ink-faint">Mode:</span>
               <select
                 value={runtimeState?.execution_mode ?? 'PAPER'}
                 onChange={(e) => handleModeChange(e.target.value)}
                 disabled={modeLoading}
-                className="bg-surface-elevated border border-surface-border text-xs text-gray-200 rounded px-2 py-1 font-mono focus:outline-none focus:border-brand-blue"
+                className="bg-surface-elevated border border-surface-border text-xs text-ink rounded px-2 py-1 font-mono focus:outline-none focus:border-brand-blue"
               >
                 {EXEC_MODES.map(m => <option key={m} value={m}>{m}</option>)}
               </select>
-              {modeLoading && <Loader2 size={12} className="animate-spin text-gray-400" />}
+              {modeLoading && <Loader2 size={12} className="animate-spin text-ink-muted" />}
             </div>
 
             {/* Agent toggle */}
@@ -439,8 +435,8 @@ export function Engine() {
                   Start Agent
                 </button>
               )}
-              <span className={clsx('w-2 h-2 rounded-full', agentRunning ? 'bg-brand-green animate-pulse-slow' : 'bg-gray-600')} />
-              <span className={clsx('text-xs font-mono', agentRunning ? 'text-brand-green' : 'text-gray-500')}>
+              <span className={clsx('w-2 h-2 rounded-full', agentRunning ? 'bg-brand-green animate-pulse-slow' : 'bg-surface-border-strong')} />
+              <span className={clsx('text-xs font-mono', agentRunning ? 'text-brand-green' : 'text-ink-faint')}>
                 {agentRunning ? 'RUNNING' : 'STOPPED'}
               </span>
             </div>
@@ -466,8 +462,8 @@ export function Engine() {
                   Start Feed
                 </button>
               )}
-              <span className={clsx('w-2 h-2 rounded-full', feedRunning ? 'bg-brand-green animate-pulse-slow' : 'bg-gray-600')} />
-              <span className={clsx('text-xs font-mono', feedRunning ? 'text-brand-green' : 'text-gray-500')}>
+              <span className={clsx('w-2 h-2 rounded-full', feedRunning ? 'bg-brand-green animate-pulse-slow' : 'bg-surface-border-strong')} />
+              <span className={clsx('text-xs font-mono', feedRunning ? 'text-brand-green' : 'text-ink-faint')}>
                 {feedRunning ? 'FEED LIVE' : 'FEED OFF'}
               </span>
             </div>
@@ -475,7 +471,7 @@ export function Engine() {
             {/* Kill switch & feed status */}
             <div className="ml-auto flex items-center gap-2">
               {monitoring && (
-                <span className="hidden sm:block text-xs text-gray-500 font-mono">
+                <span className="hidden sm:block text-xs text-ink-faint font-mono">
                   Health: {monitoring.status}
                 </span>
               )}
@@ -500,7 +496,7 @@ export function Engine() {
                 value={scanSymbols}
                 onChange={(e) => setScanSymbols(e.target.value)}
                 placeholder="Symbols (comma-separated)"
-                className="flex-1 min-w-32 bg-surface-elevated border border-surface-border text-xs text-gray-200 rounded px-2 py-1 font-mono focus:outline-none focus:border-brand-purple"
+                className="flex-1 min-w-32 bg-surface-elevated border border-surface-border text-xs text-ink rounded px-2 py-1 font-mono focus:outline-none focus:border-brand-purple"
               />
               <button
                 onClick={handleAiScan}
@@ -515,7 +511,7 @@ export function Engine() {
                   'px-2 py-0.5 rounded text-xs font-mono font-bold border',
                   String(scanResult.ensemble_action ?? '').includes('BUY') ? 'text-brand-green border-brand-green/30 bg-brand-green/10'
                   : String(scanResult.ensemble_action ?? '').includes('SELL') ? 'text-brand-red border-brand-red/30 bg-brand-red/10'
-                  : 'text-gray-400 border-surface-border',
+                  : 'text-ink-muted border-surface-border',
                 )}>
                   {String(scanResult.ensemble_action ?? 'HOLD')} · {((Number(scanResult.ensemble_confidence ?? 0)) * 100).toFixed(0)}%
                 </span>
@@ -535,7 +531,7 @@ export function Engine() {
               'flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium whitespace-nowrap transition-colors',
               tab === t.id
                 ? 'bg-brand-blue/15 text-brand-blue border border-brand-blue/30'
-                : 'text-gray-400 hover:text-gray-200 hover:bg-surface-elevated',
+                : 'text-ink-muted hover:text-ink hover:bg-surface-elevated',
             )}
           >
             {t.icon}
@@ -570,7 +566,7 @@ export function Engine() {
             <CardHeader title="Interval Control" icon={<Clock size={14} />} />
             <CardBody className="!py-3">
               <div className="flex items-center gap-3">
-                <span className="text-xs text-gray-400">Scan every:</span>
+                <span className="text-xs text-ink-muted">Scan every:</span>
                 {[30, 60, 300, 900].map((s) => (
                   <button
                     key={s}
@@ -579,7 +575,7 @@ export function Engine() {
                       'px-3 py-1 rounded text-xs font-mono border transition-colors',
                       scanInterval === s
                         ? 'bg-brand-blue/15 border-brand-blue/30 text-brand-blue'
-                        : 'bg-surface-elevated border-surface-border text-gray-400 hover:text-gray-200',
+                        : 'bg-surface-elevated border-surface-border text-ink-muted hover:text-ink',
                     )}
                   >
                     {s < 60 ? `${s}s` : `${s / 60}m`}
@@ -609,7 +605,7 @@ export function Engine() {
                 } },
                 { key: 'timestamp', label: 'Time', render: (_, row) => {
                   const ts = agentTradeTime(row as Record<string, unknown>)
-                  return <span className="text-xs text-gray-500">{ts ? fmtDateTime(ts) : '—'}</span>
+                  return <span className="text-xs text-ink-faint">{ts ? fmtDateTime(ts) : '—'}</span>
                 } },
               ]}
               rows={agentTrades.slice(0, 20)}
@@ -625,7 +621,7 @@ export function Engine() {
       {tab === 'market' && (
         <div className="space-y-4">
           <div className="flex items-center justify-between">
-            <span className="text-xs text-gray-500">
+            <span className="text-xs text-ink-faint">
               {ticksLoading ? <Loader2 size={12} className="animate-spin inline mr-1" /> : null}
               Last update: {lastTickTime || '—'}
             </span>
@@ -711,8 +707,8 @@ export function Engine() {
                     { label: 'Fill Rate', value: `${Number(schedulerStats.fill_rate ?? 0).toFixed(1)}%` },
                   ].map((s) => (
                     <div key={s.label} className="bg-surface-elevated rounded-lg p-3">
-                      <div className="text-[10px] text-gray-500 uppercase tracking-wider">{s.label}</div>
-                      <div className="text-sm font-bold font-mono text-gray-100 mt-1">{s.value}</div>
+                      <div className="text-[10px] text-ink-faint uppercase tracking-wider">{s.label}</div>
+                      <div className="text-sm font-bold font-mono text-ink mt-1">{s.value}</div>
                     </div>
                   ))}
                 </div>
@@ -724,7 +720,7 @@ export function Engine() {
             <CardHeader title="OMS Events" subtitle="Recent orders" icon={<DollarSign size={14} />} />
             <Table
               columns={[
-                { key: 'order_id', label: 'Order ID', render: (v) => <span className="text-xs font-mono text-gray-400">{String(v).slice(0, 12)}</span> },
+                { key: 'order_id', label: 'Order ID', render: (v) => <span className="text-xs font-mono text-ink-muted">{String(v).slice(0, 12)}</span> },
                 { key: 'symbol', label: 'Symbol', render: (v) => <span className="text-brand-blue">{String(v)}</span> },
                 // OMS events carry event_type + occurred_at; there is no
                 // separate "status" field — the event type IS the status.
@@ -735,7 +731,7 @@ export function Engine() {
                       : String(v).includes('reject') ? 'red' : 'yellow'}
                   />
                 )},
-                { key: 'occurred_at', label: 'Time', render: (v) => <span className="text-xs text-gray-500">{fmtDateTime(String(v))}</span> },
+                { key: 'occurred_at', label: 'Time', render: (v) => <span className="text-xs text-ink-faint">{fmtDateTime(String(v))}</span> },
               ]}
               rows={omsEvents.slice(0, 20)}
               keyFn={(r) => String(r.event_id ?? `${r.order_id}-${r.event_type}-${r.occurred_at}`)}
@@ -750,7 +746,7 @@ export function Engine() {
               columns={[
                 { key: 'symbol', label: 'Symbol', render: (v) => <span className="text-brand-blue">{String(v)}</span> },
                 { key: 'reason', label: 'Reason' },
-                { key: 'occurred_at', label: 'Time', render: (v) => <span className="text-xs text-gray-500">{fmtDateTime(String(v))}</span> },
+                { key: 'occurred_at', label: 'Time', render: (v) => <span className="text-xs text-ink-faint">{fmtDateTime(String(v))}</span> },
               ]}
               rows={riskRejections.slice(0, 20)}
               keyFn={(r) => String(r.id ?? Math.random())}
@@ -771,8 +767,8 @@ export function Engine() {
                 <div className="grid grid-cols-2 md:grid-cols-3 gap-3 text-xs">
                   {Object.entries(governance).slice(0, 6).map(([k, v]) => (
                     <div key={k} className="bg-surface-elevated rounded p-2">
-                      <div className="text-gray-500 capitalize">{k.replace(/_/g, ' ')}</div>
-                      <div className="text-gray-200 font-mono mt-0.5">{String(v)}</div>
+                      <div className="text-ink-faint capitalize">{k.replace(/_/g, ' ')}</div>
+                      <div className="text-ink font-mono mt-0.5">{String(v)}</div>
                     </div>
                   ))}
                 </div>
@@ -787,7 +783,7 @@ export function Engine() {
                 { key: 'symbol', label: 'Symbol' },
                 { key: 'exit_reason', label: 'Reason' },
                 { key: 'target_price', label: 'Target', align: 'right', render: (v) => v ? inr(Number(v), 2) : '—' },
-                { key: 'created_at', label: 'Created', render: (v) => <span className="text-xs text-gray-500">{fmtDateTime(String(v))}</span> },
+                { key: 'created_at', label: 'Created', render: (v) => <span className="text-xs text-ink-faint">{fmtDateTime(String(v))}</span> },
               ]}
               rows={exitPlans}
               keyFn={(r) => String(r.plan_id ?? Math.random())}
@@ -803,10 +799,10 @@ export function Engine() {
                 {approvals.map((req) => (
                   <div key={String(req.request_id)} className="px-4 py-3 flex items-center justify-between gap-3">
                     <div>
-                      <div className="text-sm font-medium text-gray-200">
+                      <div className="text-sm font-medium text-ink">
                         {String(req.side)} {String(req.symbol)} × {String(req.quantity)}
                       </div>
-                      <div className="text-xs text-gray-500">{String(req.strategy_name)} · {String(req.state)}</div>
+                      <div className="text-xs text-ink-faint">{String(req.strategy_name)} · {String(req.state)}</div>
                     </div>
                     <div className="flex items-center gap-2">
                       <button
@@ -837,7 +833,7 @@ export function Engine() {
           <Card>
             <CardBody className="!py-3">
               <div className="flex flex-wrap items-center gap-3">
-                <span className="text-xs text-gray-400">Underlying:</span>
+                <span className="text-xs text-ink-muted">Underlying:</span>
                 {['NIFTY', 'BANKNIFTY', 'FINNIFTY', 'RELIANCE', 'TCS'].map((u) => (
                   <button
                     key={u}
@@ -846,7 +842,7 @@ export function Engine() {
                       'px-2.5 py-1 rounded text-xs font-mono border transition-colors',
                       optionUnderlying === u
                         ? 'bg-brand-blue/15 border-brand-blue/30 text-brand-blue'
-                        : 'bg-surface-elevated border-surface-border text-gray-400 hover:text-gray-200',
+                        : 'bg-surface-elevated border-surface-border text-ink-muted hover:text-ink',
                     )}
                   >
                     {u}
@@ -854,11 +850,11 @@ export function Engine() {
                 ))}
                 {optionExpiries.length > 0 && (
                   <>
-                    <span className="text-xs text-gray-400">Expiry:</span>
+                    <span className="text-xs text-ink-muted">Expiry:</span>
                     <select
                       value={selectedExpiry}
                       onChange={(e) => setSelectedExpiry(e.target.value)}
-                      className="bg-surface-elevated border border-surface-border text-xs text-gray-200 rounded px-2 py-1 font-mono focus:outline-none focus:border-brand-blue"
+                      className="bg-surface-elevated border border-surface-border text-xs text-ink rounded px-2 py-1 font-mono focus:outline-none focus:border-brand-blue"
                     >
                       {optionExpiries.map(e => <option key={e} value={e}>{e}</option>)}
                     </select>
@@ -874,7 +870,7 @@ export function Engine() {
               <CardHeader title={`Option Chain — ${optionUnderlying}`} subtitle={selectedExpiry} />
               <Table
                 columns={[
-                  { key: 'strike', label: 'Strike', align: 'center', render: (v) => <span className="font-bold text-gray-200">{String(v)}</span> },
+                  { key: 'strike', label: 'Strike', align: 'center', render: (v) => <span className="font-bold text-ink">{String(v)}</span> },
                   { key: 'ce_ltp', label: 'CE LTP', align: 'right', render: (v) => v ? inr(Number(v), 2) : '—' },
                   { key: 'ce_oi', label: 'CE OI', align: 'right' },
                   { key: 'pe_ltp', label: 'PE LTP', align: 'right', render: (v) => v ? inr(Number(v), 2) : '—' },
@@ -911,22 +907,22 @@ export function Engine() {
                   { label: 'Vol %', key: 'vol', step: 0.01 },
                 ].map(({ label, key, step }) => (
                   <div key={key}>
-                    <label className="block text-[10px] text-gray-500 mb-1 uppercase tracking-wider">{label}</label>
+                    <label className="block text-[10px] text-ink-faint mb-1 uppercase tracking-wider">{label}</label>
                     <input
                       type="number"
                       step={step}
                       value={greeksForm[key as keyof typeof greeksForm]}
                       onChange={(e) => setGreeksForm(f => ({ ...f, [key]: Number(e.target.value) }))}
-                      className="w-full bg-surface-elevated border border-surface-border text-xs text-gray-200 rounded px-2 py-1.5 font-mono focus:outline-none focus:border-brand-blue"
+                      className="w-full bg-surface-elevated border border-surface-border text-xs text-ink rounded px-2 py-1.5 font-mono focus:outline-none focus:border-brand-blue"
                     />
                   </div>
                 ))}
                 <div>
-                  <label className="block text-[10px] text-gray-500 mb-1 uppercase tracking-wider">Type</label>
+                  <label className="block text-[10px] text-ink-faint mb-1 uppercase tracking-wider">Type</label>
                   <select
                     value={greeksForm.type}
                     onChange={(e) => setGreeksForm(f => ({ ...f, type: e.target.value }))}
-                    className="w-full bg-surface-elevated border border-surface-border text-xs text-gray-200 rounded px-2 py-1.5 font-mono focus:outline-none focus:border-brand-blue"
+                    className="w-full bg-surface-elevated border border-surface-border text-xs text-ink rounded px-2 py-1.5 font-mono focus:outline-none focus:border-brand-blue"
                   >
                     <option value="CE">CE</option>
                     <option value="PE">PE</option>
@@ -945,7 +941,7 @@ export function Engine() {
                 <div className="mt-3 grid grid-cols-2 md:grid-cols-4 gap-3">
                   {['delta', 'gamma', 'theta', 'vega'].map((g) => (
                     <div key={g} className="bg-surface-elevated rounded p-2">
-                      <div className="text-[10px] text-gray-500 uppercase tracking-wider">{g}</div>
+                      <div className="text-[10px] text-ink-faint uppercase tracking-wider">{g}</div>
                       <div className="text-sm font-bold font-mono text-brand-cyan mt-1">
                         {typeof greeksResult[g] === 'number' ? Number(greeksResult[g]).toFixed(4) : '—'}
                       </div>

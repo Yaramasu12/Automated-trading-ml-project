@@ -86,7 +86,7 @@ export function NeuralLab() {
           <button
             onClick={load}
             disabled={loading}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-surface-elevated border border-surface-border text-xs text-gray-400 hover:text-gray-200 disabled:opacity-50"
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-surface-elevated border border-surface-border text-xs text-ink-muted hover:text-ink disabled:opacity-50"
           >
             {loading ? <Loader2 size={12} className="animate-spin" /> : <RefreshCw size={12} />}
             Refresh
@@ -106,11 +106,11 @@ export function NeuralLab() {
         <CardBody className="space-y-4">
           <div className="grid grid-cols-1 md:grid-cols-[1fr_auto] gap-3">
             <label className="space-y-1">
-              <span className="text-xs text-gray-400 uppercase tracking-wider">Symbols</span>
+              <span className="text-xs text-ink-muted uppercase tracking-wider">Symbols</span>
               <input
                 value={symbols}
                 onChange={(e) => setSymbols(e.target.value)}
-                className="w-full bg-surface-elevated border border-surface-border text-xs text-gray-200 rounded-md px-3 py-2 font-mono focus:outline-none focus:border-brand-blue"
+                className="w-full bg-surface-elevated border border-surface-border text-xs text-ink rounded-md px-3 py-2 font-mono focus:outline-none focus:border-brand-blue"
               />
             </label>
             <button
@@ -189,11 +189,11 @@ export function NeuralLab() {
           <CardHeader title="Model Stack" subtitle="Backend advertised serving models" />
           <CardBody className="space-y-4">
             {modelItems.length > 0 ? <KeyValueGrid items={modelItems} columns="grid-cols-2" /> : (
-              <div className="text-xs text-gray-500 text-center py-6">No neural model status yet</div>
+              <div className="text-xs text-ink-faint text-center py-6">No neural model status yet</div>
             )}
             {latest?.tail_risks?.length ? (
               <div className="space-y-2">
-                <div className="text-xs text-gray-400 uppercase tracking-wider">Tail Risk</div>
+                <div className="text-xs text-ink-muted uppercase tracking-wider">Tail Risk</div>
                 {latest.tail_risks.map((risk) => (
                   <ProgressBar
                     key={risk.symbol}

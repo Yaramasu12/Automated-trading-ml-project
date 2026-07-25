@@ -79,8 +79,8 @@ export function Backtest() {
       <div className="flex items-center gap-2">
         <BookOpen size={16} className="text-brand-blue" />
         <div>
-          <h1 className="text-lg font-bold text-gray-100">Backtest Engine</h1>
-          <p className="text-xs text-gray-500 mt-0.5">Historical strategy simulation with full trade log</p>
+          <h1 className="text-lg font-bold text-ink">Backtest Engine</h1>
+          <p className="text-xs text-ink-faint mt-0.5">Historical strategy simulation with full trade log</p>
         </div>
       </div>
 
@@ -90,26 +90,26 @@ export function Backtest() {
         <CardBody className="space-y-4">
           <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-3">
             <div>
-              <label className="block text-xs text-gray-400 mb-1 uppercase tracking-wider">Starting Capital</label>
+              <label className="block text-xs text-ink-muted mb-1 uppercase tracking-wider">Starting Capital</label>
               <input
                 type="number"
                 value={capital}
                 onChange={(e) => setCapital(Number(e.target.value))}
                 step={100000}
-                className="w-full bg-surface-elevated border border-surface-border text-xs text-gray-200 rounded px-2 py-2 font-mono focus:outline-none focus:border-brand-blue"
+                className="w-full bg-surface-elevated border border-surface-border text-xs text-ink rounded px-2 py-2 font-mono focus:outline-none focus:border-brand-blue"
               />
             </div>
             <div>
-              <label className="block text-xs text-gray-400 mb-1 uppercase tracking-wider">Start Date</label>
+              <label className="block text-xs text-ink-muted mb-1 uppercase tracking-wider">Start Date</label>
               <input
                 type="date"
                 value={startDate}
                 onChange={(e) => setStartDate(e.target.value)}
-                className="w-full bg-surface-elevated border border-surface-border text-xs text-gray-200 rounded px-2 py-2 font-mono focus:outline-none focus:border-brand-blue"
+                className="w-full bg-surface-elevated border border-surface-border text-xs text-ink rounded px-2 py-2 font-mono focus:outline-none focus:border-brand-blue"
               />
             </div>
             <div>
-              <label className="block text-xs text-gray-400 mb-1 uppercase tracking-wider">Days</label>
+              <label className="block text-xs text-ink-muted mb-1 uppercase tracking-wider">Days</label>
               <div className="flex gap-1">
                 {[7, 14, 30, 60].map((d) => (
                   <button
@@ -119,7 +119,7 @@ export function Backtest() {
                       'flex-1 py-2 rounded text-xs font-mono border transition-colors',
                       days === d
                         ? 'bg-brand-cyan/15 border-brand-cyan/30 text-brand-cyan'
-                        : 'bg-surface-elevated border-surface-border text-gray-400 hover:text-gray-200',
+                        : 'bg-surface-elevated border-surface-border text-ink-muted hover:text-ink',
                     )}
                   >
                     {d}d
@@ -128,20 +128,20 @@ export function Backtest() {
               </div>
             </div>
             <div>
-              <label className="block text-xs text-gray-400 mb-1 uppercase tracking-wider">Strategy Filter</label>
+              <label className="block text-xs text-ink-muted mb-1 uppercase tracking-wider">Strategy Filter</label>
               <input
                 type="text"
                 value={strategyFilter}
                 onChange={(e) => setStrategyFilter(e.target.value)}
                 placeholder="All strategies"
-                className="w-full bg-surface-elevated border border-surface-border text-xs text-gray-200 rounded px-2 py-2 font-mono focus:outline-none focus:border-brand-blue"
+                className="w-full bg-surface-elevated border border-surface-border text-xs text-ink rounded px-2 py-2 font-mono focus:outline-none focus:border-brand-blue"
               />
             </div>
           </div>
 
           {/* Underlyings */}
           <div>
-            <label className="block text-xs text-gray-400 mb-2 uppercase tracking-wider">Underlyings</label>
+            <label className="block text-xs text-ink-muted mb-2 uppercase tracking-wider">Underlyings</label>
             <div className="flex flex-wrap gap-1.5">
               {UNDERLYINGS.map((u) => (
                 <button
@@ -151,7 +151,7 @@ export function Backtest() {
                     'px-2.5 py-1 rounded text-xs font-mono border transition-colors',
                     selectedUnderlyings.includes(u)
                       ? 'bg-brand-blue/15 border-brand-blue/30 text-brand-blue'
-                      : 'bg-surface-elevated border-surface-border text-gray-400 hover:text-gray-200',
+                      : 'bg-surface-elevated border-surface-border text-ink-muted hover:text-ink',
                   )}
                 >
                   {u}
@@ -182,15 +182,15 @@ export function Backtest() {
                 {[
                   { label: 'Total P&L', value: inr(m.total_pnl), color: m.total_pnl >= 0 ? 'text-brand-green' : 'text-brand-red' },
                   { label: 'Return%', value: pct(m.return_pct), color: m.return_pct >= 0 ? 'text-brand-green' : 'text-brand-red' },
-                  { label: 'Sharpe Ratio', value: m.sharpe_like.toFixed(2), color: m.sharpe_like > 1 ? 'text-brand-green' : 'text-gray-300' },
+                  { label: 'Sharpe Ratio', value: m.sharpe_like.toFixed(2), color: m.sharpe_like > 1 ? 'text-brand-green' : 'text-ink-muted' },
                   { label: 'Max Drawdown', value: pct(m.max_drawdown * 100), color: m.max_drawdown > 0.1 ? 'text-brand-red' : 'text-brand-yellow' },
-                  { label: 'Win Rate', value: pct(m.win_rate * 100), color: m.win_rate > 0.55 ? 'text-brand-green' : 'text-gray-300' },
-                  { label: 'Profit Factor', value: m.profit_factor.toFixed(2), color: m.profit_factor > 1.5 ? 'text-brand-green' : 'text-gray-300' },
-                  { label: 'Trade Count', value: String(m.trade_count), color: 'text-gray-200' },
+                  { label: 'Win Rate', value: pct(m.win_rate * 100), color: m.win_rate > 0.55 ? 'text-brand-green' : 'text-ink-muted' },
+                  { label: 'Profit Factor', value: m.profit_factor.toFixed(2), color: m.profit_factor > 1.5 ? 'text-brand-green' : 'text-ink-muted' },
+                  { label: 'Trade Count', value: String(m.trade_count), color: 'text-ink' },
                   { label: 'End Equity', value: inr(m.ending_equity), color: 'text-brand-blue' },
                 ].map(({ label, value, color }) => (
                   <div key={label} className="bg-surface-elevated rounded-lg p-3">
-                    <div className="text-[10px] text-gray-500 uppercase tracking-wider">{label}</div>
+                    <div className="text-[10px] text-ink-faint uppercase tracking-wider">{label}</div>
                     <div className={clsx('text-lg font-bold font-mono mt-1', color)}>{value}</div>
                   </div>
                 ))}
@@ -241,8 +241,8 @@ export function Backtest() {
                   className="w-full flex items-center justify-between px-4 py-3 hover:bg-surface-elevated/30 transition-colors"
                   onClick={() => setTradeLogExpanded(v => !v)}
                 >
-                  <span className="text-sm font-semibold text-gray-200">Trade Log ({backtestResult.reports.length} records)</span>
-                  <span className="text-xs text-gray-500">{tradeLogExpanded ? 'Collapse' : 'Expand'}</span>
+                  <span className="text-sm font-semibold text-ink">Trade Log ({backtestResult.reports.length} records)</span>
+                  <span className="text-xs text-ink-faint">{tradeLogExpanded ? 'Collapse' : 'Expand'}</span>
                 </button>
                 {tradeLogExpanded && (
                   <Table
