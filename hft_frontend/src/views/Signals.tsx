@@ -2,6 +2,7 @@ import { useState, useCallback } from 'react'
 import { Zap, Loader2, ChevronDown, ChevronRight, Eye } from 'lucide-react'
 import { clsx } from 'clsx'
 import { Card, CardBody, CardHeader } from '../components/shared/Card'
+import { PageHeader } from '../components/shared/PageHeader'
 import { Table } from '../components/shared/Table'
 import { Tag, regimeBadge } from '../components/shared/Badge'
 import { useStore } from '../store'
@@ -102,16 +103,13 @@ export function Signals() {
   ]
 
   return (
-    <div className="space-y-5">
+    <div className="space-y-6">
 
-      {/* Header */}
-      <div className="flex items-center gap-2">
-        <Zap size={16} className="text-brand-yellow" />
-        <div>
-          <h1 className="text-lg font-bold text-ink">Signal Scanner</h1>
-          <p className="text-xs text-ink-faint mt-0.5">Multi-strategy signal detection across the universe</p>
-        </div>
-      </div>
+      <PageHeader
+        title="Signal Scanner"
+        subtitle="Multi-strategy signal detection across the universe"
+        icon={<Zap size={18} />}
+      />
 
       {/* Form */}
       <Card>

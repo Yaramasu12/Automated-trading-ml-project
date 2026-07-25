@@ -5,6 +5,7 @@ import {
 import { Brain, Loader2 } from 'lucide-react'
 import { clsx } from 'clsx'
 import { Card, CardBody, CardHeader } from '../components/shared/Card'
+import { PageHeader } from '../components/shared/PageHeader'
 import { Table } from '../components/shared/Table'
 import { Tag } from '../components/shared/Badge'
 import { useStore } from '../store'
@@ -94,16 +95,13 @@ export function Models() {
   const regimeProbs = regimeResult?.probabilities as Record<string, number> | undefined
 
   return (
-    <div className="space-y-5">
+    <div className="space-y-6">
 
-      {/* Header */}
-      <div className="flex items-center gap-2">
-        <Brain size={16} className="text-brand-purple" />
-        <div>
-          <h1 className="text-lg font-bold text-ink">ML Models</h1>
-          <p className="text-xs text-ink-faint mt-0.5">Volatility forecasting, regime classification, sentiment analysis</p>
-        </div>
-      </div>
+      <PageHeader
+        title="ML Models"
+        subtitle="Volatility forecasting, regime classification, sentiment analysis"
+        icon={<Brain size={18} />}
+      />
 
       {/* Tabs */}
       <div className="flex items-center gap-1">

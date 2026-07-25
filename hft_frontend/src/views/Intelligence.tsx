@@ -2,6 +2,7 @@ import { useEffect, useState, useCallback } from 'react'
 import { Newspaper, Loader2, Brain, Calendar } from 'lucide-react'
 import { clsx } from 'clsx'
 import { Card, CardBody, CardHeader } from '../components/shared/Card'
+import { PageHeader } from '../components/shared/PageHeader'
 import { Table } from '../components/shared/Table'
 import { Tag, regimeBadge } from '../components/shared/Badge'
 import { analyzeNews, getCurrentRegime, getNewsEvents, getEconomicCalendar } from '../api'
@@ -73,16 +74,13 @@ export function Intelligence() {
   }, [regimeSymbol])
 
   return (
-    <div className="space-y-5">
+    <div className="space-y-6">
 
-      {/* Header */}
-      <div className="flex items-center gap-2">
-        <Newspaper size={16} className="text-brand-yellow" />
-        <div>
-          <h1 className="text-lg font-bold text-ink">Market Intelligence</h1>
-          <p className="text-xs text-ink-faint mt-0.5">News analysis, regime detection, economic calendar</p>
-        </div>
-      </div>
+      <PageHeader
+        title="Market Intelligence"
+        subtitle="News analysis, regime detection, economic calendar"
+        icon={<Newspaper size={18} />}
+      />
 
       {/* Tabs */}
       <div className="flex items-center gap-1">

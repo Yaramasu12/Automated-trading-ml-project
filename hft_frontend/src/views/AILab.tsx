@@ -6,6 +6,7 @@ import {
 } from 'lucide-react'
 import { RadialBarChart, RadialBar, ResponsiveContainer, Tooltip } from 'recharts'
 import { Card, CardBody, CardHeader } from '../components/shared/Card'
+import { PageHeader } from '../components/shared/PageHeader'
 import { Table } from '../components/shared/Table'
 import { Tag } from '../components/shared/Badge'
 import { useStore } from '../store'
@@ -217,24 +218,21 @@ export function AILab() {
   const neuralShouldTrade = latestNeuralBundle?.should_trade ?? ((latestNeuralBundle?.overall_uncertainty ?? 1) < 0.65)
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-5">
 
-      {/* Header */}
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-2">
-          <Atom size={16} className="text-brand-purple" />
-          <div>
-            <h1 className="text-lg font-bold text-ink">AI Lab</h1>
-            <p className="text-xs text-ink-faint mt-0.5">Multi-Agent Inference · Phase 1–9</p>
-          </div>
-        </div>
-        <button
-          onClick={loadAll}
-          className="flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-surface-elevated border border-surface-border text-xs text-ink-muted hover:text-ink transition-colors"
-        >
-          <RefreshCw size={12} /> Refresh
-        </button>
-      </div>
+      <PageHeader
+        title="AI Lab"
+        subtitle="Multi-Agent Inference · Phase 1–9"
+        icon={<Atom size={18} />}
+        actions={
+          <button
+            onClick={loadAll}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-surface-card border border-surface-border text-xs text-ink-muted hover:text-ink hover:border-surface-border-strong transition-all"
+          >
+            <RefreshCw size={12} /> <span className="hidden sm:inline">Refresh</span>
+          </button>
+        }
+      />
 
       {/* Tabs */}
       <div className="flex items-center gap-1 overflow-x-auto pb-1">
