@@ -28,17 +28,17 @@ def test_degraded_stack_is_reported_honestly():
     cap = ai_capabilities(_runtime())
     assert cap["degraded"] is True
     assert cap["layers"]["llm_council"]["status"] == "stub"
-    assert cap["layers"]["quantum"]["status"] == "classical_fallback"
     assert cap["layers"]["neural_forecast"]["status"] == "heuristic_baseline"
+    # Quantum was removed entirely (it was classical theatre) — it must no longer
+    # appear as an AI layer at all.
+    assert "quantum" not in cap["layers"]
     # the note must make clear these do NOT block trades
     assert "ADVISORY" in cap["note"] and "do NOT" in cap["note"]
 
 
-def test_validated_neural_and_real_quantum_not_degraded_for_those_layers():
-    cap = ai_capabilities(_runtime(quantum="qiskit", gbm_available=True))
-    assert cap["layers"]["quantum"]["status"] == "real"
+def test_validated_neural_not_degraded():
+    cap = ai_capabilities(_runtime(gbm_available=True))
     assert cap["layers"]["neural_forecast"]["status"] == "validated_model"
-    assert "quantum" not in cap["degraded_layers"]
     assert "neural_forecast" not in cap["degraded_layers"]
 
 
