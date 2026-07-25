@@ -1,7 +1,8 @@
-import { useEffect, useRef, useState } from 'react'
-import { Cpu, Loader2, RefreshCw, Wifi, WifiOff } from 'lucide-react'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
+import { Cpu, Loader2, RefreshCw, Wifi, WifiOff, Database, Activity } from 'lucide-react'
 import { Card, CardBody, CardHeader } from '../components/shared/Card'
 import { Badge } from '../components/shared/Badge'
+import { PageHeader } from '../components/shared/PageHeader'
 import { useStore } from '../store'
 import {
   getAccountStatus,
@@ -35,6 +36,16 @@ interface MonitoringFull {
   average_latency_ms: number
   max_latency_ms: number
   event_count: number
+}
+
+/** Compact key/value row used in the status panels. */
+function Row({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <div className="flex items-center justify-between gap-3 py-1.5 border-b border-surface-border/60 last:border-0">
+      <span className="text-sm text-ink-muted">{label}</span>
+      <span className="text-sm font-mono text-ink">{children}</span>
+    </div>
+  )
 }
 
 export function Account() {
@@ -90,88 +101,74 @@ export function Account() {
   }
 
   return (
-    <div className="space-y-5">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-lg font-bold text-gray-100">Account & Infrastructure</h1>
-          <p className="text-xs text-gray-500 mt-0.5">Angel One connectivity, live feed, database stats</p>
-        </div>
-        <button
-          onClick={load}
-          disabled={loading}
-          className="flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-surface-elevated border border-surface-border text-xs text-gray-400 hover:text-gray-200"
-        >
-          {loading ? <Loader2 size={12} className="animate-spin" /> : <RefreshCw size={12} />}
-          Refresh
-        </button>
-      </div>
+    <div className="space-y-6">
+      <PageHeader
+        title="Account & Infrastructure"
+        subtitle="Angel One connectivity, live feed, database stats"
+        icon={<Cpu size={18} />}
+        actions={
+          <button
+            onClick={load}
+            disabled={loading}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-surface-card border border-surface-border text-xs text-ink-muted hover:text-ink hover:border-surface-border-strong transition-all disabled:opacity-50"
+          >
+            {loading ? <Loader2 size={12} className="animate-spin" /> : <RefreshCw size={12} />}
+            <span className="hidden sm:inline">Refresh</span>
+          </button>
+        }
+      />
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
         {/* Angel One status */}
         <Card>
           <CardHeader title="Angel One Broker" icon={<Cpu size={14} />} />
-          <CardBody className="space-y-2.5">
-            {[
-              { label: 'Broker', value: accountStatus?.broker ?? runtimeState?.broker ?? '—' },
-              {
-                label: 'API Configured',
-                value: <Badge variant={accountStatus?.angel_one_configured ? 'green' : 'red'}>
-                  {accountStatus?.angel_one_configured ? 'YES' : 'NOT SET'}
-                </Badge>,
-              },
-              {
-                label: 'Read-Only Available',
-                value: <Badge variant={accountStatus?.read_only_available ? 'green' : 'gray'}>
-                  {accountStatus?.read_only_available ? 'YES' : 'NO'}
-                </Badge>,
-              },
-              {
-                label: 'Live Orders',
-                value: <Badge variant={accountStatus?.live_orders_possible ? 'green' : 'red'}>
-                  {accountStatus?.live_orders_possible ? 'POSSIBLE' : 'BLOCKED'}
-                </Badge>,
-              },
-              {
-                label: 'Live Armed',
-                value: <Badge variant={accountStatus?.live_armed ? 'orange' : 'gray'}>
-                  {accountStatus?.live_armed ? 'ARMED' : 'DISARMED'}
-                </Badge>,
-              },
-              {
-                label: 'Kill Switch',
-                value: <Badge variant={accountStatus?.kill_switch_active ? 'red' : 'green'} dot>
-                  {accountStatus?.kill_switch_active ? 'ACTIVE' : 'OK'}
-                </Badge>,
-              },
-            ].map(({ label, value }) => (
-              <div key={label} className="flex items-center justify-between py-1.5 border-b border-surface-border/50">
-                <span className="text-sm text-gray-400">{label}</span>
-                <span className="text-sm font-mono text-gray-200">{value}</span>
-              </div>
-            ))}
+          <CardBody className="space-y-1">
+            <Row label="Broker">{accountStatus?.broker ?? runtimeState?.broker ?? '—'}</Row>
+            <Row label="API Configured">
+              <Badge variant={accountStatus?.angel_one_configured ? 'green' : 'red'}>
+                {accountStatus?.angel_one_configured ? 'YES' : 'NOT SET'}
+              </Badge>
+            </Row>
+            <Row label="Read-Only Available">
+              <Badge variant={accountStatus?.read_only_available ? 'green' : 'gray'}>
+                {accountStatus?.read_only_available ? 'YES' : 'NO'}
+              </Badge>
+            </Row>
+            <Row label="Live Orders">
+              <Badge variant={accountStatus?.live_orders_possible ? 'green' : 'red'}>
+                {accountStatus?.live_orders_possible ? 'POSSIBLE' : 'BLOCKED'}
+              </Badge>
+            </Row>
+            <Row label="Live Armed">
+              <Badge variant={accountStatus?.live_armed ? 'orange' : 'gray'}>
+                {accountStatus?.live_armed ? 'ARMED' : 'DISARMED'}
+              </Badge>
+            </Row>
+            <Row label="Kill Switch">
+              <Badge variant={accountStatus?.kill_switch_active ? 'red' : 'green'} dot>
+                {accountStatus?.kill_switch_active ? 'ACTIVE' : 'OK'}
+              </Badge>
+            </Row>
           </CardBody>
         </Card>
 
         {/* Monitoring metrics */}
         {monitoring && (
           <Card>
-            <CardHeader title="Runtime Metrics" />
-            <CardBody className="space-y-2.5">
-              {[
-                { label: 'Status', value: <Badge variant={monitoring.status === 'HEALTHY' ? 'green' : monitoring.status === 'DEGRADED' ? 'yellow' : 'red'} dot>{monitoring.status}</Badge> },
-                { label: 'Uptime', value: <span className="font-mono">{fmtUptime(monitoring.uptime_seconds)}</span> },
-                { label: 'Total Orders', value: <span className="font-mono">{monitoring.total_orders}</span> },
-                { label: 'Filled', value: <span className="font-mono text-brand-green">{monitoring.filled_orders}</span> },
-                { label: 'Rejected', value: <span className="font-mono text-brand-red">{monitoring.rejected_orders}</span> },
-                { label: 'Avg Latency', value: <span className="font-mono">{monitoring.average_latency_ms.toFixed(1)}ms</span> },
-                { label: 'Max Latency', value: <span className="font-mono">{monitoring.max_latency_ms.toFixed(1)}ms</span> },
-                { label: 'Stale Data', value: <Badge variant={monitoring.stale_market_data ? 'red' : 'green'}>{monitoring.stale_market_data ? 'YES' : 'NO'}</Badge> },
-              ].map(({ label, value }) => (
-                <div key={label} className="flex items-center justify-between py-1.5 border-b border-surface-border/50">
-                  <span className="text-sm text-gray-400">{label}</span>
-                  <span className="text-sm text-gray-200">{value}</span>
-                </div>
-              ))}
+            <CardHeader title="Runtime Metrics" icon={<Activity size={14} />} />
+            <CardBody className="space-y-1">
+              <Row label="Status">
+                <Badge variant={monitoring.status === 'HEALTHY' ? 'green' : monitoring.status === 'DEGRADED' ? 'yellow' : 'red'} dot>{monitoring.status}</Badge>
+              </Row>
+              <Row label="Uptime">{fmtUptime(monitoring.uptime_seconds)}</Row>
+              <Row label="Total Orders">{monitoring.total_orders}</Row>
+              <Row label="Filled"><span className="text-brand-green">{monitoring.filled_orders}</span></Row>
+              <Row label="Rejected"><span className="text-brand-red">{monitoring.rejected_orders}</span></Row>
+              <Row label="Avg Latency">{monitoring.average_latency_ms.toFixed(1)}ms</Row>
+              <Row label="Max Latency">{monitoring.max_latency_ms.toFixed(1)}ms</Row>
+              <Row label="Stale Data">
+                <Badge variant={monitoring.stale_market_data ? 'red' : 'green'}>{monitoring.stale_market_data ? 'YES' : 'NO'}</Badge>
+              </Row>
             </CardBody>
           </Card>
         )}
@@ -182,23 +179,23 @@ export function Account() {
         <CardHeader
           title="Live Market Feed"
           subtitle="Angel One WebSocket (SmartWebSocketV2)"
-          icon={feedSnapshot?.running ? <Wifi size={14} className="text-brand-green" /> : <WifiOff size={14} className="text-gray-500" />}
+          icon={feedSnapshot?.running ? <Wifi size={14} className="text-brand-green" /> : <WifiOff size={14} className="text-ink-faint" />}
         />
         <CardBody className="space-y-4">
-          <div className="flex flex-wrap items-end gap-4">
+          <div className="flex flex-wrap items-end gap-3">
             <div className="flex-1 min-w-48">
-              <label className="block text-xs text-gray-500 mb-1">Symbols to subscribe</label>
+              <label className="block eyebrow mb-1.5">Symbols to subscribe</label>
               <input
                 value={feedSymbols}
                 onChange={(e) => setFeedSymbols(e.target.value)}
                 placeholder="Blank = all cash/index instruments"
-                className="w-full bg-surface-elevated border border-surface-border rounded-md px-3 py-1.5 text-sm text-gray-200 font-mono focus:outline-none focus:border-brand-blue"
+                className="w-full bg-surface-inset border border-surface-border rounded-lg px-3 py-2 text-sm text-ink font-mono placeholder:text-ink-faint focus:outline-none focus:border-brand-blue focus:ring-1 focus:ring-brand-blue/40"
               />
             </div>
             <button
               onClick={handleFeedStart}
               disabled={feedLoading || feedSnapshot?.running}
-              className="flex items-center gap-2 px-4 py-1.5 rounded-md bg-brand-green/20 border border-brand-green/40 text-brand-green text-sm font-medium hover:bg-brand-green/30 disabled:opacity-50 transition-colors"
+              className="flex items-center gap-2 px-4 py-2 rounded-lg bg-brand-green/15 border border-brand-green/35 text-brand-green text-sm font-semibold hover:bg-brand-green/25 disabled:opacity-40 transition-colors"
             >
               {feedLoading ? <Loader2 size={14} className="animate-spin" /> : <Wifi size={14} />}
               Start Feed
@@ -206,7 +203,7 @@ export function Account() {
             <button
               onClick={handleFeedStop}
               disabled={feedLoading || !feedSnapshot?.running}
-              className="flex items-center gap-2 px-4 py-1.5 rounded-md bg-brand-red/20 border border-brand-red/40 text-brand-red text-sm font-medium hover:bg-brand-red/30 disabled:opacity-50 transition-colors"
+              className="flex items-center gap-2 px-4 py-2 rounded-lg bg-brand-red/15 border border-brand-red/35 text-brand-red text-sm font-semibold hover:bg-brand-red/25 disabled:opacity-40 transition-colors"
             >
               {feedLoading ? <Loader2 size={14} className="animate-spin" /> : <WifiOff size={14} />}
               Stop Feed
@@ -214,22 +211,22 @@ export function Account() {
           </div>
 
           {feedSnapshot && (
-            <div className="flex items-center gap-6 text-sm bg-surface-elevated rounded-md px-4 py-3">
+            <div className="flex flex-wrap items-start gap-6 text-sm bg-surface-inset rounded-lg px-4 py-3 border border-surface-border">
               <div>
-                <span className="text-gray-500 text-xs">State</span>
-                <div className={clsx('font-bold font-mono', feedSnapshot.running ? 'text-brand-green' : 'text-gray-500')}>
+                <span className="eyebrow">State</span>
+                <div className={clsx('font-bold font-mono mt-0.5', feedSnapshot.running ? 'text-brand-green' : 'text-ink-faint')}>
                   {feedSnapshot.running ? 'RUNNING' : 'STOPPED'}
                 </div>
               </div>
               <div>
-                <span className="text-gray-500 text-xs">Tick Count</span>
-                <div className="font-bold font-mono text-gray-200">{feedSnapshot.tick_count.toLocaleString()}</div>
+                <span className="eyebrow">Tick Count</span>
+                <div className="font-bold font-mono text-ink mt-0.5">{feedSnapshot.tick_count.toLocaleString()}</div>
               </div>
-              <div className="flex-1">
-                <span className="text-gray-500 text-xs">Subscribed Symbols</span>
-                <div className="flex flex-wrap gap-1 mt-1">
+              <div className="flex-1 min-w-48">
+                <span className="eyebrow">Subscribed Symbols</span>
+                <div className="flex flex-wrap gap-1 mt-1.5">
                   {feedSnapshot.subscribed_symbols.length === 0 ? (
-                    <span className="text-gray-600 text-xs">none</span>
+                    <span className="text-ink-faint text-xs">none</span>
                   ) : (
                     feedSnapshot.subscribed_symbols.map((s) => (
                       <Badge key={s} variant="blue">{s}</Badge>
@@ -245,7 +242,7 @@ export function Account() {
       {/* Database summary */}
       {dbSummary && (
         <Card>
-          <CardHeader title="Database" subtitle={dbSummary.db_path} />
+          <CardHeader title="Database" subtitle={dbSummary.db_path} icon={<Database size={14} />} />
           <CardBody>
             <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
               {[
@@ -254,9 +251,9 @@ export function Account() {
                 { label: 'Portfolio Snapshots', value: dbSummary.portfolio_snapshots, accent: 'text-brand-cyan' },
                 { label: 'Risk Blocks', value: dbSummary.risk_blocks, accent: 'text-brand-red' },
               ].map(({ label, value, accent }) => (
-                <div key={label} className="bg-surface-elevated rounded-md p-3 text-center">
+                <div key={label} className="bg-surface-inset border border-surface-border rounded-lg p-3.5 text-center">
                   <div className={clsx('text-2xl font-bold font-mono', accent)}>{value}</div>
-                  <div className="text-xs text-gray-500 mt-1">{label}</div>
+                  <div className="text-xs text-ink-faint mt-1">{label}</div>
                 </div>
               ))}
             </div>

@@ -102,7 +102,7 @@ export function GoalGovernor() {
           <button
             onClick={load}
             disabled={loading}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-surface-elevated border border-surface-border text-xs text-gray-400 hover:text-gray-200 disabled:opacity-50"
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-surface-elevated border border-surface-border text-xs text-ink-muted hover:text-ink disabled:opacity-50"
           >
             {loading ? <Loader2 size={12} className="animate-spin" /> : <RefreshCw size={12} />}
             Refresh
@@ -166,8 +166,8 @@ export function GoalGovernor() {
                   : status?.recommendation === 'increase_research' ? 'text-brand-yellow'
                   : 'text-brand-green',
                 )} />
-                <div className="text-xs text-gray-400">
-                  <span className="font-semibold text-gray-200">Risk boundary:</span> target pressure never auto-raises drawdown,
+                <div className="text-xs text-ink-muted">
+                  <span className="font-semibold text-ink">Risk boundary:</span> target pressure never auto-raises drawdown,
                   allocation, broker, compliance, manual approval, or kill-switch limits.
                 </div>
               </div>
@@ -187,16 +187,16 @@ export function GoalGovernor() {
           {dailyPnl.slice(-6).map((day) => (
             <div key={day.trade_date} className="rounded-lg bg-surface-elevated border border-surface-border p-3">
               <div className="flex items-center justify-between gap-2">
-                <span className="text-xs text-gray-400">{fmtDate(day.trade_date)}</span>
+                <span className="text-xs text-ink-muted">{fmtDate(day.trade_date)}</span>
                 <Tag label={`${day.total_trades} trades`} color="blue" />
               </div>
               <div className={clsx('mt-2 text-lg font-bold font-mono', day.realized_pnl >= 0 ? 'text-brand-green' : 'text-brand-red')}>
                 {inr(day.realized_pnl)}
               </div>
-              <div className="mt-1 text-xs text-gray-500">{day.winning_trades} winners</div>
+              <div className="mt-1 text-xs text-ink-faint">{day.winning_trades} winners</div>
             </div>
           ))}
-          {dailyPnl.length === 0 && <div className="md:col-span-3 text-xs text-gray-500 text-center py-8">No daily P&L history yet</div>}
+          {dailyPnl.length === 0 && <div className="md:col-span-3 text-xs text-ink-faint text-center py-8">No daily P&L history yet</div>}
         </CardBody>
       </Card>
     </div>

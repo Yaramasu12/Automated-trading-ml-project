@@ -73,7 +73,7 @@ function tickAgeSeconds(t: DashboardTick | undefined): number | null {
 
 function tickStatus(t: DashboardTick | undefined): { label: string; className: string } {
   if (!t || t.available === false) {
-    return { label: 'NOT SUBSCRIBED', className: 'text-gray-500 border-gray-700 bg-surface' }
+    return { label: 'NOT SUBSCRIBED', className: 'text-ink-faint border-gray-700 bg-surface' }
   }
 
   const age = tickAgeSeconds(t)
@@ -222,11 +222,11 @@ export function Dashboard() {
     },
     {
       key: 'strategy_name', label: 'Strategy',
-      render: (_: unknown, r: Trade) => <span className="text-xs text-gray-400">{r.strategy_name}</span>,
+      render: (_: unknown, r: Trade) => <span className="text-xs text-ink-muted">{r.strategy_name}</span>,
     },
     {
       key: 'timestamp', label: 'Time',
-      render: (_: unknown, r: Trade) => <span className="text-xs text-gray-500">{fmtDateTime(r.timestamp)}</span>,
+      render: (_: unknown, r: Trade) => <span className="text-xs text-ink-faint">{fmtDateTime(r.timestamp)}</span>,
     },
   ]
 
@@ -265,7 +265,7 @@ export function Dashboard() {
 
         {/* Engine Health */}
         <div className="bg-surface-card border border-surface-border rounded-lg p-3 space-y-1.5">
-          <div className="text-[10px] text-gray-500 uppercase tracking-wider font-semibold">Engine Health</div>
+          <div className="text-[10px] text-ink-faint uppercase tracking-wider font-semibold">Engine Health</div>
           <div className={clsx(
             'text-sm font-bold font-mono',
             monitoring?.status === 'HEALTHY' ? 'text-brand-green'
@@ -274,30 +274,30 @@ export function Dashboard() {
           )}>
             {monitoring?.status ?? '—'}
           </div>
-          <div className="text-[10px] text-gray-600 font-mono">
+          <div className="text-[10px] text-ink-faint font-mono">
             {monitoring ? `${monitoring.total_orders} orders · ${monitoring.average_latency_ms.toFixed(0)}ms` : '—'}
           </div>
         </div>
 
         {/* Portfolio */}
         <div className="bg-surface-card border border-surface-border rounded-lg p-3 space-y-1.5">
-          <div className="text-[10px] text-gray-500 uppercase tracking-wider font-semibold">Portfolio</div>
+          <div className="text-[10px] text-ink-faint uppercase tracking-wider font-semibold">Portfolio</div>
           <div className="text-sm font-bold font-mono text-brand-blue">{inr(latestEquity)}</div>
-          <div className={clsx('text-[10px] font-mono', latestDrawdown > 0.05 ? 'text-brand-red' : 'text-gray-500')}>
+          <div className={clsx('text-[10px] font-mono', latestDrawdown > 0.05 ? 'text-brand-red' : 'text-ink-faint')}>
             DD: {pct(latestDrawdown * 100)}
           </div>
         </div>
 
         {/* AI Systems */}
         <div className="bg-surface-card border border-surface-border rounded-lg p-3 space-y-1.5">
-          <div className="text-[10px] text-gray-500 uppercase tracking-wider font-semibold">AI Systems</div>
+          <div className="text-[10px] text-ink-faint uppercase tracking-wider font-semibold">AI Systems</div>
           <div className={clsx(
             'text-sm font-bold font-mono',
-            aiEnabledCount > 0 ? 'text-brand-purple' : 'text-gray-600',
+            aiEnabledCount > 0 ? 'text-brand-purple' : 'text-ink-faint',
           )}>
             {aiEnabledCount} / 4
           </div>
-          <div className="text-[10px] text-gray-600">
+          <div className="text-[10px] text-ink-faint">
             {aiEnabledCount > 0 ? 'systems enabled' : 'all disabled'}
           </div>
         </div>
@@ -339,7 +339,7 @@ export function Dashboard() {
             className={clsx(
               'flex items-center gap-2 px-3 py-2.5 rounded-lg border text-xs',
               !s.enabled
-                ? 'border-surface-border bg-surface-card text-gray-600'
+                ? 'border-surface-border bg-surface-card text-ink-faint'
                 : s.live
                   ? 'border-brand-purple/20 bg-brand-purple/5'
                   : 'border-brand-yellow/20 bg-brand-yellow/5',
@@ -349,18 +349,18 @@ export function Dashboard() {
             <div className="min-w-0 flex-1">
               <div className={clsx(
                 'font-semibold truncate',
-                !s.enabled ? 'text-gray-600' : s.live ? 'text-gray-200' : 'text-brand-yellow',
+                !s.enabled ? 'text-ink-faint' : s.live ? 'text-ink' : 'text-brand-yellow',
               )}>
                 {s.label}
               </div>
-              <div className="text-[10px] text-gray-600">{s.phase}</div>
+              <div className="text-[10px] text-ink-faint">{s.phase}</div>
               {s.enabled && s.detail && (
-                <div className="text-[10px] font-mono text-gray-500 truncate">{s.detail}</div>
+                <div className="text-[10px] font-mono text-ink-faint truncate">{s.detail}</div>
               )}
             </div>
             <span className={clsx(
               'ml-auto text-[9px] font-mono font-bold flex-shrink-0 px-1.5 py-0.5 rounded',
-              !s.enabled ? 'text-gray-700 bg-gray-800'
+              !s.enabled ? 'text-ink-faint bg-surface-elevated'
                 : s.live   ? 'text-brand-green bg-brand-green/10'
                            : 'text-brand-yellow bg-brand-yellow/10',
             )}>
@@ -428,14 +428,14 @@ export function Dashboard() {
               return (
                 <div key={sym} className="flex items-center justify-between gap-2 rounded-md bg-surface-elevated border border-surface-border px-2.5 py-2">
                   <div className="min-w-0">
-                    <div className="text-xs font-mono font-semibold text-gray-200 truncate">{sym}</div>
+                    <div className="text-xs font-mono font-semibold text-ink truncate">{sym}</div>
                     <span className={clsx('mt-1 inline-flex rounded border px-1 py-0.5 text-[9px] font-mono leading-none', status.className)}>
                       {status.label}
                     </span>
                   </div>
                   <div className="text-right shrink-0">
-                    <div className="text-xs font-mono font-bold text-gray-100">{price === null ? '—' : inr(price, 2)}</div>
-                    <div className={clsx('text-[10px] font-mono', (change ?? 0) > 0 ? 'text-brand-green' : (change ?? 0) < 0 ? 'text-brand-red' : 'text-gray-500')}>
+                    <div className="text-xs font-mono font-bold text-ink">{price === null ? '—' : inr(price, 2)}</div>
+                    <div className={clsx('text-[10px] font-mono', (change ?? 0) > 0 ? 'text-brand-green' : (change ?? 0) < 0 ? 'text-brand-red' : 'text-ink-faint')}>
                       {change !== null && change !== 0 ? pct(change) : '—'}
                     </div>
                   </div>
@@ -561,7 +561,7 @@ export function Dashboard() {
           <CardHeader title="Annual Target Progress" icon={<Target size={14} />} subtitle="5Cr goal tracking" />
           <CardBody>
             <div className="flex items-center justify-between mb-2">
-              <span className="text-xs text-gray-400">
+              <span className="text-xs text-ink-muted">
                 {inr(targetProgress.realized_pnl)} of {inr(targetProgress.annual_target)} target
               </span>
               <span className="text-xs font-mono text-brand-blue font-bold">{progressPct.toFixed(1)}%</span>
@@ -572,7 +572,7 @@ export function Dashboard() {
                 style={{ width: `${progressPct}%` }}
               />
             </div>
-            <div className="flex flex-wrap justify-between mt-2 gap-2 text-[11px] text-gray-500">
+            <div className="flex flex-wrap justify-between mt-2 gap-2 text-[11px] text-ink-faint">
               <span>Day {targetProgress.elapsed_days} of ~252</span>
               <span>Run rate: <span className="text-brand-yellow">{inr(targetProgress.required_run_rate)}/day</span></span>
               <span>Gap: <span className="text-brand-red">{inr(targetProgress.current_gap)}</span></span>
@@ -582,7 +582,7 @@ export function Dashboard() {
               <div className="mt-3 pt-3 border-t border-surface-border flex items-center justify-between">
                 <div className="flex items-center gap-1.5">
                   <Atom size={12} className="text-brand-purple" />
-                  <span className="text-[11px] text-gray-500">Monte Carlo target probability</span>
+                  <span className="text-[11px] text-ink-faint">Monte Carlo target probability</span>
                 </div>
                 <span className={clsx(
                   'text-sm font-bold font-mono',
@@ -633,7 +633,7 @@ export function Dashboard() {
       {isSystemFresh && (
         <div className="bg-indigo-950/30 border border-indigo-800/50 rounded-lg p-4">
           <h3 className="text-sm font-semibold text-indigo-300 mb-3">Welcome — No trading data yet</h3>
-          <p className="text-xs text-gray-400 mb-3">
+          <p className="text-xs text-ink-muted mb-3">
             This dashboard shows live P&L, equity curve, and trade history once the engine has run.
           </p>
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
@@ -645,8 +645,8 @@ export function Dashboard() {
               <div key={step} className="flex gap-3">
                 <span className="w-6 h-6 rounded-full bg-indigo-700 text-indigo-100 flex items-center justify-center text-xs font-bold shrink-0 mt-0.5">{step}</span>
                 <div>
-                  <div className="text-xs font-semibold text-gray-200">{title}</div>
-                  <div className="text-[11px] text-gray-500 mt-0.5">{desc}</div>
+                  <div className="text-xs font-semibold text-ink">{title}</div>
+                  <div className="text-[11px] text-ink-faint mt-0.5">{desc}</div>
                 </div>
               </div>
             ))}
@@ -660,7 +660,7 @@ export function Dashboard() {
           title="Recent Trades"
           subtitle={`${recentTrades.slice(0, 10).length} shown`}
           action={
-            <span className="text-xs text-gray-500">{recentTrades.length} total</span>
+            <span className="text-xs text-ink-faint">{recentTrades.length} total</span>
           }
         />
         <Table

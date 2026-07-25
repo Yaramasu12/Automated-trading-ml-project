@@ -43,7 +43,7 @@ export function ShortVolPanel() {
         action={
           <button
             onClick={() => load(underlying)}
-            className="text-gray-400 hover:text-gray-100"
+            className="text-ink-muted hover:text-ink"
             title="Refresh"
           >
             {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4" />}
@@ -60,7 +60,7 @@ export function ShortVolPanel() {
                 'px-2 py-0.5 rounded text-xs border ' +
                 (u === underlying
                   ? 'bg-brand-blue/20 border-brand-blue text-brand-blue'
-                  : 'border-gray-700 text-gray-400 hover:text-gray-200')
+                  : 'border-surface-border text-ink-muted hover:text-ink')
               }
             >
               {u}
@@ -83,11 +83,11 @@ export function ShortVolPanel() {
               {data.enter
                 ? <Badge variant="green" dot>WOULD ENTER · {data.lots} lot(s)</Badge>
                 : <Badge variant="gray">WAITING</Badge>}
-              <span className="text-xs text-gray-500">{data.reason}</span>
+              <span className="text-xs text-ink-faint">{data.reason}</span>
             </div>
 
             {data.enter && (
-              <div className="text-xs text-gray-400 flex gap-4">
+              <div className="text-xs text-ink-muted flex gap-4">
                 <span>Net credit: <b className="text-brand-green">{num(data.net_credit_pts)} pts</b></span>
                 <span>Max loss: <b className="text-brand-red">{num(data.max_loss_pts)} pts</b></span>
                 {data.expiry && <span>Expiry: {data.expiry}</span>}
@@ -97,14 +97,14 @@ export function ShortVolPanel() {
             {data.legs.length > 0 && (
               <table className="w-full text-xs">
                 <thead>
-                  <tr className="text-gray-500 text-left">
+                  <tr className="text-ink-faint text-left">
                     <th className="py-1">Leg</th><th>Type</th><th>Strike</th>
                     <th className="text-right">Price</th><th className="text-right">Qty</th>
                   </tr>
                 </thead>
                 <tbody>
                   {data.legs.map((leg) => (
-                    <tr key={leg.symbol} className="border-t border-gray-800">
+                    <tr key={leg.symbol} className="border-t border-surface-border">
                       <td className="py-1">
                         <Badge variant={leg.side === 'SELL' ? 'yellow' : 'blue'}>
                           {leg.side}{leg.is_wing ? ' · wing' : ''}
@@ -128,9 +128,9 @@ export function ShortVolPanel() {
 
 function Metric({ label, value }: { label: string; value: string }) {
   return (
-    <div className="bg-gray-900/50 rounded p-2">
-      <div className="text-[10px] uppercase text-gray-500">{label}</div>
-      <div className="text-sm font-semibold text-gray-100">{value}</div>
+    <div className="bg-surface-inset/50 rounded p-2">
+      <div className="text-[10px] uppercase text-ink-faint">{label}</div>
+      <div className="text-sm font-semibold text-ink">{value}</div>
     </div>
   )
 }

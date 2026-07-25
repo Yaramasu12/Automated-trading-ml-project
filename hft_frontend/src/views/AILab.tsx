@@ -224,13 +224,13 @@ export function AILab() {
         <div className="flex items-center gap-2">
           <Atom size={16} className="text-brand-purple" />
           <div>
-            <h1 className="text-lg font-bold text-gray-100">AI Lab</h1>
-            <p className="text-xs text-gray-500 mt-0.5">Multi-Agent Inference · Phase 1–9</p>
+            <h1 className="text-lg font-bold text-ink">AI Lab</h1>
+            <p className="text-xs text-ink-faint mt-0.5">Multi-Agent Inference · Phase 1–9</p>
           </div>
         </div>
         <button
           onClick={loadAll}
-          className="flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-surface-elevated border border-surface-border text-xs text-gray-400 hover:text-gray-200 transition-colors"
+          className="flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-surface-elevated border border-surface-border text-xs text-ink-muted hover:text-ink transition-colors"
         >
           <RefreshCw size={12} /> Refresh
         </button>
@@ -246,7 +246,7 @@ export function AILab() {
               'flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium whitespace-nowrap border transition-colors',
               tab === t.id
                 ? 'bg-brand-purple/15 border-brand-purple/30 text-brand-purple'
-                : 'text-gray-400 hover:text-gray-200 hover:bg-surface-elevated border-transparent',
+                : 'text-ink-muted hover:text-ink hover:bg-surface-elevated border-transparent',
             )}
           >
             {t.icon}
@@ -275,11 +275,11 @@ export function AILab() {
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-2">
                     {s.icon}
-                    <span className="text-xs font-semibold text-gray-200">{s.label}</span>
+                    <span className="text-xs font-semibold text-ink">{s.label}</span>
                   </div>
                   <span className={clsx(
                     'text-[9px] font-mono font-bold px-1.5 py-0.5 rounded',
-                    !s.enabled ? 'text-gray-700 bg-gray-800'
+                    !s.enabled ? 'text-ink-faint bg-surface-elevated'
                       : s.live   ? 'text-brand-green bg-brand-green/10'
                                : 'text-brand-yellow bg-brand-yellow/10',
                   )}>
@@ -287,7 +287,7 @@ export function AILab() {
                   </span>
                 </div>
                 <div className="text-[10px] text-brand-purple/70">{s.phase}</div>
-                <div className="text-[10px] text-gray-500 truncate">{s.detail}</div>
+                <div className="text-[10px] text-ink-faint truncate">{s.detail}</div>
               </div>
             ))}
           </div>
@@ -305,7 +305,7 @@ export function AILab() {
                   value={scanSymbols}
                   onChange={(e) => setScanSymbols(e.target.value)}
                   placeholder="Symbols (comma-separated)"
-                  className="flex-1 min-w-32 bg-surface-elevated border border-surface-border text-xs text-gray-200 rounded px-2 py-1.5 font-mono focus:outline-none focus:border-brand-purple"
+                  className="flex-1 min-w-32 bg-surface-elevated border border-surface-border text-xs text-ink rounded px-2 py-1.5 font-mono focus:outline-none focus:border-brand-purple"
                 />
                 <button
                   onClick={handleHighEndScan}
@@ -328,10 +328,10 @@ export function AILab() {
                         : 'gray'
                       }
                     />
-                    <span className="text-xs text-gray-300 font-mono">
+                    <span className="text-xs text-ink-muted font-mono">
                       Confidence: <strong>{(scanConfidence * 100).toFixed(0)}%</strong>
                     </span>
-                    {scanElapsed != null && <span className="text-xs text-gray-500 font-mono">{scanElapsed.toFixed(0)}ms</span>}
+                    {scanElapsed != null && <span className="text-xs text-ink-faint font-mono">{scanElapsed.toFixed(0)}ms</span>}
                     {scanRiskVetoed && <Tag label="Risk Vetoed" color="red" />}
                   </div>
                   {/* Component breakdown */}
@@ -342,15 +342,15 @@ export function AILab() {
                     ].map((c) => (
                       c.data && (
                         <div key={c.label} className="bg-surface-elevated rounded p-2">
-                          <div className="text-[10px] text-gray-500 uppercase">{c.label}</div>
-                          <div className="text-xs font-mono text-gray-300 mt-1">
+                          <div className="text-[10px] text-ink-faint uppercase">{c.label}</div>
+                          <div className="text-xs font-mono text-ink-muted mt-1">
                             {String((c.data as Record<string, unknown>)[c.key] ?? '—')}
                           </div>
                         </div>
                       )
                     ))}
                   </div>
-                  <div className="text-[10px] text-gray-600 font-mono">ID: {latestHighEndScan.trace_id}</div>
+                  <div className="text-[10px] text-ink-faint font-mono">ID: {latestHighEndScan.trace_id}</div>
                 </div>
               )}
             </CardBody>
@@ -364,9 +364,9 @@ export function AILab() {
                 { key: 'trace_id', label: 'Trace ID', render: (v) => <span className="text-xs font-mono text-brand-blue">{String(v).slice(0, 16)}</span> },
                 { key: 'execution_mode', label: 'Mode' },
                 { key: 'symbol_universe', label: 'Symbols', render: (v) => (
-                  <span className="text-xs text-gray-400">{(v as string[])?.join(', ') ?? '—'}</span>
+                  <span className="text-xs text-ink-muted">{(v as string[])?.join(', ') ?? '—'}</span>
                 )},
-                { key: 'created_at', label: 'Time', render: (v) => <span className="text-xs text-gray-500">{fmtDateTime(String(v))}</span> },
+                { key: 'created_at', label: 'Time', render: (v) => <span className="text-xs text-ink-faint">{fmtDateTime(String(v))}</span> },
               ]}
               rows={recentTraces as unknown as Record<string, unknown>[]}
               keyFn={(r) => String(r.trace_id)}
@@ -392,19 +392,19 @@ export function AILab() {
                   { label: 'Fallback', value: String(aiCouncilStatus?.fallback_active ?? false) },
                 ].map((s) => (
                   <div key={s.label} className="bg-surface-elevated rounded p-2">
-                    <div className="text-[10px] text-gray-500 uppercase">{s.label}</div>
-                    <div className="text-sm font-bold font-mono text-gray-100 mt-1">{s.value}</div>
+                    <div className="text-[10px] text-ink-faint uppercase">{s.label}</div>
+                    <div className="text-sm font-bold font-mono text-ink mt-1">{s.value}</div>
                   </div>
                 ))}
               </div>
               {aiCouncilStatus?.models && (
                 <div className="mt-3 pt-3 border-t border-surface-border">
-                  <div className="text-xs text-gray-400 mb-2">Models</div>
+                  <div className="text-xs text-ink-muted mb-2">Models</div>
                   <div className="grid grid-cols-3 gap-2">
                     {Object.entries(aiCouncilStatus.models).map(([k, v]) => (
                       <div key={k} className="text-xs">
-                        <span className="text-gray-500">{k}: </span>
-                        <span className="text-gray-300 font-mono">{String(v)}</span>
+                        <span className="text-ink-faint">{k}: </span>
+                        <span className="text-ink-muted font-mono">{String(v)}</span>
                       </div>
                     ))}
                   </div>
@@ -419,19 +419,19 @@ export function AILab() {
             <CardBody className="space-y-3">
               <div className="flex flex-wrap gap-3">
                 <div className="flex-1 min-w-40">
-                  <label className="block text-xs text-gray-400 mb-1 uppercase tracking-wider">Symbols</label>
+                  <label className="block text-xs text-ink-muted mb-1 uppercase tracking-wider">Symbols</label>
                   <input
                     value={councilSymbols}
                     onChange={(e) => setCouncilSymbols(e.target.value)}
-                    className="w-full bg-surface-elevated border border-surface-border text-xs text-gray-200 rounded px-2 py-1.5 font-mono focus:outline-none focus:border-brand-purple"
+                    className="w-full bg-surface-elevated border border-surface-border text-xs text-ink rounded px-2 py-1.5 font-mono focus:outline-none focus:border-brand-purple"
                   />
                 </div>
                 <div>
-                  <label className="block text-xs text-gray-400 mb-1 uppercase tracking-wider">Regime</label>
+                  <label className="block text-xs text-ink-muted mb-1 uppercase tracking-wider">Regime</label>
                   <select
                     value={councilRegime}
                     onChange={(e) => setCouncilRegime(e.target.value)}
-                    className="bg-surface-elevated border border-surface-border text-xs text-gray-200 rounded px-2 py-1.5 font-mono focus:outline-none focus:border-brand-purple"
+                    className="bg-surface-elevated border border-surface-border text-xs text-ink rounded px-2 py-1.5 font-mono focus:outline-none focus:border-brand-purple"
                   >
                     {['NEUTRAL', 'BULLISH', 'BEARISH', 'VOLATILE', 'TRENDING_UP', 'TRENDING_DOWN'].map(r => (
                       <option key={r} value={r}>{r}</option>
@@ -461,10 +461,10 @@ export function AILab() {
                         : 'gray'
                       }
                     />
-                    <span className="text-xs font-mono text-gray-300">
+                    <span className="text-xs font-mono text-ink-muted">
                       Conf: {(councilResult.confidence * 100).toFixed(0)}%
                     </span>
-                    <span className="text-xs font-mono text-gray-400">
+                    <span className="text-xs font-mono text-ink-muted">
                       Consensus: {(councilResult.consensus_score * 100).toFixed(0)}%
                     </span>
                     {councilResult.debate_triggered && <Tag label="Debate Triggered" color="yellow" />}
@@ -474,17 +474,17 @@ export function AILab() {
                     columns={[
                       { key: 'agent', label: 'Agent' },
                       { key: 'action', label: 'Action', render: (v) => (
-                        <span className={String(v).includes('BUY') ? 'text-brand-green' : String(v).includes('SELL') ? 'text-brand-red' : 'text-gray-400'}>
+                        <span className={String(v).includes('BUY') ? 'text-brand-green' : String(v).includes('SELL') ? 'text-brand-red' : 'text-ink-muted'}>
                           {String(v)}
                         </span>
                       )},
                       { key: 'confidence', label: 'Confidence', align: 'right', render: (v) => (
-                        <span className={clsx('font-mono', Number(v) > 0.7 ? 'text-brand-green' : 'text-gray-300')}>
+                        <span className={clsx('font-mono', Number(v) > 0.7 ? 'text-brand-green' : 'text-ink-muted')}>
                           {(Number(v) * 100).toFixed(0)}%
                         </span>
                       )},
                       { key: 'reasoning', label: 'Reasoning', render: (v) => (
-                        <span className="text-xs text-gray-500 truncate max-w-xs">{String(v).slice(0, 80)}</span>
+                        <span className="text-xs text-ink-faint truncate max-w-xs">{String(v).slice(0, 80)}</span>
                       )},
                     ]}
                     rows={councilResult.votes}
@@ -510,7 +510,7 @@ export function AILab() {
                   />
                 )},
                 { key: 'confidence', label: 'Conf', align: 'right', render: (v) => `${(Number(v)*100).toFixed(0)}%` },
-                { key: 'timestamp', label: 'Time', render: (v) => <span className="text-xs text-gray-500">{fmtDateTime(String(v))}</span> },
+                { key: 'timestamp', label: 'Time', render: (v) => <span className="text-xs text-ink-faint">{fmtDateTime(String(v))}</span> },
               ]}
               rows={aiCouncilDecisions as unknown as Record<string, unknown>[]}
               keyFn={(r) => String(r.trace_id)}
@@ -530,11 +530,11 @@ export function AILab() {
               <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
                 {neuralStatus?.models ? Object.entries(neuralStatus.models).map(([k, v]) => (
                   <div key={k} className="bg-surface-elevated rounded p-2">
-                    <div className="text-[10px] text-gray-500 uppercase capitalize">{k}</div>
-                    <div className="text-xs font-mono text-gray-200 mt-1">{String(v)}</div>
+                    <div className="text-[10px] text-ink-faint uppercase capitalize">{k}</div>
+                    <div className="text-xs font-mono text-ink mt-1">{String(v)}</div>
                   </div>
                 )) : (
-                  <div className="col-span-4 text-xs text-gray-500 text-center py-2">No neural status</div>
+                  <div className="col-span-4 text-xs text-ink-faint text-center py-2">No neural status</div>
                 )}
               </div>
             </CardBody>
@@ -548,7 +548,7 @@ export function AILab() {
                   value={neuralSymbols}
                   onChange={(e) => setNeuralSymbols(e.target.value)}
                   placeholder="Symbols"
-                  className="flex-1 bg-surface-elevated border border-surface-border text-xs text-gray-200 rounded px-2 py-1.5 font-mono focus:outline-none focus:border-brand-blue"
+                  className="flex-1 bg-surface-elevated border border-surface-border text-xs text-ink rounded px-2 py-1.5 font-mono focus:outline-none focus:border-brand-blue"
                 />
                 <button
                   onClick={handleNeuralPreview}
@@ -567,7 +567,7 @@ export function AILab() {
                       label={neuralShouldTrade ? 'TRADE' : 'SKIP'}
                       color={neuralShouldTrade ? 'green' : 'red'}
                     />
-                    <span className="text-xs text-gray-300 font-mono">
+                    <span className="text-xs text-ink-muted font-mono">
                       Uncertainty: {(latestNeuralBundle.overall_uncertainty * 100).toFixed(1)}%
                     </span>
                   </div>
@@ -599,7 +599,7 @@ export function AILab() {
                         </span>
                       )},
                       { key: 'model_uncertainty', label: 'Uncertainty', align: 'right', render: (v) => (
-                        <span className="font-mono text-gray-400">{(Number(v) * 100).toFixed(1)}%</span>
+                        <span className="font-mono text-ink-muted">{(Number(v) * 100).toFixed(1)}%</span>
                       )},
                     ]}
                     rows={latestNeuralBundle.forecasts}
@@ -622,7 +622,7 @@ export function AILab() {
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2">
               <Database size={14} className="text-brand-purple" />
-              <span className="text-sm font-medium text-gray-200">pgvector Learning State</span>
+              <span className="text-sm font-medium text-ink">pgvector Learning State</span>
               {orchStats && (
                 <span className="text-[10px] px-2 py-0.5 rounded-full bg-green-500/10 border border-green-500/30 text-green-400 font-mono">
                   pgvector LIVE
@@ -632,7 +632,7 @@ export function AILab() {
             <button
               onClick={loadOrchestrator}
               disabled={orchLoading}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-surface-elevated border border-surface-border text-xs text-gray-400 hover:text-gray-200 transition-colors"
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-surface-elevated border border-surface-border text-xs text-ink-muted hover:text-ink transition-colors"
             >
               {orchLoading ? <Loader2 size={12} className="animate-spin" /> : <RefreshCw size={12} />}
               Refresh
@@ -643,26 +643,26 @@ export function AILab() {
           {orchStats && (
             <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
               <div className="bg-surface-elevated rounded-lg p-3 border border-surface-border">
-                <div className="text-[10px] text-gray-500 uppercase mb-1">Pipeline Cycles</div>
-                <div className="text-lg font-mono text-gray-100">
+                <div className="text-[10px] text-ink-faint uppercase mb-1">Pipeline Cycles</div>
+                <div className="text-lg font-mono text-ink">
                   {String((orchStats as Record<string, unknown>).cycle_count ?? 0)}
                 </div>
               </div>
               <div className="bg-surface-elevated rounded-lg p-3 border border-surface-border">
-                <div className="text-[10px] text-gray-500 uppercase mb-1">RAG Patterns</div>
-                <div className="text-lg font-mono text-gray-100">
+                <div className="text-[10px] text-ink-faint uppercase mb-1">RAG Patterns</div>
+                <div className="text-lg font-mono text-ink">
                   {String(((orchStats.market_rag as Record<string, unknown>)?.pattern_count ?? 0))}
                 </div>
               </div>
               <div className="bg-surface-elevated rounded-lg p-3 border border-surface-border">
-                <div className="text-[10px] text-gray-500 uppercase mb-1">RAG Avg Win Rate</div>
+                <div className="text-[10px] text-ink-faint uppercase mb-1">RAG Avg Win Rate</div>
                 <div className="text-lg font-mono text-brand-green">
                   {(Number(((orchStats.market_rag as Record<string, unknown>)?.avg_win_rate ?? 0)) * 100).toFixed(1)}%
                 </div>
               </div>
               <div className="bg-surface-elevated rounded-lg p-3 border border-surface-border">
-                <div className="text-[10px] text-gray-500 uppercase mb-1">Total Reflections</div>
-                <div className="text-lg font-mono text-gray-100">
+                <div className="text-[10px] text-ink-faint uppercase mb-1">Total Reflections</div>
+                <div className="text-lg font-mono text-ink">
                   {String(((orchStats.reflection as Record<string, unknown>)?.total_reflections ?? 0))}
                 </div>
               </div>
@@ -678,11 +678,11 @@ export function AILab() {
             <CardBody className="space-y-3">
               {orchStats ? (
                 <>
-                  <div className="flex flex-wrap gap-3 text-xs text-gray-400">
-                    <span>Queries: <span className="font-mono text-gray-200">
+                  <div className="flex flex-wrap gap-3 text-xs text-ink-muted">
+                    <span>Queries: <span className="font-mono text-ink">
                       {String((orchStats.market_rag as Record<string, unknown>)?.query_count ?? 0)}
                     </span></span>
-                    <span>Seeded: <span className="font-mono text-gray-200">
+                    <span>Seeded: <span className="font-mono text-ink">
                       {String((orchStats.market_rag as Record<string, unknown>)?.seeded ?? false)}
                     </span></span>
                   </div>
@@ -692,7 +692,7 @@ export function AILab() {
                   </div>
                 </>
               ) : (
-                <div className="text-xs text-gray-500">No data — start the agent to populate patterns.</div>
+                <div className="text-xs text-ink-faint">No data — start the agent to populate patterns.</div>
               )}
             </CardBody>
           </Card>
@@ -708,7 +708,7 @@ export function AILab() {
               {orchPG && (
                 <div className="flex flex-wrap gap-4 text-xs">
                   <div>
-                    <span className="text-gray-500">Global win rate: </span>
+                    <span className="text-ink-faint">Global win rate: </span>
                     <span className="font-mono text-brand-green">
                       {orchPG.global_win_rate != null
                         ? `${(Number(orchPG.global_win_rate) * 100).toFixed(1)}%`
@@ -716,8 +716,8 @@ export function AILab() {
                     </span>
                   </div>
                   <div>
-                    <span className="text-gray-500">Total trades: </span>
-                    <span className="font-mono text-gray-200">{String(orchPG.total_trades ?? 0)}</span>
+                    <span className="text-ink-faint">Total trades: </span>
+                    <span className="font-mono text-ink">{String(orchPG.total_trades ?? 0)}</span>
                   </div>
                 </div>
               )}
@@ -727,7 +727,7 @@ export function AILab() {
                   value={orchUnderlying}
                   onChange={e => setOrchUnderlying(e.target.value.toUpperCase())}
                   placeholder="Underlying (e.g. NIFTY)"
-                  className="flex-1 bg-surface-elevated border border-surface-border text-xs text-gray-200 rounded px-2 py-1.5 font-mono focus:outline-none focus:border-brand-green"
+                  className="flex-1 bg-surface-elevated border border-surface-border text-xs text-ink rounded px-2 py-1.5 font-mono focus:outline-none focus:border-brand-green"
                 />
                 <button
                   onClick={() => getOrchestratorProfitGuard(orchUnderlying).then(setOrchPG).catch(() => {})}
@@ -746,10 +746,10 @@ export function AILab() {
                         <span className={`font-mono ${Number(v) >= 0.5 ? 'text-brand-green' : 'text-red-400'}`}>
                           {(Number(v) * 100).toFixed(1)}%
                         </span>
-                      ) : <span className="text-gray-500">—</span>
+                      ) : <span className="text-ink-faint">—</span>
                     },
                     { key: 'consecutive_losses', label: 'Consec. Losses', render: (v) =>
-                      <span className={`font-mono ${Number(v) >= 3 ? 'text-red-400' : 'text-gray-300'}`}>{String(v)}</span>
+                      <span className={`font-mono ${Number(v) >= 3 ? 'text-red-400' : 'text-ink-muted'}`}>{String(v)}</span>
                     },
                   ]}
                   rows={Object.entries(orchPG.per_underlying as Record<string, Record<string, unknown>>).map(([k, v]) => ({
@@ -762,20 +762,20 @@ export function AILab() {
                 />
               ) : orchPG?.underlying ? (
                 <div className="flex flex-wrap gap-4 text-xs border-t border-surface-border pt-3">
-                  <div><span className="text-gray-500">Underlying: </span><span className="font-mono text-gray-200">{String(orchPG.underlying)}</span></div>
-                  <div><span className="text-gray-500">Rolling win rate: </span>
+                  <div><span className="text-ink-faint">Underlying: </span><span className="font-mono text-ink">{String(orchPG.underlying)}</span></div>
+                  <div><span className="text-ink-faint">Rolling win rate: </span>
                     <span className={`font-mono ${orchPG.rolling_win_rate != null && Number(orchPG.rolling_win_rate) >= 0.5 ? 'text-brand-green' : 'text-red-400'}`}>
                       {orchPG.rolling_win_rate != null ? `${(Number(orchPG.rolling_win_rate) * 100).toFixed(1)}%` : '—'}
                     </span>
                   </div>
-                  <div><span className="text-gray-500">Consecutive losses: </span>
-                    <span className={`font-mono ${Number(orchPG.consecutive_losses ?? 0) >= 3 ? 'text-red-400' : 'text-gray-300'}`}>
+                  <div><span className="text-ink-faint">Consecutive losses: </span>
+                    <span className={`font-mono ${Number(orchPG.consecutive_losses ?? 0) >= 3 ? 'text-red-400' : 'text-ink-muted'}`}>
                       {String(orchPG.consecutive_losses ?? 0)}
                     </span>
                   </div>
                 </div>
               ) : (
-                <div className="text-xs text-gray-500">No trades recorded yet. Rolling state persists across restarts once trades close.</div>
+                <div className="text-xs text-ink-faint">No trades recorded yet. Rolling state persists across restarts once trades close.</div>
               )}
             </CardBody>
           </Card>
@@ -800,7 +800,7 @@ export function AILab() {
                             style={{ width: `${Math.min(100, (Number(v) / 2.5) * 100)}%` }}
                           />
                         </div>
-                        <span className="font-mono text-gray-200">{Number(v).toFixed(3)}</span>
+                        <span className="font-mono text-ink">{Number(v).toFixed(3)}</span>
                       </div>
                     )},
                     { key: 'accuracy', label: 'Accuracy', render: (v) =>
@@ -808,7 +808,7 @@ export function AILab() {
                         <span className={`font-mono text-xs ${Number(v) >= 0.5 ? 'text-brand-green' : 'text-red-400'}`}>
                           {(Number(v) * 100).toFixed(1)}%
                         </span>
-                      ) : <span className="text-gray-500">—</span>
+                      ) : <span className="text-ink-faint">—</span>
                     },
                   ]}
                   rows={Object.entries(
@@ -821,7 +821,7 @@ export function AILab() {
                   emptyMessage="No agent weights yet"
                 />
               ) : (
-                <div className="text-xs text-gray-500">
+                <div className="text-xs text-ink-faint">
                   Weights accumulate as trades close. They persist across restarts via pgvector DB.
                 </div>
               )}
@@ -830,7 +830,7 @@ export function AILab() {
               {orchStats && (
                 <div className="flex flex-wrap gap-4 text-xs border-t border-surface-border pt-3">
                   <div>
-                    <span className="text-gray-500">Overall win rate: </span>
+                    <span className="text-ink-faint">Overall win rate: </span>
                     <span className="font-mono text-brand-green">
                       {(orchStats.reflection as Record<string, unknown>).overall_win_rate != null
                         ? `${(Number((orchStats.reflection as Record<string, unknown>).overall_win_rate) * 100).toFixed(1)}%`
@@ -852,7 +852,7 @@ export function AILab() {
               {orchDBReflections.length > 0 ? (
                 <Table
                   columns={[
-                    { key: 'ts', label: 'Time', render: (v) => <span className="font-mono text-[10px] text-gray-400">{String(v).slice(0, 19).replace('T', ' ')}</span> },
+                    { key: 'ts', label: 'Time', render: (v) => <span className="font-mono text-[10px] text-ink-muted">{String(v).slice(0, 19).replace('T', ' ')}</span> },
                     { key: 'underlying', label: 'Symbol' },
                     { key: 'won', label: 'Result', render: (v) => (
                       <Tag label={v ? 'WIN' : 'LOSS'} color={v ? 'green' : 'red'} />
@@ -863,10 +863,10 @@ export function AILab() {
                       </span>
                     )},
                     { key: 'quality', label: 'Quality', render: (v) => (
-                      <span className="font-mono text-gray-300">{Number(v).toFixed(2)}</span>
+                      <span className="font-mono text-ink-muted">{Number(v).toFixed(2)}</span>
                     )},
                     { key: 'regime', label: 'Regime', render: (v) => (
-                      <span className="text-[10px] text-gray-400">{String(v ?? '—')}</span>
+                      <span className="text-[10px] text-ink-muted">{String(v ?? '—')}</span>
                     )},
                   ]}
                   rows={orchDBReflections}
@@ -876,7 +876,7 @@ export function AILab() {
               ) : orchReflections.length > 0 ? (
                 <Table
                   columns={[
-                    { key: 'ts', label: 'Time', render: (v) => <span className="font-mono text-[10px] text-gray-400">{String(v).slice(0, 19).replace('T', ' ')}</span> },
+                    { key: 'ts', label: 'Time', render: (v) => <span className="font-mono text-[10px] text-ink-muted">{String(v).slice(0, 19).replace('T', ' ')}</span> },
                     { key: 'underlying', label: 'Symbol' },
                     { key: 'won', label: 'Result', render: (v) => (
                       <Tag label={v ? 'WIN' : 'LOSS'} color={v ? 'green' : 'red'} />
@@ -887,10 +887,10 @@ export function AILab() {
                       </span>
                     )},
                     { key: 'quality_score', label: 'Quality', render: (v) => (
-                      <span className="font-mono text-gray-300">{Number(v).toFixed(2)}</span>
+                      <span className="font-mono text-ink-muted">{Number(v).toFixed(2)}</span>
                     )},
                     { key: 'regime', label: 'Regime', render: (v) => (
-                      <span className="text-[10px] text-gray-400">{String(v ?? '—')}</span>
+                      <span className="text-[10px] text-ink-muted">{String(v ?? '—')}</span>
                     )},
                   ]}
                   rows={orchReflections}
@@ -898,7 +898,7 @@ export function AILab() {
                   emptyMessage="No reflections yet"
                 />
               ) : (
-                <div className="text-xs text-gray-500">No reflections yet. Reflections are written after each trade closes.</div>
+                <div className="text-xs text-ink-faint">No reflections yet. Reflections are written after each trade closes.</div>
               )}
             </CardBody>
           </Card>
@@ -919,12 +919,12 @@ export function AILab() {
                   { label: 'Drawdown', key: 'drawdown' },
                 ].map(({ label, key }) => (
                   <div key={key}>
-                    <label className="block text-xs text-gray-400 mb-1 uppercase tracking-wider">{label}</label>
+                    <label className="block text-xs text-ink-muted mb-1 uppercase tracking-wider">{label}</label>
                     <input
                       type="number"
                       value={marlForm[key as keyof typeof marlForm]}
                       onChange={(e) => setMarlForm(f => ({ ...f, [key]: Number(e.target.value) }))}
-                      className="w-full bg-surface-elevated border border-surface-border text-xs text-gray-200 rounded px-2 py-1.5 font-mono focus:outline-none focus:border-brand-blue"
+                      className="w-full bg-surface-elevated border border-surface-border text-xs text-ink rounded px-2 py-1.5 font-mono focus:outline-none focus:border-brand-blue"
                     />
                   </div>
                 ))}
@@ -956,7 +956,7 @@ export function AILab() {
                         : 'gray'
                       }
                     />
-                    <span className="text-xs font-mono text-gray-300">
+                    <span className="text-xs font-mono text-ink-muted">
                       Confidence: {(Number(marlResult.majority?.confidence ?? marlResult.majority_confidence ?? 0) * 100).toFixed(0)}%
                     </span>
                   </div>

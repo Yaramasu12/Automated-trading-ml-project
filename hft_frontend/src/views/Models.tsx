@@ -100,8 +100,8 @@ export function Models() {
       <div className="flex items-center gap-2">
         <Brain size={16} className="text-brand-purple" />
         <div>
-          <h1 className="text-lg font-bold text-gray-100">ML Models</h1>
-          <p className="text-xs text-gray-500 mt-0.5">Volatility forecasting, regime classification, sentiment analysis</p>
+          <h1 className="text-lg font-bold text-ink">ML Models</h1>
+          <p className="text-xs text-ink-faint mt-0.5">Volatility forecasting, regime classification, sentiment analysis</p>
         </div>
       </div>
 
@@ -115,7 +115,7 @@ export function Models() {
               'px-3 py-1.5 rounded-md text-xs font-medium border transition-colors',
               tab === t
                 ? 'bg-brand-purple/15 border-brand-purple/30 text-brand-purple'
-                : 'text-gray-400 hover:text-gray-200 hover:bg-surface-elevated border-transparent',
+                : 'text-ink-muted hover:text-ink hover:bg-surface-elevated border-transparent',
             )}
           >
             {t}
@@ -129,25 +129,25 @@ export function Models() {
           <CardHeader title="Model Catalog" subtitle={`${modelCatalog.length} models`} icon={<Brain size={14} />} />
           {loading ? (
             <div className="flex items-center justify-center py-12">
-              <Loader2 size={20} className="animate-spin text-gray-500" />
+              <Loader2 size={20} className="animate-spin text-ink-faint" />
             </div>
           ) : (
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 p-4">
               {modelCatalog.map((m) => (
                 <div key={m.name} className="bg-surface-elevated border border-surface-border rounded-lg p-3 space-y-2">
                   <div className="flex items-center justify-between">
-                    <span className="text-sm font-semibold text-gray-200">{m.name}</span>
+                    <span className="text-sm font-semibold text-ink">{m.name}</span>
                     <Tag
                       label={m.status}
                       color={m.status === 'active' ? 'green' : m.status === 'candidate' ? 'yellow' : 'gray'}
                     />
                   </div>
-                  <div className="text-xs text-gray-500">Family: <span className="text-gray-300">{m.family}</span></div>
-                  <div className="text-xs text-gray-500 font-mono">{m.promotion_rule}</div>
+                  <div className="text-xs text-ink-faint">Family: <span className="text-ink-muted">{m.family}</span></div>
+                  <div className="text-xs text-ink-faint font-mono">{m.promotion_rule}</div>
                 </div>
               ))}
               {modelCatalog.length === 0 && (
-                <div className="col-span-3 text-center py-8 text-gray-500 text-sm">No models in catalog</div>
+                <div className="col-span-3 text-center py-8 text-ink-faint text-sm">No models in catalog</div>
               )}
             </div>
           )}
@@ -162,15 +162,15 @@ export function Models() {
             <CardBody className="space-y-3">
               <div className="flex flex-wrap items-center gap-3">
                 <div>
-                  <label className="block text-xs text-gray-400 mb-1 uppercase tracking-wider">Symbol</label>
+                  <label className="block text-xs text-ink-muted mb-1 uppercase tracking-wider">Symbol</label>
                   <input
                     value={volSymbol}
                     onChange={(e) => setVolSymbol(e.target.value.toUpperCase())}
-                    className="bg-surface-elevated border border-surface-border text-xs text-gray-200 rounded px-2 py-1.5 font-mono w-28 focus:outline-none focus:border-brand-purple"
+                    className="bg-surface-elevated border border-surface-border text-xs text-ink rounded px-2 py-1.5 font-mono w-28 focus:outline-none focus:border-brand-purple"
                   />
                 </div>
                 <div>
-                  <label className="block text-xs text-gray-400 mb-1 uppercase tracking-wider">Days</label>
+                  <label className="block text-xs text-ink-muted mb-1 uppercase tracking-wider">Days</label>
                   <div className="flex gap-1">
                     {[7, 14, 30, 60].map((d) => (
                       <button
@@ -180,7 +180,7 @@ export function Models() {
                           'px-2 py-1.5 rounded text-xs font-mono border transition-colors',
                           volDays === d
                             ? 'bg-brand-purple/15 border-brand-purple/30 text-brand-purple'
-                            : 'bg-surface-elevated border-surface-border text-gray-400 hover:text-gray-200',
+                            : 'bg-surface-elevated border-surface-border text-ink-muted hover:text-ink',
                         )}
                       >
                         {d}d
@@ -208,7 +208,7 @@ export function Models() {
                       { label: '95% High', value: `${(volForecast.upper_95 * 100).toFixed(2)}%` },
                     ].map((s) => (
                       <div key={s.label} className="bg-surface-elevated rounded-lg p-3">
-                        <div className="text-[10px] text-gray-500 uppercase tracking-wider">{s.label}</div>
+                        <div className="text-[10px] text-ink-faint uppercase tracking-wider">{s.label}</div>
                         <div className="text-lg font-bold font-mono text-brand-purple mt-1">{s.value}</div>
                       </div>
                     ))}
@@ -253,7 +253,7 @@ export function Models() {
                 value={regimeSymbol}
                 onChange={(e) => setRegimeSymbol(e.target.value.toUpperCase())}
                 placeholder="Symbol"
-                className="bg-surface-elevated border border-surface-border text-xs text-gray-200 rounded px-2 py-1.5 font-mono w-32 focus:outline-none focus:border-brand-blue"
+                className="bg-surface-elevated border border-surface-border text-xs text-ink rounded px-2 py-1.5 font-mono w-32 focus:outline-none focus:border-brand-blue"
               />
               <button
                 onClick={runRegime}
@@ -268,27 +268,27 @@ export function Models() {
             {regimeResult && (
               <div className="space-y-4">
                 <div className="flex items-center gap-3">
-                  <span className="text-sm text-gray-400">Current Regime:</span>
+                  <span className="text-sm text-ink-muted">Current Regime:</span>
                   <span className={clsx(
                     'text-lg font-bold font-mono',
                     String(regimeResult.regime).toLowerCase().includes('bull') ? 'text-brand-green'
                     : String(regimeResult.regime).toLowerCase().includes('bear') ? 'text-brand-red'
                     : String(regimeResult.regime).toLowerCase().includes('vol') ? 'text-brand-orange'
-                    : 'text-gray-200',
+                    : 'text-ink',
                   )}>
                     {String(regimeResult.regime)}
                   </span>
                 </div>
                 {regimeProbs && (
                   <div className="space-y-2">
-                    <div className="text-xs text-gray-400 uppercase tracking-wider">Probability Breakdown</div>
+                    <div className="text-xs text-ink-muted uppercase tracking-wider">Probability Breakdown</div>
                     {Object.entries(regimeProbs)
                       .sort(([, a], [, b]) => b - a)
                       .map(([regime, prob]) => (
                         <div key={regime} className="space-y-1">
                           <div className="flex items-center justify-between text-xs">
-                            <span className="text-gray-300">{regime}</span>
-                            <span className="font-mono text-gray-400">{(prob * 100).toFixed(1)}%</span>
+                            <span className="text-ink-muted">{regime}</span>
+                            <span className="font-mono text-ink-muted">{(prob * 100).toFixed(1)}%</span>
                           </div>
                           <div className="h-1.5 bg-surface-elevated rounded-full overflow-hidden">
                             <div
@@ -317,13 +317,13 @@ export function Models() {
           <CardHeader title="Sentiment Analysis" icon={<Brain size={14} />} />
           <CardBody className="space-y-4">
             <div>
-              <label className="block text-xs text-gray-400 mb-2 uppercase tracking-wider">News Text</label>
+              <label className="block text-xs text-ink-muted mb-2 uppercase tracking-wider">News Text</label>
               <textarea
                 value={sentimentText}
                 onChange={(e) => setSentimentText(e.target.value)}
                 rows={4}
                 placeholder="Enter news headline or article text..."
-                className="w-full bg-surface-elevated border border-surface-border text-xs text-gray-200 rounded px-3 py-2 font-mono focus:outline-none focus:border-brand-blue resize-none"
+                className="w-full bg-surface-elevated border border-surface-border text-xs text-ink rounded px-3 py-2 font-mono focus:outline-none focus:border-brand-blue resize-none"
               />
             </div>
             <button
@@ -347,14 +347,14 @@ export function Models() {
                     }
                   />
                   {sentimentResult.score != null && (
-                    <span className="text-sm font-mono font-bold text-gray-200">
+                    <span className="text-sm font-mono font-bold text-ink">
                       Score: {Number(sentimentResult.score).toFixed(3)}
                     </span>
                   )}
                 </div>
                 {Array.isArray(sentimentResult.entities) && (
                   <div>
-                    <div className="text-xs text-gray-400 mb-1">Entities</div>
+                    <div className="text-xs text-ink-muted mb-1">Entities</div>
                     <div className="flex flex-wrap gap-1.5">
                       {(sentimentResult.entities as string[]).map((e, i) => (
                         <Tag key={i} label={e} color="blue" />

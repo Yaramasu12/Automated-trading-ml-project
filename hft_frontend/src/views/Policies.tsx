@@ -26,7 +26,7 @@ const STATUS_ACTIVE_CLASS: Record<PolicyStatus, string> = {
   paper:         'bg-brand-cyan/20 border-brand-cyan/40 text-brand-cyan',
   live_canary:   'bg-brand-orange/20 border-brand-orange/40 text-brand-orange',
   live_approved: 'bg-brand-green/20 border-brand-green/40 text-brand-green',
-  disabled:      'bg-gray-700/40 border-gray-600/40 text-gray-400',
+  disabled:      'bg-gray-700/40 border-gray-600/40 text-ink-muted',
 }
 
 const NEXT_STATUS: Record<PolicyStatus, PolicyStatus | null> = {
@@ -115,14 +115,14 @@ export function Policies() {
         <div className="flex items-center gap-2">
           <FlaskConical size={16} className="text-brand-cyan" />
           <div>
-            <h1 className="text-lg font-bold text-gray-100">RL Policy Registry</h1>
-            <p className="text-xs text-gray-500 mt-0.5">Multi-agent reinforcement learning · promotion lifecycle</p>
+            <h1 className="text-lg font-bold text-ink">RL Policy Registry</h1>
+            <p className="text-xs text-ink-faint mt-0.5">Multi-agent reinforcement learning · promotion lifecycle</p>
           </div>
         </div>
         <button
           onClick={load}
           disabled={loading}
-          className="flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-surface-elevated border border-surface-border text-xs text-gray-400 hover:text-gray-200 transition-colors"
+          className="flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-surface-elevated border border-surface-border text-xs text-ink-muted hover:text-ink transition-colors"
         >
           {loading ? <Loader2 size={12} className="animate-spin" /> : <RefreshCw size={12} />}
           Refresh
@@ -150,19 +150,19 @@ export function Policies() {
                     'px-3 py-2 rounded-lg text-xs font-medium border transition-colors whitespace-nowrap',
                     filterStatus === stage
                       ? STATUS_ACTIVE_CLASS[stage]
-                      : 'bg-surface-elevated border-surface-border text-gray-400 hover:text-gray-200',
+                      : 'bg-surface-elevated border-surface-border text-ink-muted hover:text-ink',
                   )}
                 >
                   <div className="capitalize">{stage.replace('_', ' ')}</div>
                   <div className={clsx(
                     'text-center font-bold font-mono mt-0.5',
-                    stageCounts[stage] > 0 ? 'text-gray-100' : 'text-gray-600',
+                    stageCounts[stage] > 0 ? 'text-ink' : 'text-ink-faint',
                   )}>
                     {stageCounts[stage]}
                   </div>
                 </button>
                 {idx < PIPELINE_STAGES.length - 1 && (
-                  <div className="mx-1 text-gray-700">→</div>
+                  <div className="mx-1 text-ink-faint">→</div>
                 )}
               </div>
             ))}
@@ -178,7 +178,7 @@ export function Policies() {
             'px-3 py-1.5 rounded-md text-xs font-medium border transition-colors',
             filterStatus === 'all'
               ? 'bg-brand-cyan/15 border-brand-cyan/30 text-brand-cyan'
-              : 'text-gray-400 hover:text-gray-200 border-transparent',
+              : 'text-ink-muted hover:text-ink border-transparent',
           )}
         >
           All ({policies.length})
@@ -191,7 +191,7 @@ export function Policies() {
               'px-3 py-1.5 rounded-md text-xs font-medium border transition-colors capitalize',
               filterStatus === stage
                 ? 'bg-brand-cyan/15 border-brand-cyan/30 text-brand-cyan'
-                : 'text-gray-400 hover:text-gray-200 border-transparent',
+                : 'text-ink-muted hover:text-ink border-transparent',
             )}
           >
             {stage.replace('_', ' ')} ({stageCounts[stage]})
@@ -202,11 +202,11 @@ export function Policies() {
       {/* Policy Cards */}
       {loading ? (
         <div className="flex items-center justify-center py-12">
-          <Loader2 size={20} className="animate-spin text-gray-500" />
+          <Loader2 size={20} className="animate-spin text-ink-faint" />
         </div>
       ) : filtered.length === 0 ? (
-        <div className="text-center py-12 text-gray-500">
-          <FlaskConical size={32} className="mx-auto mb-3 text-gray-700" />
+        <div className="text-center py-12 text-ink-faint">
+          <FlaskConical size={32} className="mx-auto mb-3 text-ink-faint" />
           <p className="text-sm">No policies {filterStatus !== 'all' ? `in ${filterStatus} stage` : 'registered'}</p>
         </div>
       ) : (
@@ -221,7 +221,7 @@ export function Policies() {
                   <div className="flex items-start justify-between gap-3">
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center gap-2 flex-wrap mb-1">
-                        <span className="text-sm font-semibold text-gray-100 font-mono">{policy.policy_id}</span>
+                        <span className="text-sm font-semibold text-ink font-mono">{policy.policy_id}</span>
                         <Tag
                           label={policy.status.replace('_', ' ')}
                           color={STATUS_COLOR[policy.status] as 'green' | 'red' | 'blue' | 'yellow' | 'purple' | 'cyan' | 'orange' | 'gray'}
@@ -233,10 +233,10 @@ export function Policies() {
                           <Tag label={gate.approved ? 'gate ready' : 'gate blocked'} color={gate.approved ? 'green' : 'red'} />
                         )}
                       </div>
-                      <div className="text-xs text-gray-400 mb-3">
+                      <div className="text-xs text-ink-muted mb-3">
                         {policy.name || policy.policy_id}
                         {policy.promoted_at && (
-                          <span className="ml-2 text-gray-600">Promoted: {policy.promoted_at.slice(0, 10)}</span>
+                          <span className="ml-2 text-ink-faint">Promoted: {policy.promoted_at.slice(0, 10)}</span>
                         )}
                       </div>
                       {nextStatus && gate && !gate.approved && (
@@ -255,7 +255,7 @@ export function Policies() {
                                 ? 'bg-brand-green/20 border-brand-green/30 text-brand-green'
                                 : i === stageIdx
                                   ? 'bg-brand-cyan/20 border-brand-cyan/30 text-brand-cyan'
-                                  : 'bg-surface-elevated border-surface-border text-gray-600',
+                                  : 'bg-surface-elevated border-surface-border text-ink-faint',
                             )}>
                               {i < stageIdx
                                 ? <CheckCircle size={10} />
@@ -288,7 +288,7 @@ export function Policies() {
                         <button
                           onClick={() => handleRollback(policy)}
                           disabled={rolling[policy.policy_id]}
-                          className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-md bg-surface-elevated border border-surface-border text-gray-400 text-xs hover:text-gray-200 disabled:opacity-50 transition-colors"
+                          className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-md bg-surface-elevated border border-surface-border text-ink-muted text-xs hover:text-ink disabled:opacity-50 transition-colors"
                         >
                           {rolling[policy.policy_id] ? <Loader2 size={11} className="animate-spin" /> : <RotateCcw size={11} />}
                           Rollback

@@ -119,7 +119,7 @@ export function Tournament() {
           <button
             onClick={loadCatalog}
             disabled={loadingCatalog}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-surface-elevated border border-surface-border text-xs text-gray-400 hover:text-gray-200 disabled:opacity-50"
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-surface-elevated border border-surface-border text-xs text-ink-muted hover:text-ink disabled:opacity-50"
           >
             {loadingCatalog ? <Loader2 size={12} className="animate-spin" /> : <RefreshCw size={12} />}
             Catalog
@@ -139,31 +139,31 @@ export function Tournament() {
         <CardBody className="space-y-4">
           <div className="grid grid-cols-1 md:grid-cols-[1fr_160px_160px_auto] gap-3">
             <label className="space-y-1">
-              <span className="text-xs text-gray-400 uppercase tracking-wider">Underlyings</span>
+              <span className="text-xs text-ink-muted uppercase tracking-wider">Underlyings</span>
               <input
                 value={underlyings}
                 onChange={(e) => setUnderlyings(e.target.value)}
-                className="w-full bg-surface-elevated border border-surface-border text-xs text-gray-200 rounded-md px-3 py-2 font-mono focus:outline-none focus:border-brand-orange"
+                className="w-full bg-surface-elevated border border-surface-border text-xs text-ink rounded-md px-3 py-2 font-mono focus:outline-none focus:border-brand-orange"
               />
             </label>
             <label className="space-y-1">
-              <span className="text-xs text-gray-400 uppercase tracking-wider">Start</span>
+              <span className="text-xs text-ink-muted uppercase tracking-wider">Start</span>
               <input
                 type="date"
                 value={start}
                 onChange={(e) => setStart(e.target.value)}
-                className="w-full bg-surface-elevated border border-surface-border text-xs text-gray-200 rounded-md px-3 py-2 font-mono focus:outline-none focus:border-brand-orange"
+                className="w-full bg-surface-elevated border border-surface-border text-xs text-ink rounded-md px-3 py-2 font-mono focus:outline-none focus:border-brand-orange"
               />
             </label>
             <label className="space-y-1">
-              <span className="text-xs text-gray-400 uppercase tracking-wider">Days</span>
+              <span className="text-xs text-ink-muted uppercase tracking-wider">Days</span>
               <input
                 type="number"
                 min={5}
                 max={252}
                 value={days}
                 onChange={(e) => setDays(Number(e.target.value))}
-                className="w-full bg-surface-elevated border border-surface-border text-xs text-gray-200 rounded-md px-3 py-2 font-mono focus:outline-none focus:border-brand-orange"
+                className="w-full bg-surface-elevated border border-surface-border text-xs text-ink rounded-md px-3 py-2 font-mono focus:outline-none focus:border-brand-orange"
               />
             </label>
             <button
@@ -186,7 +186,7 @@ export function Tournament() {
                   onClick={() => setSelectedNames((current) => active ? current.filter((item) => item !== name) : [...current, name])}
                   className={clsx(
                     'px-2.5 py-1.5 rounded-md text-xs border transition-colors',
-                    active ? 'bg-brand-orange/15 border-brand-orange/30 text-brand-orange' : 'bg-surface-elevated border-surface-border text-gray-400 hover:text-gray-200',
+                    active ? 'bg-brand-orange/15 border-brand-orange/30 text-brand-orange' : 'bg-surface-elevated border-surface-border text-ink-muted hover:text-ink',
                   )}
                 >
                   {name}
@@ -226,7 +226,7 @@ export function Tournament() {
               <button
                 onClick={runChampionWalkForward}
                 disabled={wfLoading || !champion}
-                className="flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-surface-elevated border border-surface-border text-xs text-gray-400 hover:text-gray-200 disabled:opacity-50"
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-surface-elevated border border-surface-border text-xs text-ink-muted hover:text-ink disabled:opacity-50"
               >
                 {wfLoading ? <Loader2 size={12} className="animate-spin" /> : <RefreshCw size={12} />}
                 Walk-forward
@@ -253,7 +253,7 @@ export function Tournament() {
                 </div>
               </>
             ) : (
-              <div className="text-xs text-gray-500 text-center py-8">No champion selected</div>
+              <div className="text-xs text-ink-faint text-center py-8">No champion selected</div>
             )}
 
             {walkForward && (

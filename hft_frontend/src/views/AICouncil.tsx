@@ -133,7 +133,7 @@ export function AICouncil() {
           <button
             onClick={load}
             disabled={loading}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-surface-elevated border border-surface-border text-xs text-gray-400 hover:text-gray-200 disabled:opacity-50"
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-surface-elevated border border-surface-border text-xs text-ink-muted hover:text-ink disabled:opacity-50"
           >
             {loading ? <Loader2 size={12} className="animate-spin" /> : <RefreshCw size={12} />}
             Refresh
@@ -150,19 +150,19 @@ export function AICouncil() {
         <CardBody className="space-y-3">
           <div className="grid grid-cols-1 md:grid-cols-[1fr_180px_auto] gap-3">
             <label className="space-y-1">
-              <span className="text-xs text-gray-400 uppercase tracking-wider">Symbol Universe</span>
+              <span className="text-xs text-ink-muted uppercase tracking-wider">Symbol Universe</span>
               <input
                 value={symbols}
                 onChange={(e) => setSymbols(e.target.value)}
-                className="w-full bg-surface-elevated border border-surface-border text-xs text-gray-200 rounded-md px-3 py-2 font-mono focus:outline-none focus:border-brand-purple"
+                className="w-full bg-surface-elevated border border-surface-border text-xs text-ink rounded-md px-3 py-2 font-mono focus:outline-none focus:border-brand-purple"
               />
             </label>
             <label className="space-y-1">
-              <span className="text-xs text-gray-400 uppercase tracking-wider">Regime</span>
+              <span className="text-xs text-ink-muted uppercase tracking-wider">Regime</span>
               <select
                 value={regime}
                 onChange={(e) => setRegime(e.target.value)}
-                className="w-full bg-surface-elevated border border-surface-border text-xs text-gray-200 rounded-md px-3 py-2 font-mono focus:outline-none focus:border-brand-purple"
+                className="w-full bg-surface-elevated border border-surface-border text-xs text-ink rounded-md px-3 py-2 font-mono focus:outline-none focus:border-brand-purple"
               >
                 {['NEUTRAL', 'BULLISH', 'BEARISH', 'VOLATILE', 'TRENDING_UP', 'TRENDING_DOWN', 'EVENT_RISK'].map((r) => (
                   <option key={r} value={r}>{r}</option>
@@ -199,7 +199,7 @@ export function AICouncil() {
                     { key: 'agent_name', label: 'Agent', render: (_, row) => <span className="text-brand-purple font-semibold">{agentName(row)}</span> },
                     { key: 'action', label: 'Vote', render: (v) => <Tag label={String(v)} color={actionColor(String(v)) as 'green' | 'red' | 'yellow' | 'gray'} /> },
                     { key: 'confidence', label: 'Conf', align: 'right', render: (v) => pct(Number(v) * 100, 0) },
-                    { key: 'reasoning', label: 'Reasoning', render: (v) => <span className="text-xs text-gray-500 line-clamp-2">{String(v)}</span> },
+                    { key: 'reasoning', label: 'Reasoning', render: (v) => <span className="text-xs text-ink-faint line-clamp-2">{String(v)}</span> },
                   ]}
                   rows={voteRows}
                   keyFn={(row, i) => `${agentName(row)}-${i}`}
@@ -226,13 +226,13 @@ export function AICouncil() {
                     </div>
                     <div className="space-y-1">
                       {activeDecision.risk_critique.concerns.map((concern) => (
-                        <div key={concern} className="text-xs text-gray-400">{concern}</div>
+                        <div key={concern} className="text-xs text-ink-muted">{concern}</div>
                       ))}
                     </div>
                   </div>
                 ) : null}
                 {activeDecision.debate_summary && (
-                  <div className="rounded-lg bg-surface-elevated border border-surface-border p-3 text-xs text-gray-400">
+                  <div className="rounded-lg bg-surface-elevated border border-surface-border p-3 text-xs text-ink-muted">
                     {activeDecision.debate_summary}
                   </div>
                 )}
@@ -267,7 +267,7 @@ export function AICouncil() {
               { key: 'trace_id', label: 'Trace', render: (v) => <span className="text-brand-purple text-xs">{String(v).slice(0, 18)}</span> },
               { key: 'action', label: 'Action', render: (v) => <Tag label={String(v)} color={actionColor(String(v)) as 'green' | 'red' | 'yellow' | 'gray'} /> },
               { key: 'consensus_score', label: 'Consensus', align: 'right', render: (v) => pct(Number(v) * 100, 0) },
-              { key: 'ts', label: 'Time', render: (v, row) => <span className="text-xs text-gray-500">{fmtDateTime(String(v ?? row.timestamp ?? row.trace_id))}</span> },
+              { key: 'ts', label: 'Time', render: (v, row) => <span className="text-xs text-ink-faint">{fmtDateTime(String(v ?? row.timestamp ?? row.trace_id))}</span> },
             ]}
             rows={decisions}
             keyFn={(row) => row.trace_id}
