@@ -1074,7 +1074,14 @@ class TradingRuntime:
         from trading_platform.domain.models import Position
         for pos_data in self.db.load_positions(execution_mode=exec_mode):
             symbol = pos_data["symbol"]
-            instrument = self.instrument_master.get(symbol)
+            # instrument_master.get() RAISES KeyError for unknown symbols (it is
+            # not a dict.get). Expired option contracts are dropped from the
+            # master, so a persisted position/plan for one would crash startup —
+            # catch it and skip, matching the is-None guard's intent.
+            try:
+                instrument = self.instrument_master.get(symbol)
+            except KeyError:
+                instrument = None
             if instrument is None:
                 logger.warning("restore_state: unknown instrument %s — position skipped", symbol)
                 continue
@@ -1089,9 +1096,18 @@ class TradingRuntime:
         # ── Restore active exit plans ──────────────────────────────────────
         for plan_data in self.db.load_exit_plans(execution_mode=exec_mode):
             symbol = plan_data["symbol"]
-            instrument = self.instrument_master.get(symbol)
+            try:
+                instrument = self.instrument_master.get(symbol)
+            except KeyError:
+                instrument = None
             if instrument is None:
                 logger.warning("restore_state: unknown instrument %s — exit plan skipped", symbol)
+                # Expired/delisted contract lingering in the DB: drop its stale
+                # plan so it can't resurface every restart.
+                try:
+                    self.db.delete_exit_plans_for_symbol(symbol, execution_mode=exec_mode)
+                except Exception as exc:
+                    note_swallowed("restore_state.delete_unknown_exit_plan", exc)
                 continue
             # Guard: skip exit plans for positions that are no longer open.
             # Stale plans from previous sessions cause phantom sells against flat positions.
