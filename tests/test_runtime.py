@@ -340,6 +340,13 @@ class RuntimeTests(unittest.TestCase):
     def test_shadow_run_executes_only_in_simulated_paper(self):
         runtime = TradingRuntime()
         runtime.set_execution_mode("PAPER")
+        # This exercises the paper order-flow mechanism, not the directional
+        # policy. Directional/index-futures opening is blocked by default now
+        # (AGENT_DIRECTIONAL_ENABLED off → block_futures_opening), which would
+        # reject every candidate here; opt in so orders actually flow.
+        # RiskLimits is a frozen dataclass, so swap in a copy.
+        import dataclasses as _dc
+        runtime.risk_engine.limits = _dc.replace(runtime.risk_engine.limits, block_futures_opening=False)
         # Use multiple underlyings + strategies to reliably hit ≥1 signal
         result = runtime.shadow_run(
             {
@@ -363,6 +370,11 @@ class RuntimeTests(unittest.TestCase):
         runtime = TradingRuntime()
         before = runtime.monitoring_metrics()
         runtime.set_execution_mode("PAPER")
+        # Allow index-futures opening so orders flow (directional gate is off by
+        # default and would otherwise reject every candidate). See the note in
+        # test_shadow_run_executes_only_in_simulated_paper.
+        import dataclasses as _dc
+        runtime.risk_engine.limits = _dc.replace(runtime.risk_engine.limits, block_futures_opening=False)
         runtime.shadow_run(
             {
                 "underlyings": ["NIFTY", "RELIANCE", "BANKNIFTY"],
