@@ -358,8 +358,6 @@ class DecisionCycleOrchestrator:
             except Exception as exc:
                 logger.warning("decision cycle: neural service error: %s", exc)
 
-        quantum_result = None
-
         rl_advisory = self._run_marl_advisory(portfolio_state) if self._rt.settings.enable_marl_lab else {}
         if rl_advisory:
             result["marl"] = rl_advisory
