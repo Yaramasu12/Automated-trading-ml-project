@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 """EnsembleDecisionEngine — combines rule strategies, neural forecasts,
-agent votes, quantum optimizer, and RL advisory into a single typed decision.
+agent votes and RL advisory into a single typed decision.
 
 Never creates OrderIntent. Returns EnsembleOutput.
 """
@@ -16,13 +16,15 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# Regime-dependent weights for each source
+# Regime-dependent weights for each source. Quantum was removed (it was a
+# classical fallback with no edge); its former weight is folded into `rule` (the
+# deterministic strategy signal), keeping each regime's weights summed to 1.0.
 _REGIME_WEIGHTS: dict[str, dict[str, float]] = {
-    "TRENDING": {"rule": 0.35, "neural": 0.30, "agent": 0.20, "quantum": 0.10, "rl": 0.05},
-    "MEAN_REVERTING": {"rule": 0.30, "neural": 0.25, "agent": 0.25, "quantum": 0.15, "rl": 0.05},
-    "HIGH_VOLATILITY": {"rule": 0.40, "neural": 0.20, "agent": 0.25, "quantum": 0.10, "rl": 0.05},
-    "BREAKOUT": {"rule": 0.35, "neural": 0.30, "agent": 0.20, "quantum": 0.10, "rl": 0.05},
-    "unknown": {"rule": 0.40, "neural": 0.25, "agent": 0.20, "quantum": 0.10, "rl": 0.05},
+    "TRENDING": {"rule": 0.45, "neural": 0.30, "agent": 0.20, "rl": 0.05},
+    "MEAN_REVERTING": {"rule": 0.45, "neural": 0.25, "agent": 0.25, "rl": 0.05},
+    "HIGH_VOLATILITY": {"rule": 0.50, "neural": 0.20, "agent": 0.25, "rl": 0.05},
+    "BREAKOUT": {"rule": 0.45, "neural": 0.30, "agent": 0.20, "rl": 0.05},
+    "unknown": {"rule": 0.50, "neural": 0.25, "agent": 0.20, "rl": 0.05},
 }
 
 _NO_TRADE_THRESHOLD = 0.40     # weighted score must exceed this to PROCEED
@@ -120,28 +122,6 @@ class EnsembleDecisionEngine:
         agent_score = agent_confidence if agent_action == "PROCEED" else agent_confidence * 0.5
         reasoning.append(f"agent_score={agent_score:.2f}")
 
-        # Quantum: dual gate — requires both beats_baseline AND constraints_satisfied.
-        # A result that beats the classical objective but violates cardinality or
-        # liquidity constraints is penalised more harshly than one that merely
-        # underperforms (it signals a solver defect, not just a weak solution).
-        quantum_score = 0.5
-        if bb.quantum_result:
-            q = bb.quantum_result
-            if q.beats_baseline and q.constraints_satisfied:
-                quantum_score = 0.7   # ideal: better than baseline and basket is valid
-            elif not q.constraints_satisfied:
-                quantum_score = 0.2   # constraint violation — solver defect, strong penalty
-            else:
-                quantum_score = 0.3   # underperforms baseline but basket is valid
-        reasoning.append(
-            f"quantum_score={quantum_score:.2f}"
-            + (
-                f" (beats_baseline={bb.quantum_result.beats_baseline},"
-                f" constraints_satisfied={bb.quantum_result.constraints_satisfied})"
-                if bb.quantum_result else " (no_quantum_result)"
-            )
-        )
-
         # RL advisory — translate majority_action + majority_confidence into a score
         rl_advisory = bb.rl_advisory or {}
         majority_action = rl_advisory.get("majority_action")
@@ -159,7 +139,6 @@ class EnsembleDecisionEngine:
             weights["rule"] * rule_score
             + weights["neural"] * neural_score
             + weights["agent"] * agent_score
-            + weights["quantum"] * quantum_score
             + weights["rl"] * rl_score
         )
 
