@@ -4,6 +4,7 @@ import {
   FlaskConical, Loader2, RefreshCw, RotateCcw, TrendingUp, CheckCircle, AlertTriangle,
 } from 'lucide-react'
 import { Card, CardBody, CardHeader } from '../components/shared/Card'
+import { PageHeader } from '../components/shared/PageHeader'
 import { Tag } from '../components/shared/Badge'
 import { useStore } from '../store'
 import { listPolicies, promotePolicy, rollbackPolicy } from '../api'
@@ -108,26 +109,23 @@ export function Policies() {
     : policies.filter(p => p.status === filterStatus)
 
   return (
-    <div className="space-y-5">
+    <div className="space-y-6">
 
-      {/* Header */}
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-2">
-          <FlaskConical size={16} className="text-brand-cyan" />
-          <div>
-            <h1 className="text-lg font-bold text-ink">RL Policy Registry</h1>
-            <p className="text-xs text-ink-faint mt-0.5">Multi-agent reinforcement learning · promotion lifecycle</p>
-          </div>
-        </div>
-        <button
-          onClick={load}
-          disabled={loading}
-          className="flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-surface-elevated border border-surface-border text-xs text-ink-muted hover:text-ink transition-colors"
-        >
-          {loading ? <Loader2 size={12} className="animate-spin" /> : <RefreshCw size={12} />}
-          Refresh
-        </button>
-      </div>
+      <PageHeader
+        title="RL Policy Registry"
+        subtitle="Multi-agent reinforcement learning · promotion lifecycle"
+        icon={<FlaskConical size={18} />}
+        actions={
+          <button
+            onClick={load}
+            disabled={loading}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-surface-card border border-surface-border text-xs text-ink-muted hover:text-ink hover:border-surface-border-strong transition-all disabled:opacity-50"
+          >
+            {loading ? <Loader2 size={12} className="animate-spin" /> : <RefreshCw size={12} />}
+            <span className="hidden sm:inline">Refresh</span>
+          </button>
+        }
+      />
 
       {/* Advisory Notice */}
       <div className="flex items-center gap-2 px-4 py-3 rounded-lg bg-brand-yellow/5 border border-brand-yellow/20">

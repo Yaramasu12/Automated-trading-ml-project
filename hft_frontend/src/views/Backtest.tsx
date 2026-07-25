@@ -5,6 +5,7 @@ import {
 import { BookOpen, Loader2, Play } from 'lucide-react'
 import { clsx } from 'clsx'
 import { Card, CardBody, CardHeader } from '../components/shared/Card'
+import { PageHeader } from '../components/shared/PageHeader'
 import { Table } from '../components/shared/Table'
 import { Tag } from '../components/shared/Badge'
 import { useStore } from '../store'
@@ -73,16 +74,13 @@ export function Backtest() {
   ] : []
 
   return (
-    <div className="space-y-5">
+    <div className="space-y-6">
 
-      {/* Header */}
-      <div className="flex items-center gap-2">
-        <BookOpen size={16} className="text-brand-blue" />
-        <div>
-          <h1 className="text-lg font-bold text-ink">Backtest Engine</h1>
-          <p className="text-xs text-ink-faint mt-0.5">Historical strategy simulation with full trade log</p>
-        </div>
-      </div>
+      <PageHeader
+        title="Backtest Engine"
+        subtitle="Historical strategy simulation with full trade log"
+        icon={<BookOpen size={18} />}
+      />
 
       {/* Form */}
       <Card>

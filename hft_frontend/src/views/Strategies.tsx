@@ -2,6 +2,7 @@ import { useState, useCallback } from 'react'
 import { BarChart2, Loader2, TrendingUp, Award } from 'lucide-react'
 import { clsx } from 'clsx'
 import { Card, CardBody, CardHeader } from '../components/shared/Card'
+import { PageHeader } from '../components/shared/PageHeader'
 import { Table } from '../components/shared/Table'
 import { Tag } from '../components/shared/Badge'
 import { ShortVolPanel } from '../components/ShortVolPanel'
@@ -108,16 +109,13 @@ export function Strategies() {
   ]
 
   return (
-    <div className="space-y-5">
+    <div className="space-y-6">
 
-      {/* Header */}
-      <div className="flex items-center gap-2">
-        <BarChart2 size={16} className="text-brand-blue" />
-        <div>
-          <h1 className="text-lg font-bold text-ink">Strategy Evaluation</h1>
-          <p className="text-xs text-ink-faint mt-0.5">Leaderboard across instruments and lookback periods</p>
-        </div>
-      </div>
+      <PageHeader
+        title="Strategy Evaluation"
+        subtitle="Leaderboard across instruments and lookback periods"
+        icon={<BarChart2 size={18} />}
+      />
 
       {/* Live short-vol (VRP) strategy status */}
       <ShortVolPanel />
