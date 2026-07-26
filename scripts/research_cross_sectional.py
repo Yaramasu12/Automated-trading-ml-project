@@ -138,6 +138,7 @@ def walk_forward_xs(X, y, meta, rel, horizon, cost, n_splits=6):
     fold = len(uniq_t) // (n_splits + 1)
     oos_true, oos_p = [], []
     ls_daily: dict[int, list] = {}     # t -> list of (rel_return, weight)
+    per_date: list = []                # (probs, rel) per OOS date, for the permutation test
     for s in range(1, n_splits + 1):
         tr_t = set(uniq_t[: fold * s]); te_t = set(uniq_t[fold * s: fold * (s + 1)])
         tr = np.array([t in tr_t for t in tdx]); te = np.array([t in te_t for t in tdx])
@@ -159,6 +160,7 @@ def walk_forward_xs(X, y, meta, rel, horizon, cost, n_splits=6):
             # dollar-neutral long-short return, minus turnover cost each rebalance
             ls_ret = rr[longs].mean() - rr[shorts].mean() - 2 * cost
             ls_daily.setdefault(int(t), []).append(ls_ret)
+            per_date.append((probs, rr))
     if len(oos_true) < 500 or not ls_daily:
         return None
     auc = float(roc_auc_score(oos_true, oos_p))
@@ -170,8 +172,43 @@ def walk_forward_xs(X, y, meta, rel, horizon, cost, n_splits=6):
     mean = float(per.mean()); sd = float(per.std())
     sharpe = float(mean / sd * np.sqrt(periods_per_year)) if sd > 0 else 0.0
     ann = mean * periods_per_year
+    perm_p = _permutation_p(per_date, horizon, cost, sharpe)
     return {"oos_auc": auc, "oos_n": len(oos_true), "ls_ann": ann, "ls_sharpe": sharpe,
-            "ls_periods": len(per), "ls_mean_per_reb": mean, "positive": mean > 0}
+            "ls_periods": len(per), "ls_mean_per_reb": mean, "positive": mean > 0,
+            "perm_p": perm_p}
+
+
+def _ls_sharpe(per_date, horizon: int, cost: float, keys) -> float:
+    """Long-short Sharpe when each date's names are ranked by the supplied key."""
+    daily = []
+    for (_probs, rr), key in zip(per_date, keys):
+        k = max(1, len(key) // 5)
+        idx = np.argsort(key)
+        daily.append(rr[idx[-k:]].mean() - rr[idx[:k]].mean() - 2 * cost)
+    per = np.array(daily)[::horizon]
+    sd = per.std()
+    return float(per.mean() / sd * np.sqrt(250 / horizon)) if sd > 0 else 0.0
+
+
+def _permutation_p(per_date, horizon: int, cost: float, observed: float, n_perm: int = 2000) -> float:
+    """Fraction of random rankings that match or beat the observed Sharpe.
+
+    A long-short P&L is not evidence on its own. With a small universe the top
+    quintile is two or three names and there are only a few dozen non-overlapping
+    periods, so an ordinary run of luck clears "positive after costs" often. This
+    shuffles the predicted ranks within each date -- destroying any signal while
+    holding the dates, universe, returns and cost model fixed -- so the spread of
+    shuffled Sharpes is exactly the null the strategy has to beat.
+    """
+    if not per_date:
+        return 1.0
+    rng = np.random.default_rng(0)
+    hits = 0
+    for _ in range(n_perm):
+        keys = [rng.permutation(len(p)) for p, _ in per_date]
+        if _ls_sharpe(per_date, horizon, cost, keys) >= observed:
+            hits += 1
+    return hits / n_perm
 
 
 def main() -> int:
@@ -197,16 +234,36 @@ def main() -> int:
             logger.info("  (insufficient data for walk-forward)"); break
         if cost == 0.0:
             logger.info("  OOS rank AUC (beats-peers) : %.4f  (0.50 = no cross-sectional signal)", res["oos_auc"])
+            # What the ranking is worth before costs, and therefore the most you can
+            # afford to pay per leg. A strategy is only tradeable if this clears real
+            # Indian equity costs -- brokerage + STT + exchange fees + spread/impact,
+            # realistically 10-25 bps a leg on even liquid Nifty names.
+            gross_bps = res["ls_mean_per_reb"] * 1e4
+            logger.info("  gross alpha per rebalance  : %+.2f bps", gross_bps)
+            logger.info("  break-even cost per leg    : %.2f bps  <-- must exceed real costs",
+                        max(gross_bps / 2.0, 0.0))
             logger.info("  --- long-short (top vs bottom quintile), net of cost ---")
         tag = "PROFITABLE" if res["positive"] else "loses"
-        if cost >= 0.0010 and res["positive"] and res["ls_sharpe"] > 0.5:
+        # Three independent hurdles, all required. P&L alone is not evidence: with a
+        # small universe the quintiles are 2-3 names over a few dozen periods, and a
+        # run of luck clears "positive after costs" routinely. Ranking skill (AUC)
+        # says the model actually orders the cross-section, and the permutation
+        # p-value says the P&L is not what random ranking would have produced anyway.
+        if (cost >= 0.0010 and res["positive"]
+                and res["ls_sharpe"] > 0.5
+                and res["oos_auc"] > 0.52
+                and res["perm_p"] < 0.05):
             any_trade = True
-        logger.info("  cost=%.2f%%/leg  ann=%+.1f%%  Sharpe=%.2f  (%d rebalances)  -> %s",
-                    cost * 100, res["ls_ann"] * 100, res["ls_sharpe"], res["ls_periods"], tag)
+        logger.info("  cost=%.2f%%/leg  ann=%+.1f%%  Sharpe=%.2f  (%d rebalances)  "
+                    "shuffle p=%.3f  -> %s",
+                    cost * 100, res["ls_ann"] * 100, res["ls_sharpe"],
+                    res["ls_periods"], res["perm_p"], tag)
     logger.info("=" * 64)
     logger.info("VERDICT: %s", (
-        "CROSS-SECTIONAL EDGE survives costs — worth building" if any_trade
-        else "no tradeable cross-sectional edge in this universe"))
+        "CROSS-SECTIONAL EDGE survives costs AND beats a shuffled null — worth building"
+        if any_trade else
+        "no tradeable cross-sectional edge in this universe "
+        "(needs net-positive AND rank AUC > 0.52 AND shuffle p < 0.05)"))
     return 0 if any_trade else 1
 
 
