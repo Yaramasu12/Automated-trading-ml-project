@@ -109,6 +109,57 @@ class RiskEngineTests(unittest.TestCase):
         self.assertFalse(decision.approved)
         self.assertEqual(decision.reason, "near_expiry_gamma_exceeds_limit")
 
+    def _expiry_day_decision(self, now: datetime) -> str:
+        """Evaluate an expiry-day opening trade at `now` and return the reject reason."""
+        option = self.master.select_option("NIFTY", date(2026, 1, 8), 22500, OptionType.CE)
+        intent = self._intent(option, Side.BUY, 1, 120)
+        decision = RiskEngine(RiskLimits(max_gamma_near_expiry=0.02)).evaluate(
+            intent,
+            self.snapshot,
+            now,
+            ExecutionMode.BACKTEST,
+            gamma_exposure=0.03,
+        )
+        self.assertFalse(decision.approved)
+        return decision.reason
+
+    def test_expiry_day_cutoff_reads_decision_timestamp_not_wall_clock(self):
+        """The cutoff must follow the timestamp passed in, not when the code runs.
+
+        Regression: this rule read now_ist().hour, so an expiry-day decision changed
+        outcome depending on the wall clock — the same backtest produced different
+        results before and after 14:00 IST. Both assertions below are stable at any
+        hour of any day precisely because the timestamp is now honoured.
+        """
+        self.assertEqual(
+            self._expiry_day_decision(datetime(2026, 1, 8, 10, 0)),
+            "near_expiry_gamma_exceeds_limit",
+            "before the 14:00 cutoff the gamma rule should decide",
+        )
+        self.assertEqual(
+            self._expiry_day_decision(datetime(2026, 1, 8, 15, 0)),
+            "expiry_day_open_cutoff",
+            "after the 14:00 cutoff no new expiry-day position may open",
+        )
+
+    def test_expiry_day_cutoff_normalises_utc_to_ist(self):
+        """The runtime passes UTC, so the hour must be converted before comparing.
+
+        runtime.py defaults `now` to datetime.now(timezone.utc). 09:00 UTC is 14:30 IST
+        — past the cutoff — while 04:00 UTC is 09:30 IST and is not. Comparing a raw
+        UTC hour against an IST cutoff would get both of these wrong.
+        """
+        self.assertEqual(
+            self._expiry_day_decision(datetime(2026, 1, 8, 9, 0, tzinfo=timezone.utc)),
+            "expiry_day_open_cutoff",
+            "09:00 UTC is 14:30 IST, which is past the cutoff",
+        )
+        self.assertEqual(
+            self._expiry_day_decision(datetime(2026, 1, 8, 4, 0, tzinfo=timezone.utc)),
+            "near_expiry_gamma_exceeds_limit",
+            "04:00 UTC is 09:30 IST, comfortably before the cutoff",
+        )
+
     def test_rejects_correlated_exposure_breach(self):
         instrument = self.master.get("RELIANCE")
         intent = self._intent(instrument, Side.BUY, 1, 2800)

@@ -6,7 +6,7 @@ from datetime import datetime
 from trading_platform.domain.enums import ExecutionMode, InstrumentType, OptionType, Side
 from trading_platform.domain.models import OrderIntent
 from trading_platform.portfolio.ledger import PortfolioSnapshot
-from trading_platform.agent.market_hours import now_ist
+from trading_platform.agent.market_hours import to_ist
 
 
 @dataclass(frozen=True)
@@ -147,12 +147,16 @@ class RiskEngine:
             return RiskDecision(False, "naked_option_selling_blocked", 0.95)
 
         if instrument.expiry is not None:
-            days_to_expiry = (instrument.expiry - now.date()).days
+            now_local = to_ist(now)
+            days_to_expiry = (instrument.expiry - now_local.date()).days
             if days_to_expiry < 0:
                 return RiskDecision(False, "contract_expired", 1.0)
             if (
                 days_to_expiry == 0
-                and now_ist().hour >= self.limits.expiry_day_open_cutoff_hour
+                # Must read the decision timestamp, not the wall clock. Using now_ist()
+                # here made the outcome depend on when the code ran, so the same
+                # backtest returned different results before and after 14:00 IST.
+                and now_local.hour >= self.limits.expiry_day_open_cutoff_hour
                 and intent.signal.metadata.get("opens_position", True)
             ):
                 return RiskDecision(False, "expiry_day_open_cutoff", 0.85)

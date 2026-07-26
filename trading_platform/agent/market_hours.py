@@ -52,6 +52,19 @@ def now_ist() -> datetime:
     return datetime.now(IST)
 
 
+def to_ist(dt: datetime) -> datetime:
+    """Normalise a timestamp to IST for market-hours comparisons.
+
+    Aware timestamps are converted; naive ones are assumed to be IST already, which
+    is the convention the rest of this module follows (``market_status`` reads
+    ``dt.time()`` directly). Use this whenever a caller-supplied timestamp is compared
+    against an IST clock time — the runtime passes UTC (``datetime.now(timezone.utc)``)
+    while tests and backtests pass naive IST, so ``.hour`` is only meaningful after
+    normalising.
+    """
+    return dt.astimezone(IST) if dt.tzinfo is not None else dt
+
+
 def is_trading_day(d: date | None = None) -> bool:
     d = d or now_ist().date()
     if d.year > _MAX_HOLIDAY_YEAR:
