@@ -578,12 +578,17 @@ class ExecutionScheduler:
             if status_fn is None:
                 break
             try:
-                last_status = await loop.run_in_executor(None, status_fn, broker_order_id)
+                status = await loop.run_in_executor(None, status_fn, broker_order_id)
             except Exception as exc:
                 logger.warning("Order-status poll error for %s: %s", broker_order_id, exc)
                 continue
-            if not last_status:
+            if not status:
+                # Transient gap in the order-status feed. Keep the last status we did
+                # get rather than overwriting it with nothing: at timeout it is the
+                # only evidence of a partial fill, and dropping it books no trade for
+                # a position that really exists at the broker.
                 continue
+            last_status = status
             state = str(last_status.get("state", "")).lower()
             if state == "complete":
                 avg_price = float(last_status.get("average_price") or 0.0)

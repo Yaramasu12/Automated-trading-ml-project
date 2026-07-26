@@ -13,7 +13,9 @@ Covers the money-path defects:
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import tempfile
+import time
 import unittest
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -87,18 +89,49 @@ def _scheduler(broker, tmpdir: str, portfolio: PortfolioLedger | None = None,
     return sched
 
 
+@contextlib.contextmanager
+def _scheduler_in_tmpdir(broker, portfolio: PortfolioLedger | None = None, get_mode=None):
+    """Scheduler on a throwaway OMS db, closed before the directory is removed.
+
+    Windows refuses to unlink a file that still has an open handle, so leaving the
+    SQLite connection open makes TemporaryDirectory cleanup raise PermissionError
+    and masks whatever the test actually asserted.  POSIX allows the unlink, which
+    is why CI never sees it.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        sched = _scheduler(broker, tmp, portfolio, get_mode)
+        try:
+            yield sched
+        finally:
+            sched.oms.close()
+
+
+async def _wait_for(predicate, timeout: float = 5.0) -> None:
+    """Poll `predicate` on a wall-clock budget until it is true or `timeout` passes.
+
+    Counting iterations of asyncio.sleep(0.01) is not a time budget: on Windows the
+    loop returns early enough that a nominal "3 second" wait of 300 iterations can
+    elapse in a fraction of that, racing the scheduler's own _TRACK_TIMEOUT_SECONDS
+    deadline.  time.monotonic() is the clock the deadline is really measured against.
+    """
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return
+        await asyncio.sleep(0.01)
+
+
 class LiveFillTrackingTests(unittest.IsolatedAsyncioTestCase):
     """C1/M3: acknowledged orders must be tracked into the ledger."""
 
     async def test_acknowledged_order_books_fill_when_broker_completes(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            lot = _MASTER.get("RELIANCE").lot_size
-            broker = _AckThenStatusBroker([
-                {"state": "open", "average_price": 0.0, "filled_units": 0, "message": ""},
-                {"state": "complete", "average_price": 2805.0, "filled_units": 2 * lot, "message": ""},
-            ])
-            portfolio = PortfolioLedger(10_000_000)
-            sched = _scheduler(broker, tmp, portfolio)
+        lot = _MASTER.get("RELIANCE").lot_size
+        broker = _AckThenStatusBroker([
+            {"state": "open", "average_price": 0.0, "filled_units": 0, "message": ""},
+            {"state": "complete", "average_price": 2805.0, "filled_units": 2 * lot, "message": ""},
+        ])
+        portfolio = PortfolioLedger(10_000_000)
+        with _scheduler_in_tmpdir(broker, portfolio) as sched:
             fills: list[Trade] = []
 
             async def on_fill(trade, intent):
@@ -106,10 +139,7 @@ class LiveFillTrackingTests(unittest.IsolatedAsyncioTestCase):
 
             sched.register_fill_callback(on_fill)
             await sched._submit_to_broker(_intent(quantity=2))
-            for _ in range(200):
-                if fills:
-                    break
-                await asyncio.sleep(0.01)
+            await _wait_for(lambda: bool(fills))
 
             self.assertEqual(len(fills), 1, "acknowledged order never reached the ledger")
             self.assertEqual(fills[0].quantity, 2)
@@ -117,24 +147,25 @@ class LiveFillTrackingTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("RELIANCE", portfolio.position_symbols())
 
     async def test_unresolved_order_raises_oms_alarm(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            broker = _AckThenStatusBroker([])  # order book never answers
-            sched = _scheduler(broker, tmp)
+        broker = _AckThenStatusBroker([])  # order book never answers
+        with _scheduler_in_tmpdir(broker) as sched:
             await sched._submit_to_broker(_intent())
-            await asyncio.sleep(0.5)
+            await _wait_for(
+                lambda: any(e["event_type"] == "fill_unresolved"
+                            for e in sched.oms.recent_events(50))
+            )
 
             events = [e["event_type"] for e in sched.oms.recent_events(50)]
             self.assertIn("fill_unresolved", events)
             self.assertEqual(sched.stats["unresolved_orders"], 1)
 
     async def test_partial_fill_at_timeout_books_filled_portion(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            lot = _MASTER.get("RELIANCE").lot_size
-            broker = _AckThenStatusBroker(
-                [{"state": "open", "average_price": 2802.0, "filled_units": 1 * lot, "message": ""}] * 100
-            )
-            portfolio = PortfolioLedger(10_000_000)
-            sched = _scheduler(broker, tmp, portfolio)
+        lot = _MASTER.get("RELIANCE").lot_size
+        broker = _AckThenStatusBroker(
+            [{"state": "open", "average_price": 2802.0, "filled_units": 1 * lot, "message": ""}] * 100
+        )
+        portfolio = PortfolioLedger(10_000_000)
+        with _scheduler_in_tmpdir(broker, portfolio) as sched:
             fills: list[Trade] = []
 
             async def on_fill(trade, intent):
@@ -142,10 +173,7 @@ class LiveFillTrackingTests(unittest.IsolatedAsyncioTestCase):
 
             sched.register_fill_callback(on_fill)
             await sched._submit_to_broker(_intent(quantity=3))
-            for _ in range(300):
-                if fills:
-                    break
-                await asyncio.sleep(0.01)
+            await _wait_for(lambda: bool(fills))
 
             self.assertEqual(len(fills), 1)
             self.assertEqual(fills[0].quantity, 1, "partial fill must book only the filled lots")
@@ -154,10 +182,9 @@ class LiveFillTrackingTests(unittest.IsolatedAsyncioTestCase):
 class ModeStampAndDedupTests(unittest.IsolatedAsyncioTestCase):
     async def test_mode_switch_rejects_stale_intent(self):
         """H3: an intent enqueued under PAPER must not execute after switching to LIVE."""
-        with tempfile.TemporaryDirectory() as tmp:
-            mode = {"value": "PAPER"}
-            broker = _AckThenStatusBroker([])
-            sched = _scheduler(broker, tmp, get_mode=lambda: mode["value"])
+        mode = {"value": "PAPER"}
+        broker = _AckThenStatusBroker([])
+        with _scheduler_in_tmpdir(broker, get_mode=lambda: mode["value"]) as sched:
             intent = _intent()
             await sched.enqueue(intent)
             self.assertEqual(intent.signal.metadata["execution_mode"], "PAPER")
@@ -171,9 +198,8 @@ class ModeStampAndDedupTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_duplicate_key_suppressed_at_dequeue(self):
         """H5: a key already submitted to the broker is not submitted again."""
-        with tempfile.TemporaryDirectory() as tmp:
-            broker = _AckThenStatusBroker([])
-            sched = _scheduler(broker, tmp)
+        broker = _AckThenStatusBroker([])
+        with _scheduler_in_tmpdir(broker) as sched:
             intent = _intent(key="dup-key-1")
             sched.oms.append(event_type="broker_submitted", order_id="dup-key-1",
                              idempotency_key="dup-key-1", symbol="RELIANCE")
