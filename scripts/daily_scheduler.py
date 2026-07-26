@@ -341,9 +341,18 @@ def _retrain_bars() -> tuple[dict, str] | None:
     from scripts.train_return_forecaster import DEFAULT_SYMBOLS, HIST_DIR, fetch_angel, fetch_csv
 
     if load_settings().angel_one_configured:
-        return fetch_angel(DEFAULT_SYMBOLS, RETRAIN_DAYS, RETRAIN_INTERVAL), "angel"
+        try:
+            fresh = fetch_angel(DEFAULT_SYMBOLS, RETRAIN_DAYS, RETRAIN_INTERVAL)
+        except Exception as exc:
+            logger.warning("Angel One fetch failed (%s) — falling back to cached candles", exc)
+            fresh = {}
+        if fresh:
+            return fresh, "angel"
+        # Angel One's TOTP session has to be re-established daily and does fail —
+        # expired session, clock drift, rate limits. Yesterday's candles are a far
+        # better basis for tonight's verdict than skipping the run entirely.
+        logger.warning("Angel One returned no series — falling back to cached candles")
     if any(HIST_DIR.glob(f"*__{RETRAIN_INTERVAL}.csv")):
-        logger.info("No Angel One credentials — re-validating against the cached candles")
         return fetch_csv(None, RETRAIN_INTERVAL), "csv_cache"
     return None
 
@@ -438,7 +447,7 @@ def _intraday_symbols() -> list[str]:
     credentials raises SystemExit, which would take the whole scheduler down —
     hence the split rather than always passing the full default list.
     """
-    from trading_platform.config import load_settings
+    from trading_platform.config import load_settings  # noqa: F401  (see _intraday_symbols)
     from scripts.train_intraday_forecaster import CACHE, DEFAULT_SYMBOLS
 
     if load_settings().angel_one_configured:
