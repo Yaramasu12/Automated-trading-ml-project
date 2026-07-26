@@ -7,6 +7,7 @@ Runs scheduled jobs every trading day:
   15:20 IST  — EOD auto square-off (NSE close is 15:30; give 10-min buffer)
   15:35 IST  — Stop live feed
   15:36 IST  — Save daily P&L report to the SQLite database
+  16:15 IST  — Re-validate the return forecaster on fresh candles
   23:25 IST  — MCX EOD square-off
 
 Run as a long-lived process (Docker service, systemd unit, or screen session):
@@ -48,8 +49,15 @@ _JOBS: list[tuple[int, int, str]] = [
     (15, 20, "eod_square_off"),        # equity EOD — NSE/BSE close at 15:30
     (15, 35, "stop_feed"),
     (15, 36, "daily_pnl_report"),
+    (16, 15, "model_retrain"),         # after the equity close, before MCX EOD
     (23, 25, "mcx_eod_square_off"),    # commodity EOD — MCX close at 23:30
 ]
+
+# Forward horizons (bars) the nightly re-validation sweeps. Mirrors the --sweep
+# list in scripts/train_return_forecaster.py.
+RETRAIN_HORIZONS = (1, 3, 5, 10)
+RETRAIN_DAYS = 750
+RETRAIN_INTERVAL = "ONE_DAY"
 
 def _now_ist() -> datetime:
     return datetime.now(IST)
@@ -313,12 +321,114 @@ def run_mcx_eod_square_off() -> None:
         logger.error("mcx_eod_square_off failed: %s", exc)
 
 
+def _retrain_bars() -> tuple[dict, str] | None:
+    """Load candles for re-validation: real Angel One data, else the CSV cache.
+
+    Synthetic bars are deliberately not an option here. Training on a random walk
+    is a useful honesty check when you run it by hand — the gate must reject it —
+    but a scheduled job doing it would file verdicts about noise alongside
+    verdicts about the market, and nothing downstream would tell them apart.
+    """
+    from trading_platform.config import load_settings
+    from scripts.train_return_forecaster import DEFAULT_SYMBOLS, HIST_DIR, fetch_angel, fetch_csv
+
+    if load_settings().angel_one_configured:
+        return fetch_angel(DEFAULT_SYMBOLS, RETRAIN_DAYS, RETRAIN_INTERVAL), "angel"
+    if any(HIST_DIR.glob(f"*__{RETRAIN_INTERVAL}.csv")):
+        logger.info("No Angel One credentials — re-validating against the cached candles")
+        return fetch_csv(None, RETRAIN_INTERVAL), "csv_cache"
+    return None
+
+
+def run_model_retrain() -> None:
+    """Re-validate the return forecaster against fresh candles after the close.
+
+    Promotion is the validation gate's decision, never this job's: the artifact
+    under models/ is written only when out-of-sample AUC clears
+    0.5 + max(0.02, 2·SE_null) and accuracy beats the majority baseline.  A
+    REJECTED verdict is a correct, expected outcome — daily-bar TA features have
+    shown no out-of-sample edge on this data — so it is recorded and left alone.
+    Nothing here retries a rejection with a weaker threshold.
+
+    Every horizon's verdict is written to model_runs whether it passed or failed,
+    so the record shows what was actually tried rather than only what survived.
+    """
+    logger.info("JOB: model_retrain — re-validating the return forecaster")
+    try:
+        from trading_platform.data.persistence import TradingDatabase
+        from trading_platform.neural.return_forecaster import GradientBoostedReturnForecaster
+        from scripts.train_return_forecaster import MODEL_PATH
+
+        loaded = _retrain_bars()
+        if loaded is None:
+            logger.warning(
+                "model_retrain skipped: no Angel One credentials and no cached candles under "
+                "data/historical. Nothing real to train on — refusing to train on synthetic data."
+            )
+            return
+        bars_by_symbol, source = loaded
+        if not bars_by_symbol:
+            logger.warning("model_retrain skipped: %s returned no usable series", source)
+            return
+
+        total_bars = sum(len(v) for v in bars_by_symbol.values())
+        logger.info("Re-validating on %d symbols / %d bars from %s",
+                    len(bars_by_symbol), total_bars, source)
+
+        db = TradingDatabase()
+        best: tuple[int, dict] | None = None
+        for horizon in RETRAIN_HORIZONS:
+            forecaster = GradientBoostedReturnForecaster(horizon=horizon)
+            accepted = forecaster.train_pooled(bars_by_symbol)
+            metrics = dict(forecaster.last_train_metrics or {})
+            metrics["source"] = source
+            db.save_model_run(
+                model_name="return_forecaster",
+                symbol="__POOLED__",
+                signal="accepted" if accepted else "rejected",
+                confidence=metrics.get("oos_auc"),
+                metadata=metrics,
+            )
+            logger.info("  horizon=%-3d %s (AUC=%s)", horizon,
+                        "ACCEPTED" if accepted else "rejected",
+                        f"{metrics['oos_auc']:.4f}" if "oos_auc" in metrics else "n/a")
+            if accepted and (best is None or metrics.get("oos_auc", 0.0) > best[1].get("oos_auc", 0.0)):
+                best = (horizon, metrics)
+
+        if best is None:
+            logger.info(
+                "model_retrain: no horizon showed validated edge — keeping the existing "
+                "artifact (if any) and continuing to serve the MA baseline. This is the "
+                "correct outcome, not a failure."
+            )
+            return
+
+        # Refit the winning horizon and persist it. save() records accepted=True in
+        # the metadata, which is what serving.py checks before it will load a model.
+        best_horizon, best_metrics = best
+        winner = GradientBoostedReturnForecaster(horizon=best_horizon)
+        if not winner.train_pooled(bars_by_symbol):
+            logger.warning("model_retrain: horizon %d did not re-validate on refit — not saving",
+                           best_horizon)
+            return
+        MODEL_PATH.parent.mkdir(parents=True, exist_ok=True)
+        winner.save(str(MODEL_PATH))
+        logger.info(
+            "model_retrain: PROMOTED horizon=%d (OOS AUC=%.4f) -> %s. "
+            "Restart the API to serve it; the running process loads models at startup.",
+            best_horizon, best_metrics.get("oos_auc", float("nan")), MODEL_PATH,
+        )
+    except Exception as exc:
+        logger.error("model_retrain failed: %s", exc, exc_info=True)
+
+
 _JOB_FNS = {
     "instrument_refresh": run_instrument_refresh,
     "start_feed": run_start_feed,
     "eod_square_off": run_eod_square_off,
     "stop_feed": run_stop_feed,
     "daily_pnl_report": run_daily_pnl_report,
+    "model_retrain": run_model_retrain,
     "mcx_eod_square_off": run_mcx_eod_square_off,
 }
 
