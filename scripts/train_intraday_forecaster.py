@@ -12,8 +12,12 @@ TA has no edge on this data and the system correctly refuses to trade it.
 Usage:
 
     # Sweep horizons (3/6/12 bars = 15/30/60 min) on real candles, keep+save the
-    # best VALIDATED one. Needs Angel One creds in .env:
+    # best VALIDATED one. Uses Angel One if creds are in .env, else previously
+    # cached candles under data/intraday_research (so this runs offline):
     python -m scripts.train_intraday_forecaster --sweep --save --days 60
+
+    # Re-validate from the cache explicitly, no network:
+    python -m scripts.train_intraday_forecaster --sweep --source cache --days 40
 
     # Explicit single horizon on a custom basket:
     python -m scripts.train_intraday_forecaster --horizon 3 --days 45 --save \
@@ -132,6 +136,13 @@ def fetch_synthetic(symbol: str, days: int) -> list[dict]:
 # ── Main ────────────────────────────────────────────────────────────────────────
 
 def _resolve_source(requested: str) -> str:
+    """'auto' -> angel if creds configured, else previously cached candles, else synthetic.
+
+    The cache step matters: without it 'auto' silently trained on a random walk even
+    when real candles were sitting in data/intraday_research, so the turnkey command
+    reported a REJECTED verdict about noise while looking like a verdict about the
+    market. Mirrors _resolve_source in train_return_forecaster.py.
+    """
     if requested != "auto":
         return requested
     try:
@@ -141,15 +152,25 @@ def _resolve_source(requested: str) -> str:
             return "angel"
     except Exception:
         pass
-    logger.warning("auto source: no creds -> SYNTHETIC random walk (expected verdict: REJECTED).")
+    if any(CACHE.glob("*__FIVE_MINUTE_*.npz")):
+        logger.info("auto source: no creds, but cached 5-min candles exist -> using REAL cached candles")
+        return "cache"
+    logger.warning("auto source: no creds and no cache -> SYNTHETIC random walk "
+                   "(expected verdict: REJECTED — there is no edge in noise)")
     return "synthetic"
 
 
 def _load_basket(symbols: list[str], source: str, days: int, save_cache: bool) -> dict[str, list[dict]]:
     out: dict[str, list[dict]] = {}
     for sym in symbols:
+        # 'cache' is 'angel' minus the network: fetch_angel serves the .npz before it
+        # looks at credentials, so uncached symbols are skipped rather than fatal.
+        if source == "cache" and not (CACHE / f"{sym}__FIVE_MINUTE_{days}d.npz").exists():
+            logger.warning("skip %s: no cached %dd candles", sym, days)
+            continue
         try:
-            bars = fetch_angel(sym, days, save_cache) if source == "angel" else fetch_synthetic(sym, days)
+            bars = (fetch_angel(sym, days, save_cache) if source in ("angel", "cache")
+                    else fetch_synthetic(sym, days))
         except SystemExit:
             raise
         except Exception as exc:
@@ -197,7 +218,7 @@ def _train_and_report(bars_by_symbol: dict, horizon: int, save: bool) -> tuple[b
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--source", choices=["auto", "angel", "synthetic"], default="auto")
+    ap.add_argument("--source", choices=["auto", "angel", "cache", "synthetic"], default="auto")
     ap.add_argument("--symbols", default="", help="comma-separated; default = liquid basket")
     ap.add_argument("--days", type=int, default=45, help="calendar days of 5-min history")
     ap.add_argument("--horizon", type=int, default=3, help="forward bars for the label (3=15min)")

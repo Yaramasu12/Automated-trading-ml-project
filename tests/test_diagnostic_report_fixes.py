@@ -76,19 +76,24 @@ class PersistenceDiagnosticFixTests(unittest.TestCase):
     def test_test_trades_are_flagged_and_filtered_from_default_analytics(self):
         with tempfile.TemporaryDirectory() as tmp:
             db = TradingDatabase(Path(tmp) / "trading.db")
-            now = datetime.now(timezone.utc)
-            db.save_trade(
-                Trade("t1", "o1", "RELIANCE", Side.BUY, 1, 100.0, 0.0, now, "manual_preview"),
-                execution_mode="PAPER",
-            )
-            db.save_trade(
-                Trade("t2", "o2", "RELIANCE", Side.BUY, 1, 100.0, 0.0, now, "equity_momentum"),
-                execution_mode="PAPER",
-            )
-            self.assertEqual(db.trade_count("PAPER"), 1)
-            self.assertEqual(db.trade_count("PAPER", include_test=True), 2)
-            self.assertEqual(len(db.trades(execution_mode="PAPER")), 1)
-            self.assertEqual(len(db.trades(execution_mode="PAPER", include_test=True)), 2)
+            # Windows cannot unlink a file that still has an open handle, so the
+            # connection has to go before TemporaryDirectory removes the directory.
+            try:
+                now = datetime.now(timezone.utc)
+                db.save_trade(
+                    Trade("t1", "o1", "RELIANCE", Side.BUY, 1, 100.0, 0.0, now, "manual_preview"),
+                    execution_mode="PAPER",
+                )
+                db.save_trade(
+                    Trade("t2", "o2", "RELIANCE", Side.BUY, 1, 100.0, 0.0, now, "equity_momentum"),
+                    execution_mode="PAPER",
+                )
+                self.assertEqual(db.trade_count("PAPER"), 1)
+                self.assertEqual(db.trade_count("PAPER", include_test=True), 2)
+                self.assertEqual(len(db.trades(execution_mode="PAPER")), 1)
+                self.assertEqual(len(db.trades(execution_mode="PAPER", include_test=True)), 2)
+            finally:
+                db.close()
 
 
 class RuntimeControlDiagnosticFixTests(unittest.TestCase):
