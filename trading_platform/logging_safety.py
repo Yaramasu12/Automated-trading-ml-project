@@ -120,10 +120,30 @@ _swallow_logger = _logging.getLogger("trading_platform.swallowed")
 
 
 def note_swallowed(component: str, exc: BaseException) -> None:
-    """Record a deliberately-swallowed exception (log + count). Never raises."""
+    """Record a deliberately-swallowed exception (log + count). Never raises.
+
+    Logged at WARNING, not DEBUG: nothing in this app's own startup calls
+    logging.basicConfig, so the root logger sits at Python's implicit default
+    (WARNING) — every note_swallowed() call was silently invisible in
+    container logs regardless of how many fired (confirmed 2026-07-28: 57
+    swallowed exceptions, zero corresponding log lines). The /health counter
+    still incremented, so this wasn't a correctness bug, just a total
+    monitoring blind spot on exactly the mechanism meant to prevent one.
+
+    Redaction is applied explicitly here rather than relying on the
+    SecretRedactionFilter installed on the root logger above: that filter is
+    attached via logger.addFilter(), which only runs when the ROOT logger
+    itself is asked to log a record directly. Records from this CHILD logger
+    reach root's handlers via propagation, which checks HANDLER-level
+    filters, not ancestor LOGGER-level ones — so that filter may not actually
+    apply to what note_swallowed logs. Redacting the exception text directly
+    here is correct regardless of that propagation subtlety.
+    """
     _SWALLOWED["count"] += 1
     try:
-        _swallow_logger.debug("swallowed[%s]: %s: %s", component, type(exc).__name__, exc)
+        _swallow_logger.warning(
+            "swallowed[%s]: %s: %s", component, type(exc).__name__, redact_secret_text(str(exc))
+        )
     except Exception:
         pass
 
