@@ -135,8 +135,8 @@ class NewsMacroAgent:
             "Assess macro/news event risk for the symbols above. "
             "Output JSON: action, confidence, reasoning, evidence_ids."
         )
-        resp = self._gw.generate("gemma4-e4b", _SYSTEM_BASE, prompt)
-        return _safe_vote(self.name, resp.get("model_id", "gemma4-e4b"), resp, ctx.evidence_ids)
+        resp = self._gw.generate(self._gw.fast_model, _SYSTEM_BASE, prompt)
+        return _safe_vote(self.name, resp.get("model_id", self._gw.fast_model), resp, ctx.evidence_ids)
 
 
 class QuantResearchAgent:
@@ -153,8 +153,8 @@ class QuantResearchAgent:
             "given the indicators above. "
             "Output JSON: action, confidence, reasoning, evidence_ids."
         )
-        resp = self._gw.generate("gemma4-31b", _SYSTEM_BASE, prompt)
-        return _safe_vote(self.name, resp.get("model_id", "gemma4-31b"), resp, ctx.evidence_ids)
+        resp = self._gw.generate(self._gw.primary_model, _SYSTEM_BASE, prompt)
+        return _safe_vote(self.name, resp.get("model_id", self._gw.primary_model), resp, ctx.evidence_ids)
 
 
 class TrendMomentumAgent:
@@ -170,8 +170,8 @@ class TrendMomentumAgent:
             "Assess trend and momentum strength using the momentum and trend_strength indicators above. "
             "Output JSON: action, confidence, reasoning, evidence_ids."
         )
-        resp = self._gw.generate("gemma4-e4b", _SYSTEM_BASE, prompt)
-        return _safe_vote(self.name, resp.get("model_id", "gemma4-e4b"), resp, ctx.evidence_ids)
+        resp = self._gw.generate(self._gw.fast_model, _SYSTEM_BASE, prompt)
+        return _safe_vote(self.name, resp.get("model_id", self._gw.fast_model), resp, ctx.evidence_ids)
 
 
 class MeanReversionAgent:
@@ -187,8 +187,8 @@ class MeanReversionAgent:
             "Assess mean reversion opportunity using rsi_14, bb_width, and realized_volatility above. "
             "Output JSON: action, confidence, reasoning, evidence_ids."
         )
-        resp = self._gw.generate("gemma4-e4b", _SYSTEM_BASE, prompt)
-        return _safe_vote(self.name, resp.get("model_id", "gemma4-e4b"), resp, ctx.evidence_ids)
+        resp = self._gw.generate(self._gw.fast_model, _SYSTEM_BASE, prompt)
+        return _safe_vote(self.name, resp.get("model_id", self._gw.fast_model), resp, ctx.evidence_ids)
 
 
 class BreakoutAgent:
@@ -204,8 +204,8 @@ class BreakoutAgent:
             "Detect breakout setups from consolidation ranges using volume_ratio and atr_14 above. "
             "Output JSON: action, confidence, reasoning, evidence_ids."
         )
-        resp = self._gw.generate("gemma4-e4b", _SYSTEM_BASE, prompt)
-        return _safe_vote(self.name, resp.get("model_id", "gemma4-e4b"), resp, ctx.evidence_ids)
+        resp = self._gw.generate(self._gw.fast_model, _SYSTEM_BASE, prompt)
+        return _safe_vote(self.name, resp.get("model_id", self._gw.fast_model), resp, ctx.evidence_ids)
 
 
 class GapEventAgent:
@@ -221,8 +221,8 @@ class GapEventAgent:
             "Assess gap fill or gap continuation potential based on overnight events and the indicators above. "
             "Output JSON: action, confidence, reasoning, evidence_ids."
         )
-        resp = self._gw.generate("gemma4-e4b", _SYSTEM_BASE, prompt)
-        return _safe_vote(self.name, resp.get("model_id", "gemma4-e4b"), resp, ctx.evidence_ids)
+        resp = self._gw.generate(self._gw.fast_model, _SYSTEM_BASE, prompt)
+        return _safe_vote(self.name, resp.get("model_id", self._gw.fast_model), resp, ctx.evidence_ids)
 
 
 class PairsStatArbAgent:
@@ -238,8 +238,8 @@ class PairsStatArbAgent:
             "Identify pairs trading and statistical arbitrage opportunities among the symbols above. "
             "Output JSON: action, confidence, reasoning, evidence_ids."
         )
-        resp = self._gw.generate("gemma4-e4b", _SYSTEM_BASE, prompt)
-        return _safe_vote(self.name, resp.get("model_id", "gemma4-e4b"), resp, ctx.evidence_ids)
+        resp = self._gw.generate(self._gw.fast_model, _SYSTEM_BASE, prompt)
+        return _safe_vote(self.name, resp.get("model_id", self._gw.fast_model), resp, ctx.evidence_ids)
 
 
 class OptionsVolatilityAgent:
@@ -287,8 +287,8 @@ class FuturesCarryAgent:
             "Evaluate futures carry, basis, and roll yield opportunities for the symbols above. "
             "Output JSON: action, confidence, reasoning, evidence_ids."
         )
-        resp = self._gw.generate("gemma4-e4b", _SYSTEM_BASE, prompt)
-        return _safe_vote(self.name, resp.get("model_id", "gemma4-e4b"), resp, ctx.evidence_ids)
+        resp = self._gw.generate(self._gw.fast_model, _SYSTEM_BASE, prompt)
+        return _safe_vote(self.name, resp.get("model_id", self._gw.fast_model), resp, ctx.evidence_ids)
 
 
 class HedgeBuilderAgent:
@@ -305,8 +305,8 @@ class HedgeBuilderAgent:
             "considering the portfolio drawdown and tail_risk_score above. "
             "Output JSON: action (HEDGE/HOLD), confidence, reasoning, evidence_ids."
         )
-        resp = self._gw.generate("gemma4-e4b", _SYSTEM_BASE, prompt)
-        return _safe_vote(self.name, resp.get("model_id", "gemma4-e4b"), resp, ctx.evidence_ids)
+        resp = self._gw.generate(self._gw.fast_model, _SYSTEM_BASE, prompt)
+        return _safe_vote(self.name, resp.get("model_id", self._gw.fast_model), resp, ctx.evidence_ids)
 
 
 # ── Evaluation agents (non-vote return types) ─────────────────────────────────
@@ -373,7 +373,7 @@ class ExecutionAnalystAgent:
             f"Symbols: {ctx.symbols}. Portfolio: {ctx.portfolio_state}. "
             "Analyze fill quality risk, spread, and volume. Advise on order slicing."
         )
-        resp = self._gw.generate("gemma4-e4b", system, prompt)
+        resp = self._gw.generate(self._gw.fast_model, system, prompt)
         pref = resp.get("preferred_order_type", "LIMIT")
         if pref not in ("MARKET", "LIMIT", "STOPLOSS"):
             pref = "LIMIT"
@@ -382,7 +382,7 @@ class ExecutionAnalystAgent:
             preferred_order_type=pref,
             max_slice_size_pct=float(resp.get("max_slice_size_pct", 1.0)),
             reasoning=str(resp.get("reasoning", ""))[:300],
-            model_id=resp.get("model_id", "gemma4-e4b"),
+            model_id=resp.get("model_id", self._gw.fast_model),
         )
 
 
@@ -404,7 +404,7 @@ class PortfolioManagerAgent:
             f"Portfolio: {ctx.portfolio_state}. "
             "Build optimal basket respecting capital and risk limits."
         )
-        resp = self._gw.generate("gemma4-26b-moe", system, prompt)
+        resp = self._gw.generate(self._gw.coordinator_model, system, prompt)
         return PortfolioProposal(
             preferred_basket=list(resp.get("preferred_basket", [])),
             expected_return_estimate=float(resp.get("expected_return_estimate", 0.0)),
@@ -412,5 +412,5 @@ class PortfolioManagerAgent:
             hedge_request=resp.get("hedge_request"),
             target_run_rate_ok=bool(resp.get("target_run_rate_ok", True)),
             reasoning=str(resp.get("reasoning", ""))[:300],
-            model_id=resp.get("model_id", "gemma4-26b-moe"),
+            model_id=resp.get("model_id", self._gw.coordinator_model),
         )

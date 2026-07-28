@@ -76,6 +76,9 @@ class LocalModelGateway:
         timeout: int = 15,
         max_tokens: int = 2048,
         rag_retriever: RAGRetriever | None = None,
+        primary_model: str = "gemma4-31b",
+        fast_model: str = "gemma4-e4b",
+        coordinator_model: str = "gemma4-26b-moe",
     ) -> None:
         self.runtime = runtime
         self.base_url = base_url.rstrip("/")
@@ -83,6 +86,12 @@ class LocalModelGateway:
         self.max_tokens = max_tokens
         self._available = runtime == "stub"  # stubs always available
         self._rag: RAGRetriever | None = rag_retriever
+        # Real model IDs specialists.py dispatches to. Default to the placeholder
+        # names so stub mode and existing tests are unaffected; a live runtime
+        # gets these from Settings.local_llm_*_model instead.
+        self.primary_model = primary_model
+        self.fast_model = fast_model
+        self.coordinator_model = coordinator_model
 
     # ── Public API ────────────────────────────────────────────────────────────
 
@@ -111,9 +120,9 @@ class LocalModelGateway:
             "fallback_active": self.runtime != "stub" and not available,
             "rag": rag_status,
             "models": {
-                "primary": "gemma4-31b",
-                "coordinator": "gemma4-26b-moe",
-                "fast": "gemma4-e4b",
+                "primary": self.primary_model,
+                "coordinator": self.coordinator_model,
+                "fast": self.fast_model,
             },
             "note": (
                 "Stub mode — deterministic safe responses" if self.runtime == "stub"
@@ -207,6 +216,10 @@ class LocalModelGateway:
             "stream": False,
             "format": "json",
             "options": {"num_predict": self.max_tokens},
+            # Keep the model resident between scan cycles (default ~5 min matches
+            # the agent's own scan interval, which would force a slow cold reload
+            # — 14s+ measured for llama3.1:8b — on every single cycle otherwise.
+            "keep_alive": "30m",
         }).encode()
         req = urllib.request.Request(
             f"{self.base_url}/api/chat",

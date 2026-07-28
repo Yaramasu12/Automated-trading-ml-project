@@ -331,10 +331,20 @@ class TradingRuntime:
                 timeout=self.settings.local_llm_timeout_seconds,
                 max_tokens=self.settings.local_llm_max_output_tokens,
                 rag_retriever=self._rag_retriever,
+                primary_model=self.settings.local_llm_primary_model,
+                fast_model=self.settings.local_llm_fast_model,
+                coordinator_model=self.settings.local_llm_coordinator_model,
             )
             self._agent_council = AgentCouncilSupervisor(
                 gateway=self._llm_gateway,
                 trace_store=self.trace_store,
+                # Supervisor's own default (10s) is shorter than a live local-LLM
+                # cold load can take (measured 14-16s for llama3.1:8b) — every
+                # first call after model unload would time out here before the
+                # gateway's own timeout ever got a chance. Reuse one setting so
+                # the outer per-agent budget is never tighter than the inner call
+                # it wraps.
+                per_agent_timeout_s=self.settings.local_llm_timeout_seconds,
             )
         else:
             self._vector_store = None
