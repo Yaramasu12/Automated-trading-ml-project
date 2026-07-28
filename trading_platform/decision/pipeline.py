@@ -380,8 +380,22 @@ class DecisionPipeline:
                         try:
                             instrument = self.instrument_master.get(underlying)
                         except Exception:
-                            # Cash equities live under SYMBOL-EQ in the Angel master
-                            instrument = self.instrument_master.get(f"{underlying}-EQ")
+                            try:
+                                # Cash equities live under SYMBOL-EQ in the Angel master
+                                instrument = self.instrument_master.get(f"{underlying}-EQ")
+                            except Exception:
+                                # MCX commodities have neither form — NCDEX reference
+                                # entries (e.g. bare "GOLD") are filtered out entirely
+                                # at instrument-master parse time (not a supported
+                                # Exchange), and there is no "-EQ" cash listing for a
+                                # commodity either. The only real, ticking instrument
+                                # is the current front-month futures contract.
+                                # Confirmed 2026-07-28: every MCX underlying hit this
+                                # exact "Unknown instrument symbol: X-EQ" failure and
+                                # fell through to the synthetic-data path — the same
+                                # class of bug already fixed in live_feed_service.py's
+                                # feed-subscription resolution.
+                                instrument = self.instrument_master.select_future(underlying, today_ist)
                         index_override = self._INDEX_CANDLE_TOKENS.get(underlying.upper())
                         if index_override is not None:
                             from trading_platform.domain.enums import Exchange as _Exch

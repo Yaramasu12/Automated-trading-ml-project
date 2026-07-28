@@ -24,6 +24,7 @@ from trading_platform.agent.market_hours import (
     market_status,
     now_ist,
 )
+from trading_platform.data.angel_one_history import _is_angel_one_token
 from trading_platform.logging_safety import note_swallowed
 
 
@@ -129,16 +130,27 @@ class LiveFeedService:
         today = now_ist().date()
         resolved: list[str] = []
         seen: set[str] = set()
-        all_symbols = set(self.instrument_master.instruments)
+        instruments = self.instrument_master.instruments
         for raw_symbol in requested_symbols:
             symbol = str(raw_symbol).strip().upper()
             if not symbol:
                 continue
             candidates: list[str] = []
-            if symbol in all_symbols:
+            matched = instruments.get(symbol)
+            # A bare symbol can exist in the instrument master as a non-tradable
+            # reference — e.g. "GOLD" matches an NCDEX COMDTY entry with a fake,
+            # non-numeric token ('GOLD' literally), not the real MCX contract.
+            # Angel One never ticks that entry, so a candidate must have a real
+            # numeric token to count — otherwise this silently subscribes a dead
+            # symbol forever (confirmed 2026-07-28: GOLD/GOLDM/CRUDEOIL/CRUDEOILM/
+            # NATURALGAS all did this — permanently stale while the CORRECT
+            # resolved futures contract, e.g. GOLD05AUG26FUT, ticked fine as a
+            # separate, redundant subscription added later by a different path).
+            if matched is not None and _is_angel_one_token(matched.token):
                 candidates.append(symbol)
             cash_symbol = f"{symbol}-EQ"
-            if cash_symbol in all_symbols:
+            cash_matched = instruments.get(cash_symbol)
+            if cash_matched is not None and _is_angel_one_token(cash_matched.token):
                 candidates.append(cash_symbol)
             try:
                 future = self.instrument_master.select_future(symbol, today)

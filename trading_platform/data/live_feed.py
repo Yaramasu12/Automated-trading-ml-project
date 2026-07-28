@@ -210,6 +210,37 @@ class LiveTickFeed:
     _BASE_BACKOFF = 5      # seconds before first retry
     _MAX_BACKOFF = 300     # cap at 5 minutes
 
+    def _login(self) -> tuple[dict, str] | None:
+        """One Angel One login, returning (session, feed_token) or None on failure.
+
+        Separated from _run's reconnect loop on purpose: a WebSocket drop does
+        NOT invalidate the JWT, so re-running this on every reconnect burns
+        Angel One's login quota for no reason — and that quota is far stricter
+        than the socket's own limits (confirmed 2026-07-28: repeated container
+        restarts during testing tripped a login-level rate-limit stop well
+        before any data-rate issue). _run() logs in once per feed lifecycle and
+        only calls this again if the cached token itself starts failing.
+        """
+        try:
+            from SmartApi import SmartConnect  # type: ignore[import]
+            import pyotp
+
+            connect = SmartConnect(api_key=self._settings.angel_one_api_key)
+            totp = pyotp.TOTP(self._settings.angel_one_totp_secret).now()
+            session = connect.generateSession(
+                self._settings.angel_one_client_code,
+                self._settings.angel_one_pin,
+                totp,
+            )
+            feed_token = connect.getfeedToken()
+            return session, feed_token
+        except Exception as exc:
+            if _is_rate_limit_error(exc):
+                logger.warning("LiveTickFeed login rate-limited by Angel One; feed stopped until manually restarted")
+            else:
+                logger.error("LiveTickFeed login error: %s", exc)
+            return None
+
     def _run(self) -> None:
         try:
             from SmartApi.smartWebSocketV2 import SmartWebSocketV2  # type: ignore[import]
@@ -217,6 +248,13 @@ class LiveTickFeed:
             logger.error("smartapi-python not installed — install with: pip install smartapi-python")
             self._running = False
             return
+
+        client_code = self._settings.angel_one_client_code
+        logged_in = self._login()
+        if logged_in is None:
+            self._running = False
+            return
+        session, feed_token = logged_in
 
         retries = 0
         while self._running and retries < self._MAX_RETRIES:
@@ -229,19 +267,6 @@ class LiveTickFeed:
                     break
 
             try:
-                from SmartApi import SmartConnect  # type: ignore[import]
-                import pyotp
-
-                connect = SmartConnect(api_key=self._settings.angel_one_api_key)
-                totp = pyotp.TOTP(self._settings.angel_one_totp_secret).now()
-                session = connect.generateSession(
-                    self._settings.angel_one_client_code,
-                    self._settings.angel_one_pin,
-                    totp,
-                )
-                feed_token = connect.getfeedToken()
-                client_code = self._settings.angel_one_client_code
-
                 self._ws = SmartWebSocketV2(
                     session["data"]["jwtToken"],
                     self._settings.angel_one_api_key,
@@ -255,15 +280,21 @@ class LiveTickFeed:
                 self._ws.on_close = self._on_close
 
                 self._reconnect_pending = False
-                self._ws.connect()  # blocks until disconnect
+                self._ws.connect()  # blocks until disconnect, using the cached token
                 # If connect() returns and _running is still True, reconnect
                 retries += 1
             except Exception as exc:
-                if _is_rate_limit_error(exc):
-                    logger.warning("LiveTickFeed rate-limited by Angel One; feed stopped until manually restarted")
-                    break
                 logger.error("LiveTickFeed connection error: %s", exc)
                 retries += 1
+                # The cached token itself may have gone stale (very long-running
+                # feed outliving the JWT) rather than this being a plain socket
+                # drop. One re-login attempt with the retry budget's last try,
+                # rather than assuming a bad token forever.
+                if retries == self._MAX_RETRIES - 1:
+                    refreshed = self._login()
+                    if refreshed is None:
+                        break
+                    session, feed_token = refreshed
 
         if retries > self._MAX_RETRIES:
             logger.error("LiveTickFeed exceeded max retries (%d) — giving up", self._MAX_RETRIES)

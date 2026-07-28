@@ -277,8 +277,18 @@ class TradingAgent:
             subscribed = set(self._runtime.live_feed.subscribed_symbols())
             missing = [s for s in active_underlyings if s not in subscribed]
             if missing:
-                self._runtime.live_feed.add_subscriptions(missing)
-                self._log_activity(f"Live feed expanded: +{len(missing)} symbols subscribed")
+                # Resolve through the same logic /feed/start uses, not a bare
+                # add_subscriptions(missing) — a bare commodity name like "GOLD"
+                # can match a non-tradable reference entry in the instrument
+                # master (NCDEX COMDTY, fake non-numeric token) instead of the
+                # real MCX futures contract, subscribing a symbol that never
+                # ticks while "missing" keeps re-triggering every cycle
+                # (confirmed 2026-07-28: GOLD/GOLDM/CRUDEOIL/CRUDEOILM/
+                # NATURALGAS all did this).
+                resolved = self._runtime._live_feed_service._resolve_feed_symbols(missing)
+                if resolved:
+                    self._runtime.live_feed.add_subscriptions(resolved)
+                    self._log_activity(f"Live feed expanded: +{len(resolved)} symbols subscribed")
         except Exception as _expand_err:
             logger.warning("Live feed expansion error: %s", _expand_err)
 
@@ -322,6 +332,18 @@ class TradingAgent:
             self._state.shortvol_entry_date = today
         submitted = [r for r in result.get("results", []) if r.get("submitted")]
         if not submitted and continuous:
+            # Deliberately quiet on no-op cycles in continuous mode (would
+            # otherwise log every 5 min forever) — but that silence is
+            # indistinguishable from "never running" from the outside. One
+            # visible line per no-op cycle until this is confirmed working.
+            # logger.info is silently dropped app-wide — nothing in this package
+            # calls logging.basicConfig, so the root logger sits at Python's
+            # implicit default (WARNING). Confirmed by absence: no exception
+            # ever showed up either, at logger.warning calls that definitely do
+            # surface (AgentCouncilSupervisor timeouts, live-feed errors).
+            # logger.warning here is a deliberate, temporary level bump for
+            # visibility, not a real warning condition.
+            logger.warning("short-vol auto-entry: no submissions — %s", result.get("results", []))
             return   # nothing new to enter this scan — stay quiet
         self._log_activity(
             f"SHORT-VOL auto-entry: {len(submitted)} structure(s) submitted "
