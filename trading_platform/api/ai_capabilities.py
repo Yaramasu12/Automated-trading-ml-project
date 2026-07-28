@@ -19,7 +19,7 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 # Statuses that mean "do not trust this as an advanced edge/safety layer".
-_WEAK_STATUSES = {"disabled", "stub", "classical_fallback", "heuristic_baseline", "mock_only"}
+_WEAK_STATUSES = {"disabled", "stub", "classical_fallback", "heuristic_baseline", "mock_only", "no_data_source"}
 
 
 def ai_capabilities(runtime: Any) -> dict:
@@ -57,6 +57,20 @@ def ai_capabilities(runtime: Any) -> dict:
         "status": neural_status,
         "detail": "GBM validated model active" if neural_status == "validated_model"
                   else "moving-average baseline (no validated edge model loaded)",
+        "role": "advisory",
+    }
+
+    # ── News sentiment ────────────────────────────────────────────────────────
+    # Found via log monitoring 2026-07-28: the orchestrator calls
+    # NewsIntelligence.analyze() with the bare underlying symbol ("GOLD") as
+    # the payload, never a real headline — there is no live news ingestion
+    # wired to this call site at all. Even a corrected payload key would just
+    # run sentiment analysis on a ticker string, not real news text, so this
+    # is a genuine no_data_source gap, not a fixable bug — reported honestly
+    # rather than silently defaulting to neutral with no visibility.
+    layers["news_sentiment"] = {
+        "status": "no_data_source",
+        "detail": "no live news feed wired in; orchestrator has nothing real to analyze",
         "role": "advisory",
     }
 

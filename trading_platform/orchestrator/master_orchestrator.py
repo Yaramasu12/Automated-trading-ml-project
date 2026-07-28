@@ -350,15 +350,15 @@ class MasterOrchestrator:
         except Exception as e:
             logger.debug("ensure_market_features failed for %s: %s", state.underlying, e)
 
-        # News sentiment — NewsIntelligence.analyze(payload) returns NewsAnalysis.sentiment_score
+        # News sentiment — NewsIntelligence.analyze() requires a real headline
+        # (raises "headline is required" otherwise) and there is no live news
+        # feed wired to this call site — state.underlying is a bare symbol
+        # ("GOLD"), not news text, so a call here can never do anything but
+        # fail. Found via log monitoring 2026-07-28: every cycle, every
+        # underlying, was throwing and swallowing this exception for no
+        # benefit. Reported honestly as "no_data_source" in ai_capabilities.py
+        # instead of silently defaulting to neutral with zero visibility.
         news_sentiment = 0.0
-        try:
-            news_result = rt.news_intelligence.analyze(
-                {"text": state.underlying, "symbol": state.underlying, "source": "orchestrator"}
-            )
-            news_sentiment = float(getattr(news_result, "sentiment_score", 0.0))
-        except Exception as exc:
-            note_swallowed("orchestrator.news_sentiment", exc)
 
         # Event risk check — EventRiskGuard.check(as_of: date|None) takes a date, not a symbol.
         # FAIL-SAFE: if the event-risk check itself errors we cannot prove the window is
