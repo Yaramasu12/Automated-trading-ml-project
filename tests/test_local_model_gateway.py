@@ -1,7 +1,40 @@
 """Tests for Phase 2: LocalModelGateway."""
+import logging
 import unittest
 
 from trading_platform.agents.model_gateway import LocalModelGateway
+
+
+class SecretScanTests(unittest.TestCase):
+    """Regression test: found via log monitoring 2026-07-28. specialists.py's
+    static system prompt instructs the model "Never include broker credentials,
+    API keys, or passwords" — scanning that constant against its own secret-key
+    list produced a 100% false-positive rate (152 warnings in 15 minutes, one
+    per specialist call), drowning out any real signal from the check."""
+
+    def setUp(self):
+        self._gw = LocalModelGateway(runtime="stub")
+
+    def test_static_system_prompt_with_credential_wording_is_not_flagged(self):
+        logger = logging.getLogger("trading_platform.agents.model_gateway")
+        with self.assertNoLogs(logger, level="WARNING"):
+            self._gw.generate(
+                "gemma4-31b",
+                "Never include broker credentials, API keys, or passwords.",
+                "Should we buy NIFTY today?",
+            )
+
+    def test_secret_in_user_prompt_is_still_flagged(self):
+        logger = logging.getLogger("trading_platform.agents.model_gateway")
+        with self.assertLogs(logger, level="WARNING") as captured:
+            self._gw.generate("gemma4-31b", "sys", "the api_key is abc123")
+        self.assertTrue(any("potential secret key" in line for line in captured.output))
+
+    def test_secret_in_context_is_still_flagged(self):
+        logger = logging.getLogger("trading_platform.agents.model_gateway")
+        with self.assertLogs(logger, level="WARNING") as captured:
+            self._gw.generate("gemma4-31b", "sys", "user", context={"password": "hunter2"})
+        self.assertTrue(any("potential secret key" in line for line in captured.output))
 
 
 class TestLocalModelGatewayStub(unittest.TestCase):

@@ -151,7 +151,12 @@ class LocalModelGateway:
         enriched with a compact evidence block and the retrieved doc_ids
         are included in the response under "evidence_ids".
         """
-        self._assert_no_secrets(system_prompt)
+        # system_prompt is always specialists._SYSTEM_BASE, a static constant that
+        # itself instructs the model to never include credentials — checking it
+        # produced a 100% false-positive rate (found via log monitoring
+        # 2026-07-28: 152 warnings in 15 minutes, one per specialist call) and
+        # drowned out any real signal from this check. Only scan the dynamic,
+        # data-derived content that could actually carry an interpolated secret.
         self._assert_no_secrets(user_prompt)
         if context:
             self._assert_no_secrets(json.dumps(context))
