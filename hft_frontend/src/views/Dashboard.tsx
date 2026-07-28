@@ -26,6 +26,35 @@ import type { Trade } from '../types'
 
 const MARKET_SYMBOLS = ['NIFTY', 'BANKNIFTY', 'FINNIFTY', 'SENSEX', 'RELIANCE', 'TCS', 'INFY', 'HDFCBANK', 'ICICIBANK', 'SBIN']
 
+// MCX commodities run 09:00-23:30 IST, well past NSE/BSE close at 15:30 — kept
+// as a separate card so it doesn't get lost among "market closed" equities in
+// the evening, and so it's not misread as broken when it's actually live.
+// These are UNDERLYING prefixes, not tradable symbols — MCX only ticks a
+// specific dated contract (e.g. GOLD05AUG26FUT), never a bare "GOLD", so the
+// real, currently-subscribed symbol is discovered from /feed/snapshot each
+// refresh rather than hardcoded (a hardcoded contract name would silently
+// stop matching anything the month it expires).
+const MCX_UNDERLYING_PREFIXES = ['GOLD', 'GOLDM', 'SILVER', 'SILVERMIC', 'CRUDEOIL', 'CRUDEOILM', 'NATURALGAS', 'COPPER', 'ZINC', 'NICKEL']
+
+function matchMcxSymbols(subscribed: string[]): string[] {
+  const resolved: string[] = []
+  for (const prefix of MCX_UNDERLYING_PREFIXES) {
+    // A plain startsWith is not enough: "GOLDM05AUG26FUT" also starts with
+    // "GOLD", which would wrongly claim GOLDM's contract for the GOLD card.
+    // The underlying name must be followed by the contract's date digits (or
+    // nothing, for a bare symbol like plain "SILVER") — never another letter,
+    // which means it's actually a DIFFERENT underlying (GOLD vs GOLDM,
+    // CRUDEOIL vs CRUDEOILM, SILVER vs SILVERMIC).
+    const match = subscribed.find((s) => {
+      if (!s.startsWith(prefix)) return false
+      const next = s.charAt(prefix.length)
+      return next === '' || /[0-9]/.test(next)
+    })
+    if (match && !resolved.includes(match)) resolved.push(match)
+  }
+  return resolved
+}
+
 type DashboardTick = {
   ltp?: number
   last_price?: number
@@ -86,6 +115,30 @@ function tickStatus(t: DashboardTick | undefined): { label: string; className: s
   return { label: age === null ? 'LIVE' : `${age}s`, className: 'text-brand-green border-brand-green/40 bg-brand-green/10' }
 }
 
+// Shared by both the NSE/BSE and MCX live-market cards — identical tile,
+// different symbol source.
+function renderTickTile(sym: string, tick: DashboardTick | undefined) {
+  const price = tickPrice(tick)
+  const change = tickChangePct(tick)
+  const status = tickStatus(tick)
+  return (
+    <div key={sym} className="flex items-center justify-between gap-2 rounded-md bg-surface-elevated border border-surface-border px-2.5 py-2">
+      <div className="min-w-0">
+        <div className="text-xs font-mono font-semibold text-ink truncate">{sym}</div>
+        <span className={clsx('mt-1 inline-flex rounded border px-1 py-0.5 text-[9px] font-mono leading-none', status.className)}>
+          {status.label}
+        </span>
+      </div>
+      <div className="text-right shrink-0">
+        <div className="text-xs font-mono font-bold text-ink">{price === null ? '—' : inr(price, 2)}</div>
+        <div className={clsx('text-[10px] font-mono', (change ?? 0) > 0 ? 'text-brand-green' : (change ?? 0) < 0 ? 'text-brand-red' : 'text-ink-faint')}>
+          {change !== null && change !== 0 ? pct(change) : '—'}
+        </div>
+      </div>
+    </div>
+  )
+}
+
 export function Dashboard() {
   const runtimeState   = useStore((s) => s.runtimeState)
   const monitoring     = useStore((s) => s.monitoring)
@@ -113,6 +166,9 @@ export function Dashboard() {
   const [feedSnapshot, setFeedSnapshot] = useState<Record<string, unknown> | null>(null)
   const [marketUpdatedAt, setMarketUpdatedAt] = useState<string | null>(null)
   const [marketError, setMarketError] = useState<string | null>(null)
+  const [mcxSymbols, setMcxSymbols] = useState<string[]>([])
+  const [mcxTicks, setMcxTicks] = useState<Record<string, DashboardTick>>({})
+  const [mcxUpdatedAt, setMcxUpdatedAt] = useState<string | null>(null)
 
   // Only hammer the tick/feed endpoints while a session is actually live. When
   // the market is closed those calls just fail or return frozen data — a big
@@ -155,6 +211,26 @@ export function Dashboard() {
     setMarketError(ticksRes.status === 'rejected' && feedRes.status === 'rejected'
       ? 'Market data unavailable — retrying.'
       : null)
+
+    // MCX symbols aren't fixed strings (the contract rolls monthly), so they
+    // have to be discovered from what's actually subscribed right now, then
+    // fetched in a second call — can't be folded into the first batch above.
+    if (feedRes.status === 'fulfilled') {
+      const subscribed = (feedRes.value as { subscribed_symbols?: string[] }).subscribed_symbols ?? []
+      const resolved = matchMcxSymbols(subscribed)
+      setMcxSymbols(resolved)
+      if (resolved.length > 0) {
+        const mcxTicksRes = await getBatchTicks(resolved, true).catch(() => null)
+        if (mcxTicksRes) {
+          const merged: Record<string, DashboardTick> = {}
+          for (const sym of resolved) {
+            merged[sym] = (mcxTicksRes.ticks[sym] as DashboardTick | undefined) ?? {}
+          }
+          setMcxTicks(merged)
+          setMcxUpdatedAt(new Date().toLocaleTimeString('en-IN'))
+        }
+      }
+    }
   }, [])
 
   useEffect(() => {
@@ -401,10 +477,10 @@ export function Dashboard() {
         />
       </div>
 
-      {/* ── Live Market Strip ───────────────────────────────────────────────── */}
+      {/* ── Live Market Strip (NSE/BSE) ─────────────────────────────────────── */}
       <Card>
         <CardHeader
-          title="Live Market"
+          title="Live Market — NSE/BSE"
           subtitle={marketError ?? (marketOpen
             ? (marketUpdatedAt ? `Updated ${marketUpdatedAt}` : 'Waiting for ticks…')
             : 'Market closed — prices from last session')}
@@ -420,29 +496,41 @@ export function Dashboard() {
         />
         <CardBody className="!p-2">
           <div className="grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-5 gap-2">
-            {MARKET_SYMBOLS.map((sym) => {
-              const tick = marketTicks[sym]
-              const price = tickPrice(tick)
-              const change = tickChangePct(tick)
-              const status = tickStatus(tick)
-              return (
-                <div key={sym} className="flex items-center justify-between gap-2 rounded-md bg-surface-elevated border border-surface-border px-2.5 py-2">
-                  <div className="min-w-0">
-                    <div className="text-xs font-mono font-semibold text-ink truncate">{sym}</div>
-                    <span className={clsx('mt-1 inline-flex rounded border px-1 py-0.5 text-[9px] font-mono leading-none', status.className)}>
-                      {status.label}
-                    </span>
-                  </div>
-                  <div className="text-right shrink-0">
-                    <div className="text-xs font-mono font-bold text-ink">{price === null ? '—' : inr(price, 2)}</div>
-                    <div className={clsx('text-[10px] font-mono', (change ?? 0) > 0 ? 'text-brand-green' : (change ?? 0) < 0 ? 'text-brand-red' : 'text-ink-faint')}>
-                      {change !== null && change !== 0 ? pct(change) : '—'}
-                    </div>
-                  </div>
-                </div>
-              )
-            })}
+            {MARKET_SYMBOLS.map((sym) => renderTickTile(sym, marketTicks[sym]))}
           </div>
+        </CardBody>
+      </Card>
+
+      {/* ── MCX Commodities — separate card: runs 09:00-23:30 IST, well past ──
+          NSE/BSE close, so it needs its own live/stale read rather than being
+          buried among "market closed" equities. */}
+      <Card>
+        <CardHeader
+          title="Live Market — MCX Commodities"
+          subtitle={mcxUpdatedAt ? `Updated ${mcxUpdatedAt}` : (mcxSymbols.length === 0 ? 'No MCX contracts subscribed' : 'Waiting for ticks…')}
+          icon={<Activity size={14} />}
+          action={
+            <span className={clsx(
+              'text-[10px] font-mono font-bold px-2 py-0.5 rounded border',
+              feedRunning ? 'text-brand-green border-brand-green/30 bg-brand-green/10' : 'text-ink-faint border-surface-border bg-surface-inset',
+            )}>
+              {feedRunning ? 'FEED LIVE' : 'FEED OFF'}
+            </span>
+          }
+        />
+        <CardBody className="!p-2">
+          {mcxSymbols.length === 0 ? (
+            <EmptyState
+              className="h-full"
+              icon={<Activity size={18} />}
+              title="No MCX contracts subscribed"
+              hint="Start the live feed with commodity underlyings (GOLD, SILVER, CRUDEOIL, NATURALGAS…) to see them here."
+            />
+          ) : (
+            <div className="grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-5 gap-2">
+              {mcxSymbols.map((sym) => renderTickTile(sym, mcxTicks[sym]))}
+            </div>
+          )}
         </CardBody>
       </Card>
 
