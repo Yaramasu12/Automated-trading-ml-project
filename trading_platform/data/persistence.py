@@ -365,10 +365,23 @@ class TradingDatabase:
     # ------------------------------------------------------------------
 
     def _init_postgres(self) -> None:
+        import os
         import psycopg2
         import psycopg2.pool
+        # maxconn=10 was fine at AGENT_SCAN_CONCURRENCY=2 (the AWS-instance-sized
+        # default) but not at higher concurrency on larger hosts: 64 concurrent
+        # scan pipelines each doing brief portfolio/feature-store/trace reads
+        # and writes exhausted a 10-connection pool 276 times in one trading day
+        # (confirmed via "psycopg2.pool.PoolError: connection pool exhausted" in
+        # the logs, 2026-07-28), silently swallowing whatever DB operation each
+        # one needed — including, possibly, order-path writes. Postgres itself
+        # allows 100 connections total; 40 leaves real headroom for everything
+        # else (API requests, scheduler, admin) while comfortably covering
+        # concurrent pipelines' short-lived connection use.
+        maxconn = int(os.getenv("POSTGRES_POOL_MAXCONN", "40"))
+        minconn = int(os.getenv("POSTGRES_POOL_MINCONN", "4"))
         self._pool = psycopg2.pool.ThreadedConnectionPool(
-            minconn=2, maxconn=10, dsn=self._url
+            minconn=minconn, maxconn=maxconn, dsn=self._url
         )
         self._setup_pg_schema()
 
