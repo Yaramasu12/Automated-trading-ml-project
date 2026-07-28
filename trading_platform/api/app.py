@@ -241,6 +241,14 @@ def option_chain(underlying: str, expiry: str | None = None, spot_price: float |
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
+@app.get("/derivatives/chain-collection-status")
+def options_chain_collection_status():
+    """Progress of the daily options-chain forward-collection job (rows/days
+    captured per underlying) — for tracking readiness toward eventually
+    testing skew/term-structure/dispersion, which need real historical chains."""
+    return runtime.options_chain_collection_status()
+
+
 @app.post("/derivatives/greeks")
 def greeks(payload: dict):
     try:

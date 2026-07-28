@@ -27,6 +27,7 @@ from trading_platform.data.angel_one_history import AngelOneHistoricalDataProvid
 from trading_platform.data.angel_one_instruments import AngelOneInstrumentMasterProvider
 from trading_platform.data.instrument_master import build_default_universe
 from trading_platform.data.market_data import SyntheticDataProvider
+from trading_platform.data.options_chain_collector import OptionsChainCollector
 from trading_platform.decision.orchestrator import DecisionCycleOrchestrator
 from trading_platform.decision.pipeline import DecisionPipeline
 from trading_platform.derivatives.engine import ContractSelector, ExpiryCalendar, GreeksCalculator, IVSurfaceBuilder, OptionChainBuilder, RolloverPlanner
@@ -174,6 +175,10 @@ class TradingRuntime:
         self.live_feed = LiveTickFeed(self.settings)
         # Wire live Angel One prices into the paper broker so fills use real market prices
         self.paper_broker.set_live_feed(self.live_feed)
+        # Holds `self` and reads instrument_master/decision_pipeline off it lazily
+        # (both are REPLACED on instrument refresh) — constructed once, never
+        # needs rebuilding in _rebuild_market_engines.
+        self.options_chain_collector = OptionsChainCollector(self)
         self.event_bus = InMemoryEventBus()
         self.news_intelligence = NewsIntelligence()
         # Live-readiness scaffolding: freshness tracker tells the gate
@@ -1463,6 +1468,8 @@ class TradingRuntime:
         self.contract_selector = ContractSelector(self.instrument_master)
         self.option_chain_builder = OptionChainBuilder(self.instrument_master)
         self.rollover_planner = RolloverPlanner(self.instrument_master)
+        # Note: options_chain_collector holds `self` and reads instrument_master
+        # lazily, so it needs no reconstruction here despite the rebuild above.
         # Rebuild the options service so it uses the fresh calendar/chain builder.
         if hasattr(self, "_options_service"):
             self._options_service = self._build_options_service()
@@ -2816,6 +2823,9 @@ class TradingRuntime:
 
     def option_chain(self, underlying: str, expiry: str | None = None, spot_price: float | None = None) -> dict:
         return self._options_service.option_chain(underlying, expiry, spot_price)
+
+    def options_chain_collection_status(self) -> dict:
+        return self.options_chain_collector.status()
 
     def calculate_greeks(self, payload: dict) -> dict:
         return self._options_service.calculate_greeks(payload)

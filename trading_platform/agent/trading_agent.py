@@ -21,6 +21,7 @@ from datetime import date, datetime, timezone, timedelta
 from typing import TYPE_CHECKING
 
 from trading_platform.agent.market_hours import (
+    is_chain_snapshot_window,
     is_entry_allowed,
     is_eod_squareoff,
     is_mcx_entry_allowed,
@@ -82,6 +83,12 @@ if _scan_override:
 
 SCAN_UNDERLYINGS = EQUITY_UNDERLYINGS + COMMODITY_UNDERLYINGS
 COMMODITY_SET = set(COMMODITY_UNDERLYINGS)
+
+# Options-chain snapshot: NIFTY + BANKNIFTY only (the two liquid weekly-options
+# indices short-vol already trades) — FINNIFTY's ATM IV already fails to
+# compute in the live short-vol path ("illiquid ATM"), so its chain would be
+# mostly empty rows, not worth the extra rate-limited calls.
+CHAIN_SNAPSHOT_UNDERLYINGS = ["NIFTY", "BANKNIFTY"]
 DEFAULT_SCAN_INTERVAL = 300   # 5 minutes
 MIN_SCAN_INTERVAL = 30        # 30 seconds (frontend can lower for demo)
 LOOKBACK_DAYS = 60
@@ -115,6 +122,8 @@ class AgentState:
     premarket_date: date | None = None
     eod_done: bool = False
     mcx_eod_done: bool = False
+    chain_snapshot_done: bool = False
+    chain_snapshot_date: date | None = None
     shortvol_entry_date: date | None = None
     started_at: str | None = None
     activity_log: list[dict] = field(default_factory=list)
@@ -209,6 +218,9 @@ class TradingAgent:
         if self._state.premarket_date != today:
             self._state.premarket_done = False
             self._state.premarket_date = today
+        if self._state.chain_snapshot_date != today:
+            self._state.chain_snapshot_done = False
+            self._state.chain_snapshot_date = today
 
         # Pre-market routine
         if is_premarket(now) and not self._state.premarket_done:
@@ -234,6 +246,14 @@ class TradingAgent:
 
         if not is_mcx_eod_squareoff(now):
             self._state.mcx_eod_done = False
+
+        # Options-chain EOD snapshot (15:10-15:20 IST) — forward data collection
+        # for strategies not testable yet (skew, term structure, dispersion).
+        # Best-effort only: never allowed to affect the money-path scan below.
+        if is_chain_snapshot_window(now) and not self._state.chain_snapshot_done:
+            await self._chain_snapshot_routine()
+            self._state.chain_snapshot_done = True
+            return
 
         # Determine which markets are open right now
         equity_open = is_entry_allowed(now)
@@ -468,6 +488,31 @@ class TradingAgent:
         except Exception as exc:
             logger.error("MCX EOD routine error: %s", exc)
             self._log_activity(f"MCX EOD error: {exc}", level="error")
+
+    async def _chain_snapshot_routine(self) -> None:
+        """Best-effort daily options-chain capture. Never allowed to raise —
+        a failed or slow snapshot must not delay the entry-cutoff/EOD checks
+        that follow it on later ticks."""
+        collector = getattr(self._runtime, "options_chain_collector", None)
+        if collector is None:
+            return
+        self._log_activity("Options-chain snapshot (15:10 IST)")
+        try:
+            for underlying in CHAIN_SNAPSHOT_UNDERLYINGS:
+                result = await asyncio.to_thread(collector.capture, underlying)
+                if result.get("rows"):
+                    self._log_activity(
+                        f"Chain snapshot {underlying}: {result['rows']} strikes captured "
+                        f"(expiry {result.get('expiry')})"
+                    )
+                else:
+                    self._log_activity(
+                        f"Chain snapshot {underlying}: 0 rows ({result.get('error', 'unknown')})",
+                        level="error",
+                    )
+        except Exception as exc:
+            logger.error("Chain snapshot routine error: %s", exc)
+            self._log_activity(f"Chain snapshot error: {exc}", level="error")
 
     async def _scan_and_execute(self, active_underlyings: list[str] | None = None) -> None:
         now = now_ist()

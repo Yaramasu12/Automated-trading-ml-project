@@ -14,6 +14,11 @@ _MARKET_CLOSE = time(15, 30)
 _ENTRY_CUTOFF = time(15, 20)   # no new entries after this
 _EOD_SQUAREOFF = time(15, 25)  # force-close all positions
 _PREMARKET = time(9, 0)
+# Options-chain EOD snapshot window: quotes are still live and liquid, but
+# strictly before the entry cutoff/EOD square-off so chain capture can never
+# compete with real order flow for the rate-limited candle API.
+_CHAIN_SNAPSHOT_START = time(15, 10)
+_CHAIN_SNAPSHOT_END = time(15, 20)
 
 # ── MCX (commodity) session — non-agri: 09:00–23:30 IST ──────────────────────
 _MCX_OPEN = time(9, 0)
@@ -107,6 +112,16 @@ def is_eod_squareoff(dt: datetime | None = None) -> bool:
 
 def is_premarket(dt: datetime | None = None) -> bool:
     return market_status(dt) == "PRE_MARKET"
+
+
+def is_chain_snapshot_window(dt: datetime | None = None) -> bool:
+    """True during the 15:10-15:20 IST window — options quotes still live and
+    liquid, strictly before the entry cutoff/EOD square-off."""
+    now = dt or now_ist()
+    if not is_trading_day(now.date()):
+        return False
+    t = now.time()
+    return _CHAIN_SNAPSHOT_START <= t < _CHAIN_SNAPSHOT_END
 
 
 def seconds_to_next_open(dt: datetime | None = None) -> float:
