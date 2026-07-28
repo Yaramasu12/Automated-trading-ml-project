@@ -59,6 +59,33 @@ def load_panel():
                 rows[d] = float(r["close"])
         if len(rows) > FORMATION + SKIP + HOLD + 60:
             series[sym] = rows
+    # A handful of symbols have much shorter history (a later NSE listing date,
+    # or a stale file left over from an earlier, narrower one-off fetch that
+    # fell outside fetch_daily_universe.py's UNIVERSE list). Since the panel
+    # uses the INTERSECTION of every symbol's dates, a single short-history
+    # straggler would silently truncate the whole panel back down to its tiny
+    # window. Drop anything with materially less history than the deep-fetch
+    # majority instead.
+    if series:
+        counts = sorted(len(v) for v in series.values())
+        floor = counts[len(counts) // 2] * 0.9   # 90% of the median symbol's bar count
+        for sym in list(series):
+            if len(series[sym]) < floor:
+                logger.warning("  excluding %s: only %d bars vs a ~%.0f-bar floor (short/stale history)",
+                                sym, len(series[sym]), floor)
+                del series[sym]
+    # Angel One's raw candles are NOT split/bonus-adjusted. Over a 5+ year window
+    # several symbols have had one, and an unadjusted split shows up as a fake
+    # -50% to -90% single-day "return" that would corrupt the 252-day momentum
+    # feature for a full year around that date. Drop any symbol with a >=35%
+    # single-day move (fetch_daily_universe.py flags the same symbols at fetch
+    # time) rather than silently feed contaminated history into the test.
+    for sym in list(series):
+        closes = [series[sym][d] for d in sorted(series[sym])]
+        if any(closes[i - 1] > 0 and abs(closes[i] / closes[i - 1] - 1.0) >= 0.35
+               for i in range(1, len(closes))):
+            logger.warning("  excluding %s: unadjusted split/bonus detected in its history", sym)
+            del series[sym]
     symbols = sorted(series)
     common = set.intersection(*[set(series[s]) for s in symbols]) if symbols else set()
     dates = sorted(common)

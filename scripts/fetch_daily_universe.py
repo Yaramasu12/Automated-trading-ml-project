@@ -40,22 +40,30 @@ UNIVERSE = [
 
 
 def main() -> int:
+    import argparse
     from trading_platform.config import load_settings
     from trading_platform.data.angel_one_history import AngelOneHistoricalDataProvider
     from trading_platform.data.angel_one_instruments import AngelOneInstrumentMasterProvider
+
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("--days", type=int, default=900,
+                     help="lookback window requested (Angel One's actual history floor is "
+                          "~Feb 2021 regardless of how far back this asks)")
+    ap.add_argument("--force", action="store_true", help="refetch even if already cached")
+    args = ap.parse_args()
 
     settings = load_settings()
     if not settings.angel_one_configured:
         logger.error("Angel One creds not configured."); return 2
     master = AngelOneInstrumentMasterProvider(settings).load_cached()
     hist = AngelOneHistoricalDataProvider(settings)
-    to_dt = datetime.now(); from_dt = to_dt - timedelta(days=900)   # ~3.5y
+    to_dt = datetime.now(); from_dt = to_dt - timedelta(days=args.days)
 
     ok = skip = fail = 0
     cooldown_until = 0.0
     for i, sym in enumerate(UNIVERSE, 1):
         path = HIST / f"{sym}__ONE_DAY.csv"
-        if path.exists() and path.stat().st_size > 5000:
+        if not args.force and path.exists() and path.stat().st_size > 5000:
             skip += 1; continue
         # resolve a real cash instrument (equity token needed for candles)
         inst = None
@@ -83,6 +91,17 @@ def main() -> int:
             continue
         if len(bars) < 200:
             logger.info("  [%d/%d] %s: only %d bars", i, len(UNIVERSE), sym, len(bars)); fail += 1; continue
+        # Angel One's raw candles are NOT split/bonus-adjusted. A >=35% single-day
+        # move that isn't a real crash is almost always an unadjusted corporate
+        # action, and would silently fake a giant momentum/reversal signal at
+        # that date — flag it instead of adjusting (out of scope) so any
+        # downstream research knows to treat that symbol's older history with
+        # suspicion.
+        for j in range(1, len(bars)):
+            prev, cur = bars[j - 1].close, bars[j].close
+            if prev > 0 and abs(cur / prev - 1.0) >= 0.35:
+                logger.warning("  %s: possible unadjusted split/bonus on %s (%.1f%% 1-day move)",
+                                sym, bars[j].timestamp.date(), (cur / prev - 1.0) * 100)
         with open(path, "w", newline="") as fh:
             w = csv.writer(fh); w.writerow(["timestamp", "open", "high", "low", "close", "volume"])
             for b in bars:
