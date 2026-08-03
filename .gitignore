@@ -58,5 +58,11 @@ hft_frontend/vite.config.ts.timestamp-*.mjs
 # Historical candle cache downloaded by scripts/train_return_forecaster.py
 data/historical/
 
+# Daily options-chain snapshots (options_chain_collector.py) and cached
+# intraday research bars (research_intraday_edge.py / train_intraday_forecaster.py)
+# — runtime/research artifacts, regenerable, never commit
+data/options_chain/
+data/intraday_research/
+
 # Server deployment secrets — only the .example is committed
 deploy/trading.env

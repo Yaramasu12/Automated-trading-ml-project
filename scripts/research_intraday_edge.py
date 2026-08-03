@@ -41,7 +41,8 @@ CACHE.mkdir(parents=True, exist_ok=True)
 # likely to exist and be tradeable.
 BASKET = [
     "NIFTY", "BANKNIFTY", "RELIANCE", "TCS", "INFY", "HDFCBANK",
-    "ICICIBANK", "SBIN", "TATAMOTORS", "AXISBANK", "MARUTI", "ITC",
+    # TATAMOTORS demerged into TMPV/TMCV (Oct 2025) — using its successor.
+    "ICICIBANK", "SBIN", "TMPV", "AXISBANK", "MARUTI", "ITC",
 ]
 
 FEATURE_NAMES = [

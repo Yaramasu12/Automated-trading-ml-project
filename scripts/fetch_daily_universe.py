@@ -24,7 +24,10 @@ HIST.mkdir(parents=True, exist_ok=True)
 UNIVERSE = [
     "RELIANCE","TCS","INFY","HDFCBANK","ICICIBANK","SBIN","AXISBANK","KOTAKBANK",
     "BHARTIARTL","ITC","LT","HINDUNILVR","BAJFINANCE","BAJAJFINSV","MARUTI","M&M",
-    "TATAMOTORS","SUNPHARMA","WIPRO","HCLTECH","TECHM","LTIM","ASIANPAINT","TITAN",
+    # TATAMOTORS demerged into TMPV/TMCV (Oct 2025); LTIM confirmed absent from
+    # Angel One's instrument master entirely as of 2026-07-29 — both dropped
+    # rather than fetching under stale/nonexistent symbols.
+    "TMPV","SUNPHARMA","WIPRO","HCLTECH","TECHM","ASIANPAINT","TITAN",
     "NTPC","POWERGRID","ONGC","COALINDIA","BPCL","IOC","GAIL","TATAPOWER",
     "TATASTEEL","JSWSTEEL","HINDALCO","VEDL","JINDALSTEL","NMDC","SAIL","NATIONALUM",
     "ULTRACEMCO","GRASIM","SHREECEM","AMBUJACEM","ACC","DALBHARAT","RAMCOCEM",

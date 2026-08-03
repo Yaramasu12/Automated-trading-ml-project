@@ -59,7 +59,11 @@ MODEL_PATH = REPO_ROOT / "models" / "intraday_forecaster"
 # Liquid names + indices — where any microstructure edge is most likely tradeable.
 DEFAULT_SYMBOLS = [
     "NIFTY", "BANKNIFTY", "RELIANCE", "TCS", "INFY", "HDFCBANK",
-    "ICICIBANK", "SBIN", "TATAMOTORS", "AXISBANK", "MARUTI", "ITC",
+    # TATAMOTORS demerged into TMPV/TMCV (Oct 2025) — using its successor.
+    # Any pre-demerger TATAMOTORS.npz cache under data/intraday_research is
+    # now for a stock that no longer exists under that ticker; TMPV starts a
+    # fresh cache rather than silently mixing pre/post-demerger price series.
+    "ICICIBANK", "SBIN", "TMPV", "AXISBANK", "MARUTI", "ITC",
 ]
 # AMXIDX spot tokens for indices (the WebSocket index tokens have no candles).
 INDEX_TOKENS = {
