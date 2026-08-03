@@ -1007,6 +1007,74 @@ def ai_council_preview(payload: dict):
     return runtime.ai_council_preview(payload)
 
 
+# ── Runtime monitor (24/7 local-model observability) ────────────────────────────
+
+@app.get("/monitor/runtime-digest")
+def monitor_runtime_digest(limit: int = 20):
+    return {"digests": runtime.db.recent_monitor_digests(limit=limit)}
+
+
+# ── Daily AI review & tuning advisor ─────────────────────────────────────────────
+
+@app.get("/ai-council/daily-review")
+def ai_council_daily_review(review_date: str | None = None):
+    from datetime import date as _date
+    parsed = _date.fromisoformat(review_date) if review_date else None
+    review = runtime.daily_ai_review(parsed)
+    if review is None:
+        raise HTTPException(status_code=404, detail="no review recorded for that date")
+    return review
+
+
+@app.post("/ai-council/daily-review/run", dependencies=[_AuthDep])
+def ai_council_daily_review_run():
+    """Manually trigger the post-market review (normally run by daily_scheduler.py
+    at 15:40 IST) — useful for testing without waiting for market close."""
+    return runtime.run_daily_ai_review()
+
+
+@app.get("/ai-council/tuning-suggestions")
+def ai_council_tuning_suggestions(status: str | None = "pending", limit: int = 50):
+    return {"suggestions": runtime.tuning_suggestions(status=status, limit=limit)}
+
+
+@app.post("/ai-council/tuning-suggestions/{suggestion_id}/approve", dependencies=[_AuthDep])
+def approve_tuning_suggestion(suggestion_id: int):
+    if not runtime.set_tuning_suggestion_status(suggestion_id, "approved"):
+        raise HTTPException(status_code=404, detail="suggestion not found")
+    return {"id": suggestion_id, "status": "approved"}
+
+
+@app.post("/ai-council/tuning-suggestions/{suggestion_id}/reject", dependencies=[_AuthDep])
+def reject_tuning_suggestion(suggestion_id: int):
+    if not runtime.set_tuning_suggestion_status(suggestion_id, "rejected"):
+        raise HTTPException(status_code=404, detail="suggestion not found")
+    return {"id": suggestion_id, "status": "rejected"}
+
+
+# ── Strategy/edge research assistant (idea generation only — never self-validated) ──
+
+@app.post("/research/generate-hypotheses", dependencies=[_AuthDep])
+def research_generate_hypotheses():
+    return runtime.generate_strategy_hypotheses()
+
+
+@app.get("/research/hypotheses")
+def research_hypotheses(status: str | None = "proposed", limit: int = 50):
+    return {"hypotheses": runtime.strategy_hypotheses(status=status, limit=limit)}
+
+
+@app.post("/research/hypotheses/{hypothesis_id}/mark-tested", dependencies=[_AuthDep])
+def research_mark_hypothesis_tested(hypothesis_id: int, payload: dict):
+    validation_run_id = str(payload.get("validation_run_id", ""))
+    validation_verdict = str(payload.get("validation_verdict", ""))
+    if not validation_verdict:
+        raise HTTPException(status_code=400, detail="validation_verdict is required")
+    if not runtime.mark_hypothesis_tested(hypothesis_id, validation_run_id, validation_verdict):
+        raise HTTPException(status_code=404, detail="hypothesis not found")
+    return {"id": hypothesis_id, "status": "tested", "validation_verdict": validation_verdict}
+
+
 # ── Neural Lab ─────────────────────────────────────────────────────────────────
 
 @app.get("/neural/status")

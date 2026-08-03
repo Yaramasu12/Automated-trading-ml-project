@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import collections
 import itertools
+import logging
 import threading
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
@@ -178,3 +179,49 @@ class OperationalMonitor:
 
     def recent_events(self, limit: int = 20) -> list[dict]:
         return [event.to_dict() for event in itertools.islice(reversed(self.events), limit)][::-1]
+
+    def recent_warnings(self, limit: int = 50) -> list[dict]:
+        """Events at WARNING severity or above — the slice the 24/7 runtime
+        monitor loop reads instead of tailing Docker/OS logs."""
+        matches = [e for e in reversed(self.events) if e.severity in ("WARNING", "ERROR", "CRITICAL")]
+        return [e.to_dict() for e in itertools.islice(matches, limit)][::-1]
+
+    def warnings_since(self, since: datetime, limit: int = 50) -> list[dict]:
+        """WARNING+ events strictly after `since`.
+
+        Regression 2026-07-28: recent_warnings()'s "last N ever" window meant
+        a single one-time startup log (log_capabilities_at_startup's "AI
+        layers running DEGRADED/ADVISORY-ONLY...") never aged out while
+        overall warning traffic stayed low — every runtime-monitor tick saw
+        it as if it had just happened, so the model kept re-escalating
+        severity for state that hadn't changed since process start. Anchoring
+        to "since the last tick" instead of "last N ever" is what actually
+        fixes that — the stale event only ever counts as new exactly once.
+        """
+        matches = [
+            e for e in reversed(self.events)
+            if e.severity in ("WARNING", "ERROR", "CRITICAL") and e.timestamp > since
+        ]
+        return [e.to_dict() for e in itertools.islice(matches, limit)][::-1]
+
+
+class OperationalEventLogHandler(logging.Handler):
+    """Forwards WARNING+ Python log records into an OperationalMonitor's event
+    ring buffer, so in-process consumers (the runtime monitor loop) can read
+    "recent log lines" from application state directly rather than tailing
+    Docker/OS logs — works identically under docker compose or bare uvicorn.
+    Never lets a logging failure raise back into the logging system itself."""
+
+    def __init__(self, monitor: OperationalMonitor, level: int = logging.WARNING) -> None:
+        super().__init__(level=level)
+        self._monitor = monitor
+
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            self._monitor.record_event(
+                event_type=f"log.{record.name}",
+                message=record.getMessage(),
+                severity=record.levelname,
+            )
+        except Exception:
+            pass

@@ -187,6 +187,78 @@ class TestVectorMemoryStore:
         assert results[0][0].doc_id == "d1"
 
 
+class TestEmbeddingSearch:
+    """VectorMemoryStore upgraded to real cosine-similarity search when an
+    embedder is wired via set_embedder() — falls back to Jaccard per
+    document whenever an embedding isn't available for that document/query,
+    not all-or-nothing."""
+
+    def test_no_embedder_behaves_exactly_like_before(self):
+        store = VectorMemoryStore()
+        store.add(VectorDocument(doc_id="d1", content="trend momentum nifty strategy", category="strategy"))
+        results = store.search("trend momentum nifty", top_k=5)
+        assert len(results) == 1
+        assert results[0][0].doc_id == "d1"
+
+    def test_embedder_backfills_existing_docs_on_set(self):
+        store = VectorMemoryStore()
+        store.add(VectorDocument(doc_id="d1", content="sell premium when volatility is rich", category="strategy"))
+        store.set_embedder(lambda text: [1.0, 0.0, 0.0])
+        assert store.get("d1").embedding == [1.0, 0.0, 0.0]
+
+    def test_cosine_finds_semantic_match_jaccard_would_miss(self):
+        store = VectorMemoryStore()
+        # Two docs sharing essentially no keywords with the query text.
+        store.add(VectorDocument(doc_id="close-match", content="Completely different wording", category="strategy"))
+        store.add(VectorDocument(doc_id="far-match", content="Also completely unrelated wording", category="strategy"))
+
+        # Fake embedder: query and "close-match" get near-identical vectors;
+        # "far-match" gets an orthogonal one — simulates two documents that
+        # share zero keywords with the query but are not equally relevant.
+        vectors = {
+            "semantically similar query": [1.0, 0.0],
+            "Completely different wording": [0.95, 0.05],
+            "Also completely unrelated wording": [0.0, 1.0],
+        }
+        store.set_embedder(lambda text: vectors[text])
+
+        results = store.search("semantically similar query", top_k=2)
+        assert results[0][0].doc_id == "close-match"
+
+    def test_embedder_exception_falls_back_to_jaccard(self):
+        store = VectorMemoryStore()
+        store.add(VectorDocument(doc_id="d1", content="trend momentum nifty strategy", category="strategy"))
+
+        def broken_embedder(text):
+            raise RuntimeError("LM Studio unreachable")
+
+        store.set_embedder(broken_embedder)  # backfill fails silently, doc.embedding stays None
+        results = store.search("trend momentum nifty", top_k=5)  # query embed also fails -> Jaccard
+        assert len(results) == 1
+        assert results[0][0].doc_id == "d1"
+
+    def test_partial_embedding_coverage_falls_back_per_document(self):
+        store = VectorMemoryStore()
+        store.add(VectorDocument(doc_id="embedded", content="alpha beta gamma", category="strategy"))
+        store.add(VectorDocument(doc_id="not-embedded", content="trend momentum nifty", category="strategy"))
+
+        vectors = {
+            "alpha beta gamma": [0.0, 1.0],     # "embedded" doc's own embedding
+            "trend momentum nifty": [1.0, 0.0],  # query embedding (orthogonal to the doc above)
+        }
+        store.set_embedder(lambda text: vectors[text])
+        # Simulate "not-embedded" never having gotten one (e.g. added while
+        # the embedder was transiently down) -- it must fall back to Jaccard.
+        store.get("not-embedded").embedding = None
+
+        results = store.search("trend momentum nifty", top_k=5)
+        doc_ids = [r[0].doc_id for r in results]
+        # "embedded" scores 0 via cosine (orthogonal to the query) and is
+        # filtered out entirely; "not-embedded" scores highly via Jaccard
+        # (near-total keyword overlap with the query).
+        assert doc_ids == ["not-embedded"]
+
+
 class TestVectorMemoryStoreThreadSafety:
     def test_concurrent_add_and_search(self):
         store = VectorMemoryStore()

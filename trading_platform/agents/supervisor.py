@@ -78,7 +78,7 @@ class AgentCouncilSupervisor:
 
     Flow:
       1. RAG pre-enrichment of AgentInputContext.evidence_ids.
-      2. Run 9 independent strategy agents in parallel (ThreadPoolExecutor).
+      2. Run 10 independent strategy agents in parallel (ThreadPoolExecutor).
          - Each agent has a hard per-agent wall-clock budget (_PER_AGENT_TIMEOUT_S).
          - Timed-out agents receive a stub HOLD vote, never block the council.
       3. Risk critic evaluates all strategy proposals.
@@ -96,7 +96,7 @@ class AgentCouncilSupervisor:
         trace_store: TraceStore | None = None,
         consensus_threshold: float = 0.55,
         confidence_threshold: float = 0.45,
-        max_workers: int = 8,
+        max_workers: int = 10,
         per_agent_timeout_s: int = _PER_AGENT_TIMEOUT_S,
     ) -> None:
         self._gw = gateway
@@ -169,6 +169,12 @@ class AgentCouncilSupervisor:
             ("FuturesCarryAgent",    lambda: self._futures.run(ctx)),
             ("HedgeBuilderAgent",    lambda: self._hedge.run(ctx)),
             ("NewsMacroAgent",       lambda: self._news.run(ctx)),
+            # Instantiated since this class's __init__ but never actually
+            # called — found 2026-07-28 while wiring LM Studio, meaning
+            # primary_model was configured but dead in the live council flow.
+            # Joins the same pool/timeout/vote-collection path as every
+            # other specialist above; no other code path needs to change.
+            ("QuantResearchAgent",   lambda: self._quant.run(ctx)),
         ]
 
         future_to_name: dict[concurrent.futures.Future, str] = {}

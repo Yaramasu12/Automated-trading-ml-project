@@ -51,3 +51,9 @@ def test_rl_mock_only_flagged_degraded():
     cap = ai_capabilities(_runtime(policies=[{"policy_id": "m1", "kind": "mock"}]))
     assert cap["layers"]["rl_marl"]["status"] == "mock_only"
     assert "rl_marl" in cap["degraded_layers"]
+
+
+def test_lm_studio_runtime_reported_as_real():
+    cap = ai_capabilities(_runtime(gateway="lm_studio", llm_runtime="lm_studio"))
+    assert cap["layers"]["llm_council"]["status"] == "real"
+    assert "llm_council" not in cap["degraded_layers"]

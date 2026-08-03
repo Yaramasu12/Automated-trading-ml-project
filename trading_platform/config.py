@@ -73,14 +73,23 @@ class Settings:
     enable_goal_governor: bool = True
 
     # Local LLM gateway
-    local_llm_gateway: str = "disabled"          # disabled | stub | ollama | llama_cpp | vllm
+    local_llm_gateway: str = "disabled"          # disabled | stub | ollama | llama_cpp | vllm | lm_studio
     local_llm_runtime: str = "stub"
     local_llm_primary_model: str = "gemma4-31b"
     local_llm_fast_model: str = "gemma4-e4b"
     local_llm_coordinator_model: str = "gemma4-26b-moe"
+    local_llm_embedding_model: str = "text-embedding-nomic-embed-text-v1.5"
     local_llm_base_url: str = "http://localhost:11434"
     local_llm_timeout_seconds: int = 15
     local_llm_max_output_tokens: int = 2048
+    # Global cap on concurrent in-flight LLM HTTP calls (LocalModelGateway),
+    # independent of AGENT_SCAN_CONCURRENCY. See model_gateway.py.
+    local_llm_max_concurrent_calls: int = 2
+
+    # Continuous (24/7) local-model runtime monitor — pure observability, runs
+    # independent of market hours. See TradingRuntime._periodic_runtime_monitor_loop.
+    enable_runtime_monitor: bool = True
+    runtime_monitor_interval_seconds: int = 900
 
     # Goal governor
     yearly_profit_target: float = 50_000_000.0   # 5 crore INR aspirational target
@@ -199,9 +208,13 @@ def load_settings() -> Settings:
         local_llm_primary_model=os.getenv("LOCAL_LLM_PRIMARY_MODEL", "gemma4-31b"),
         local_llm_fast_model=os.getenv("LOCAL_LLM_FAST_MODEL", "gemma4-e4b"),
         local_llm_coordinator_model=os.getenv("LOCAL_LLM_COORDINATOR_MODEL", "gemma4-26b-moe"),
+        local_llm_embedding_model=os.getenv("LOCAL_LLM_EMBEDDING_MODEL", "text-embedding-nomic-embed-text-v1.5"),
         local_llm_base_url=os.getenv("LOCAL_LLM_BASE_URL", "http://localhost:11434"),
         local_llm_timeout_seconds=int(os.getenv("LOCAL_LLM_TIMEOUT_SECONDS", "15")),
         local_llm_max_output_tokens=int(os.getenv("LOCAL_LLM_MAX_OUTPUT_TOKENS", "2048")),
+        local_llm_max_concurrent_calls=max(1, int(os.getenv("LOCAL_LLM_MAX_CONCURRENT_CALLS", "2"))),
+        enable_runtime_monitor=_bool_env("ENABLE_RUNTIME_MONITOR", True),
+        runtime_monitor_interval_seconds=max(60, int(os.getenv("RUNTIME_MONITOR_INTERVAL_SECONDS", "900"))),
         yearly_profit_target=float(os.getenv("YEARLY_PROFIT_TARGET", "50000000")),
         database_url=os.getenv("DATABASE_URL", ""),
     )

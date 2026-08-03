@@ -1,6 +1,10 @@
 """Tests for Phase 2: LocalModelGateway."""
+import json
 import logging
+import threading
+import time
 import unittest
+from unittest.mock import patch
 
 from trading_platform.agents.model_gateway import LocalModelGateway
 
@@ -81,6 +85,225 @@ class TestLocalModelGatewayStub(unittest.TestCase):
         for model in models:
             result = self._gw.generate(model, "sys", "user")
             self.assertIn("action", result)
+
+
+class TestLmStudioRuntime(unittest.TestCase):
+    def test_lm_studio_dispatches_to_openai_compat(self):
+        gw = LocalModelGateway(runtime="lm_studio", base_url="http://x", max_concurrent_calls=5)
+        calls = []
+
+        def fake(model, system, user, timeout=None, max_tokens=None):
+            calls.append(model)
+            return json.dumps({"action": "BUY", "confidence": 0.8, "reasoning": "r", "evidence_ids": []})
+
+        gw._openai_compat = fake
+        result = gw.generate("qwen/qwen3.6-35b-a3b", "sys", "user")
+        self.assertEqual(result["action"], "BUY")
+        self.assertEqual(calls, ["qwen/qwen3.6-35b-a3b"])
+
+
+class TestOpenAiCompatPayload(unittest.TestCase):
+    """Regression: LM Studio's server 400s on response_format.type="json_object"
+    (only accepts "json_schema"/"text") — confirmed 2026-07-28 against a live
+    server, unlike llama.cpp/vLLM which accept it. Must stay conditional."""
+
+    def _captured_body(self, runtime: str) -> dict:
+        gw = LocalModelGateway(runtime=runtime, base_url="http://x", max_concurrent_calls=5)
+        captured = {}
+
+        class FakeResp:
+            def __enter__(self):
+                return self
+            def __exit__(self, *a):
+                return False
+            def read(self):
+                return json.dumps({
+                    "choices": [{"message": {"content": json.dumps(
+                        {"action": "HOLD", "confidence": 0.5, "reasoning": "x", "evidence_ids": []}
+                    )}}]
+                }).encode()
+
+        def fake_urlopen(req, timeout=None):
+            captured["body"] = json.loads(req.data)
+            return FakeResp()
+
+        with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            gw.generate("m", "sys", "user")
+        return captured["body"]
+
+    def test_lm_studio_omits_response_format(self):
+        body = self._captured_body("lm_studio")
+        self.assertNotIn("response_format", body)
+
+    def test_vllm_includes_response_format(self):
+        body = self._captured_body("vllm")
+        self.assertEqual(body.get("response_format"), {"type": "json_object"})
+
+    def test_llama_cpp_includes_response_format(self):
+        body = self._captured_body("llama_cpp")
+        self.assertEqual(body.get("response_format"), {"type": "json_object"})
+
+
+class TestMarkdownFencedJsonResponse(unittest.TestCase):
+    """Regression: gemma-4-e4b via LM Studio wraps JSON in a ```json fence when
+    response_format can't constrain it (confirmed 2026-07-28 against a live
+    server) — json.loads used to fail at char 0 on every such reply."""
+
+    def test_fenced_json_is_parsed(self):
+        gw = LocalModelGateway(runtime="lm_studio", max_concurrent_calls=5)
+        fenced = '```json\n{"action": "HOLD", "confidence": 0.3, "reasoning": "r", "evidence_ids": []}\n```'
+        gw._openai_compat = lambda model, system, user, timeout=None, max_tokens=None: fenced
+        result = gw.generate("google/gemma-4-e4b", "sys", "user")
+        self.assertEqual(result["action"], "HOLD")
+        self.assertIsNone(result["failure_mode"])
+
+    def test_plain_fence_without_json_tag_is_parsed(self):
+        gw = LocalModelGateway(runtime="lm_studio", max_concurrent_calls=5)
+        fenced = '```\n{"action": "BUY", "confidence": 0.7, "reasoning": "r", "evidence_ids": []}\n```'
+        gw._openai_compat = lambda model, system, user, timeout=None, max_tokens=None: fenced
+        result = gw.generate("google/gemma-4-e4b", "sys", "user")
+        self.assertEqual(result["action"], "BUY")
+
+    def test_unfenced_json_still_parses(self):
+        gw = LocalModelGateway(runtime="lm_studio", max_concurrent_calls=5)
+        gw._openai_compat = lambda model, system, user, timeout=None, max_tokens=None: '{"action": "SELL", "confidence": 0.6, "reasoning": "r", "evidence_ids": []}'
+        result = gw.generate("google/gemma-4-e4b", "sys", "user")
+        self.assertEqual(result["action"], "SELL")
+
+
+class TestConcurrencyCap(unittest.TestCase):
+    def test_clamps_to_at_least_one(self):
+        gw = LocalModelGateway(runtime="lm_studio", max_concurrent_calls=0)
+        self.assertEqual(gw.max_concurrent_calls, 1)
+
+    def test_status_reports_max_concurrent_calls(self):
+        gw = LocalModelGateway(runtime="stub", max_concurrent_calls=7)
+        self.assertEqual(gw.status()["max_concurrent_calls"], 7)
+
+    def test_cap_bounds_simultaneous_dispatches(self):
+        cap = 2
+        gw = LocalModelGateway(runtime="lm_studio", max_concurrent_calls=cap, timeout=5)
+        gw._concurrency_wait_s = 1.0  # keep test fast but let contenders queue briefly
+        lock = threading.Lock()
+        in_flight = 0
+        max_seen = 0
+        release = threading.Event()
+
+        def fake(model, system, user, timeout=None, max_tokens=None):
+            nonlocal in_flight, max_seen
+            with lock:
+                in_flight += 1
+                max_seen = max(max_seen, in_flight)
+            release.wait(2)
+            with lock:
+                in_flight -= 1
+            return json.dumps({"action": "HOLD", "confidence": 0.5, "reasoning": "x", "evidence_ids": []})
+
+        gw._openai_compat = fake
+        threads = [threading.Thread(target=gw.generate, args=("m", "sys", "user")) for _ in range(6)]
+        for t in threads:
+            t.start()
+        time.sleep(0.3)
+        self.assertLessEqual(max_seen, cap)
+        release.set()
+        for t in threads:
+            t.join(timeout=5)
+
+    def test_overflow_call_falls_back_to_stub_fast(self):
+        gw = LocalModelGateway(runtime="lm_studio", max_concurrent_calls=1, timeout=5)
+        gw._concurrency_wait_s = 0.2  # keep the test fast
+        started = threading.Event()
+        release = threading.Event()
+
+        def blocking(model, system, user, timeout=None, max_tokens=None):
+            started.set()
+            release.wait(5)
+            return json.dumps({"action": "HOLD", "confidence": 0.5, "reasoning": "x", "evidence_ids": []})
+
+        gw._openai_compat = blocking
+        holder = threading.Thread(target=gw.generate, args=("m", "sys", "user"))
+        holder.start()
+        started.wait(2)
+
+        t0 = time.monotonic()
+        result = gw.generate("m", "sys", "user")
+        elapsed = time.monotonic() - t0
+
+        self.assertEqual(result.get("failure_mode"), "concurrency_saturated")
+        self.assertLess(elapsed, 1.0)  # failed fast, did not queue
+
+        release.set()
+        holder.join(timeout=5)
+
+
+class TestEmbed(unittest.TestCase):
+    """LocalModelGateway.embed() — real embeddings for RAG, shares the same
+    concurrency semaphore as generate() since both compete for the same
+    LM Studio capacity."""
+
+    def test_stub_runtime_returns_none(self):
+        gw = LocalModelGateway(runtime="stub")
+        self.assertIsNone(gw.embed("some text"))
+
+    def test_successful_embed_returns_vector(self):
+        gw = LocalModelGateway(runtime="lm_studio", max_concurrent_calls=5)
+
+        def fake_urlopen(req, timeout=None):
+            class FakeResp:
+                def __enter__(self):
+                    return self
+                def __exit__(self, *a):
+                    return False
+                def read(self):
+                    return json.dumps({"data": [{"embedding": [0.1, 0.2, 0.3]}]}).encode()
+            return FakeResp()
+
+        with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            result = gw.embed("trend momentum strategy")
+        self.assertEqual(result, [0.1, 0.2, 0.3])
+
+    def test_request_failure_returns_none_not_raise(self):
+        gw = LocalModelGateway(runtime="lm_studio", max_concurrent_calls=5)
+
+        def fake_urlopen(req, timeout=None):
+            raise TimeoutError("boom")
+
+        with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            result = gw.embed("some text")  # must not raise
+        self.assertIsNone(result)
+
+    def test_concurrency_saturated_returns_none_fast(self):
+        gw = LocalModelGateway(runtime="lm_studio", max_concurrent_calls=1, timeout=5)
+        gw._concurrency_wait_s = 0.2
+        started = threading.Event()
+        release = threading.Event()
+
+        def blocking(req, timeout=None):
+            started.set()
+            release.wait(5)
+            class FakeResp:
+                def __enter__(self):
+                    return self
+                def __exit__(self, *a):
+                    return False
+                def read(self):
+                    return json.dumps({"data": [{"embedding": [1.0]}]}).encode()
+            return FakeResp()
+
+        with patch("urllib.request.urlopen", side_effect=blocking):
+            holder = threading.Thread(target=gw.embed, args=("text",))
+            holder.start()
+            started.wait(2)
+
+            t0 = time.monotonic()
+            result = gw.embed("other text")
+            elapsed = time.monotonic() - t0
+
+            release.set()
+            holder.join(timeout=5)
+
+        self.assertIsNone(result)
+        self.assertLess(elapsed, 1.0)
 
 
 if __name__ == "__main__":

@@ -64,6 +64,20 @@ class TestAgentCouncilSupervisor(unittest.TestCase):
         # Should be a valid no-trade when confidence is low from stubs
         self.assertIn(decision.action, {"PROCEED", "NO_TRADE", "HALT", "REDUCE"})
 
+    def test_quant_research_agent_participates(self):
+        """Regression 2026-07-28/08-03: QuantResearchAgent was instantiated
+        in __init__ but never called by run() — primary_model was configured
+        but dead in the live council flow. Must now be a 10th real vote."""
+        ctx = _make_ctx("quant-participation-test")
+        decision = self._supervisor.run(ctx)
+        agent_names = {v.agent_name for v in decision.votes}
+        self.assertIn("QuantResearchAgent", agent_names)
+
+    def test_ten_strategy_votes_not_nine(self):
+        ctx = _make_ctx("ten-votes-test")
+        decision = self._supervisor.run(ctx)
+        self.assertEqual(len(decision.votes), 10)
+
 
 class TestVoting(unittest.TestCase):
     def test_consensus_unanimous(self):

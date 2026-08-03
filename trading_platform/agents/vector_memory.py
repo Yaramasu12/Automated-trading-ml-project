@@ -2,9 +2,14 @@ from __future__ import annotations
 
 """VectorMemory and RAG retriever for local agent grounding.
 
-Uses keyword-overlap (TF-IDF-flavoured Jaccard) similarity so there are
-zero external ML dependencies.  In production this layer can be swapped
-for a FAISS / ChromaDB backend while keeping the same RAGRetriever API.
+Retrieval is keyword-overlap (TF-IDF-flavoured Jaccard) by default — zero
+external ML dependencies, always available, including in stub-runtime/CI
+environments. When a real embedding function is wired via
+VectorMemoryStore.set_embedder() (runtime.py does this with
+LocalModelGateway.embed(), backed by LM Studio's nomic-embed-text model),
+search() uses real cosine-similarity semantic matching per document instead,
+falling back to Jaccard for any document/query pair that doesn't have both
+embeddings available. Same RAGRetriever API either way.
 
 Architecture
 ------------
@@ -33,9 +38,10 @@ import re
 import threading
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Callable
 
 from trading_platform.agents.schemas import EvidenceRef
+from trading_platform.logging_safety import note_swallowed
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +57,10 @@ class VectorDocument:
     tags: list[str] = field(default_factory=list)
     ts: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     metadata: dict[str, Any] = field(default_factory=dict)
+    # Real embedding vector, backfilled by VectorMemoryStore.set_embedder()/add()
+    # when a local embedding model is available. None means "use keyword
+    # (Jaccard) matching for this doc" — the pre-embeddings default behavior.
+    embedding: list[float] | None = None
 
     def to_dict(self) -> dict:
         return {
@@ -85,6 +95,20 @@ def _jaccard_score(a: set[str], b: set[str]) -> float:
     return inter / union if union > 0 else 0.0
 
 
+def _cosine_score(a: list[float], b: list[float]) -> float:
+    """Cosine similarity between two embedding vectors, 0.0 if either is empty
+    or has zero magnitude (degenerate embedding — treat as no match rather
+    than dividing by zero)."""
+    if not a or not b or len(a) != len(b):
+        return 0.0
+    dot = sum(x * y for x, y in zip(a, b))
+    mag_a = math.sqrt(sum(x * x for x in a))
+    mag_b = math.sqrt(sum(y * y for y in b))
+    if mag_a == 0.0 or mag_b == 0.0:
+        return 0.0
+    return dot / (mag_a * mag_b)
+
+
 # ── Store ─────────────────────────────────────────────────────────────────────
 
 class VectorMemoryStore:
@@ -98,10 +122,20 @@ class VectorMemoryStore:
         self._docs: dict[str, VectorDocument] = {}
         self._tokens: dict[str, set[str]] = {}   # doc_id → token set
         self._lock = threading.RLock()
+        # Optional real-embedding function (e.g. LocalModelGateway.embed),
+        # wired via set_embedder(). None (the default) means every search()
+        # call uses keyword (Jaccard) matching only — today's behavior,
+        # unchanged, and what stub-runtime / no-AI-council deployments get.
+        self._embed_fn: Callable[[str], list[float] | None] | None = None
 
     # ── Mutators ──────────────────────────────────────────────────────────────
 
     def add(self, doc: VectorDocument) -> None:
+        # Compute the embedding OUTSIDE the lock — it's a blocking network
+        # call, and holding self._lock across it would serialize every other
+        # store operation behind LM Studio's response time.
+        if doc.embedding is None and self._embed_fn is not None:
+            doc.embedding = self._safe_embed(doc.content)
         with self._lock:
             self._docs[doc.doc_id] = doc
             self._tokens[doc.doc_id] = _tokenise(doc.content + " " + " ".join(doc.tags))
@@ -111,6 +145,42 @@ class VectorMemoryStore:
             self._docs.pop(doc_id, None)
             self._tokens.pop(doc_id, None)
 
+    def set_embedder(self, embed_fn: Callable[[str], list[float] | None]) -> None:
+        """Wire a real embedding function and backfill it for every
+        already-stored document (e.g. the 25 seed docs). Best-effort,
+        per-document — one failure must not block the rest, and a stub-mode
+        embed_fn (always returns None) leaves every document exactly as it
+        was, so this is always safe to call unconditionally."""
+        self._embed_fn = embed_fn
+        with self._lock:
+            doc_ids = list(self._docs.keys())
+        backfilled = 0
+        for doc_id in doc_ids:
+            with self._lock:
+                doc = self._docs.get(doc_id)
+            if doc is None or doc.embedding is not None:
+                continue
+            embedding = self._safe_embed(doc.content)
+            if embedding is None:
+                continue
+            with self._lock:
+                current = self._docs.get(doc_id)
+                if current is doc:  # still the same doc, wasn't replaced/removed meanwhile
+                    current.embedding = embedding
+                    backfilled += 1
+        if backfilled:
+            logger.info(
+                "VectorMemoryStore: backfilled real embeddings for %d/%d documents",
+                backfilled, len(doc_ids),
+            )
+
+    def _safe_embed(self, text: str) -> list[float] | None:
+        try:
+            return self._embed_fn(text) if self._embed_fn is not None else None
+        except Exception as exc:
+            note_swallowed("vector_memory.embed", exc)
+            return None
+
     # ── Retrieval ─────────────────────────────────────────────────────────────
 
     def search(
@@ -119,9 +189,22 @@ class VectorMemoryStore:
         top_k: int = 5,
         category_filter: str | None = None,
     ) -> list[tuple[VectorDocument, float]]:
-        """Return up to top_k (document, score) pairs ordered by descending similarity."""
+        """Return up to top_k (document, score) pairs ordered by descending similarity.
+
+        Uses real embedding cosine similarity, per document, whenever both
+        the query and that document have an embedding available (an
+        embedder was wired via set_embedder() and both embed() calls
+        succeeded); falls back to keyword (Jaccard) matching for any
+        document that doesn't. This is a per-document fallback, not
+        all-or-nothing — partial embedding coverage (e.g. a document added
+        while the embedder was transiently failing) still returns sane,
+        appropriately-scored results rather than silently using the wrong
+        method for every document in the store.
+        """
         query_tokens = _tokenise(query)
-        if not query_tokens:
+        # Computed OUTSIDE the lock — a blocking network call.
+        query_embedding = self._safe_embed(query) if self._embed_fn is not None else None
+        if not query_tokens and query_embedding is None:
             return []
 
         results: list[tuple[VectorDocument, float]] = []
@@ -129,7 +212,10 @@ class VectorMemoryStore:
             for doc_id, doc in self._docs.items():
                 if category_filter and doc.category != category_filter:
                     continue
-                score = _jaccard_score(query_tokens, self._tokens.get(doc_id, set()))
+                if query_embedding is not None and doc.embedding is not None:
+                    score = _cosine_score(query_embedding, doc.embedding)
+                else:
+                    score = _jaccard_score(query_tokens, self._tokens.get(doc_id, set()))
                 if score > 0.0:
                     results.append((doc, score))
 

@@ -153,6 +153,50 @@ CREATE TABLE IF NOT EXISTS agent_weights (
     weight     DOUBLE PRECISION NOT NULL,
     updated_at TIMESTAMPTZ      NOT NULL DEFAULT now()
 );
+
+CREATE TABLE IF NOT EXISTS runtime_monitor_log (
+    id           BIGSERIAL   PRIMARY KEY,
+    ts           TIMESTAMPTZ NOT NULL DEFAULT now(),
+    severity     TEXT        NOT NULL,
+    summary_text TEXT,
+    anomalies    JSONB,
+    metrics      JSONB
+);
+
+CREATE TABLE IF NOT EXISTS daily_ai_reviews (
+    id           BIGSERIAL   PRIMARY KEY,
+    review_date  DATE        NOT NULL UNIQUE,
+    summary_text TEXT,
+    model_id     TEXT,
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS tuning_suggestions (
+    id             BIGSERIAL   PRIMARY KEY,
+    review_date    DATE        NOT NULL,
+    parameter      TEXT        NOT NULL,
+    current_value  TEXT,
+    proposed_value TEXT,
+    rationale      TEXT,
+    confidence     DOUBLE PRECISION,
+    model_id       TEXT,
+    status         TEXT        NOT NULL DEFAULT 'pending',
+    created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+    reviewed_at    TIMESTAMPTZ
+);
+
+CREATE TABLE IF NOT EXISTS strategy_hypotheses (
+    id                  BIGSERIAL   PRIMARY KEY,
+    created_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
+    title               TEXT        NOT NULL,
+    thesis_text         TEXT,
+    suggested_universe  TEXT,
+    suggested_features  TEXT,
+    model_id            TEXT,
+    status              TEXT        NOT NULL DEFAULT 'proposed',
+    validation_run_id   TEXT,
+    validation_verdict  TEXT
+);
 """
 
 _PG_INDEXES = """
@@ -167,6 +211,9 @@ CREATE INDEX IF NOT EXISTS idx_patterns_vec       ON market_patterns
     USING ivfflat (feature_vector vector_cosine_ops) WITH (lists = 10);
 CREATE INDEX IF NOT EXISTS idx_outcomes_underlying ON profit_guard_outcomes (underlying, ts DESC);
 CREATE INDEX IF NOT EXISTS idx_reflections_sym     ON reflections (underlying, ts DESC);
+CREATE INDEX IF NOT EXISTS idx_monitor_log_ts      ON runtime_monitor_log (ts DESC);
+CREATE INDEX IF NOT EXISTS idx_tuning_status       ON tuning_suggestions (status, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_hypotheses_status   ON strategy_hypotheses (status, created_at DESC);
 """
 
 _PG_HYPERTABLES = """
@@ -294,12 +341,55 @@ CREATE TABLE IF NOT EXISTS agent_weights (
     weight     REAL NOT NULL,
     updated_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS runtime_monitor_log (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts           TEXT NOT NULL,
+    severity     TEXT NOT NULL,
+    summary_text TEXT,
+    anomalies    TEXT,
+    metrics      TEXT
+);
+CREATE TABLE IF NOT EXISTS daily_ai_reviews (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    review_date  TEXT NOT NULL UNIQUE,
+    summary_text TEXT,
+    model_id     TEXT,
+    created_at   TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS tuning_suggestions (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    review_date    TEXT NOT NULL,
+    parameter      TEXT NOT NULL,
+    current_value  TEXT,
+    proposed_value TEXT,
+    rationale      TEXT,
+    confidence     REAL,
+    model_id       TEXT,
+    status         TEXT NOT NULL DEFAULT 'pending',
+    created_at     TEXT NOT NULL,
+    reviewed_at    TEXT
+);
+CREATE TABLE IF NOT EXISTS strategy_hypotheses (
+    id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at         TEXT NOT NULL,
+    title              TEXT NOT NULL,
+    thesis_text        TEXT,
+    suggested_universe TEXT,
+    suggested_features TEXT,
+    model_id           TEXT,
+    status             TEXT NOT NULL DEFAULT 'proposed',
+    validation_run_id  TEXT,
+    validation_verdict TEXT
+);
 CREATE INDEX IF NOT EXISTS idx_trades_ts        ON trades (timestamp);
 CREATE INDEX IF NOT EXISTS idx_trades_mode      ON trades (execution_mode);
 CREATE INDEX IF NOT EXISTS idx_trades_is_test   ON trades (is_test);
 CREATE INDEX IF NOT EXISTS idx_snapshots_mode   ON portfolio_snapshots (execution_mode);
 CREATE INDEX IF NOT EXISTS idx_outcomes_sym     ON profit_guard_outcomes (underlying, ts DESC);
 CREATE INDEX IF NOT EXISTS idx_reflections_sym  ON reflections (underlying, ts DESC);
+CREATE INDEX IF NOT EXISTS idx_monitor_log_ts   ON runtime_monitor_log (ts DESC);
+CREATE INDEX IF NOT EXISTS idx_tuning_status    ON tuning_suggestions (status, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_hypotheses_status ON strategy_hypotheses (status, created_at DESC);
 """
 
 
@@ -473,7 +563,16 @@ class TradingDatabase:
     def _sqlite_conn(self) -> sqlite3.Connection:
         if not getattr(self._local, "conn", None):
             conn = sqlite3.connect(str(self.db_path), check_same_thread=False)
-            conn.execute("PRAGMA journal_mode=WAL")
+            # WAL mode needs a shared-memory-mapped -shm sidecar file, which
+            # doesn't reliably survive this environment's mix of Docker
+            # Desktop Windows bind-mount access and rapid native local test
+            # runs against the same default data/trading.db path — confirmed
+            # 2026-07-29: this file (and oms_events.db / paper_learning_journal.db,
+            # same root cause, see their _conn()) were found genuinely
+            # corrupted (PRAGMA integrity_check failures, not just open
+            # errors) after today's session. Salvaged what was readable and
+            # switched to DELETE, which needs no shared memory mapping.
+            conn.execute("PRAGMA journal_mode=DELETE")
             conn.execute("PRAGMA synchronous=NORMAL")
             conn.execute("PRAGMA foreign_keys=ON")
             conn.row_factory = sqlite3.Row
@@ -1156,6 +1255,174 @@ class TradingDatabase:
             return {row[0]: float(row[1]) for row in cur.fetchall()}
 
     # ------------------------------------------------------------------
+    # Runtime monitor digests (continuous local-model observability loop)
+    # ------------------------------------------------------------------
+
+    def save_monitor_digest(
+        self,
+        severity: str,
+        summary_text: str | None,
+        anomalies: list[str] | None,
+        metrics: dict | None,
+    ) -> None:
+        now = datetime.now(timezone.utc).isoformat()
+        sql = self._p(
+            "INSERT INTO runtime_monitor_log (ts, severity, summary_text, anomalies, metrics) "
+            "VALUES (?,?,?,?,?)"
+        )
+        with self._cursor() as cur:
+            cur.execute(sql, (
+                now, severity, summary_text,
+                json.dumps(anomalies or []), json.dumps(metrics or {}),
+            ))
+
+    def recent_monitor_digests(self, limit: int = 20) -> list[dict]:
+        sql = self._p("SELECT * FROM runtime_monitor_log ORDER BY id DESC LIMIT ?")
+        with self._cursor() as cur:
+            cur.execute(sql, (limit,))
+            rows = self._rows(cur, cur.fetchall())
+        for row in rows:
+            row["anomalies"] = self._json_field(row.get("anomalies"), default=[])
+            row["metrics"] = self._json_field(row.get("metrics"), default={})
+        return rows
+
+    @staticmethod
+    def _json_field(value: Any, default: Any) -> Any:
+        """Decode a JSON/JSONB column read back from either backend.
+
+        SQLite has no native JSON type (these columns are declared TEXT), so
+        the driver always returns the raw string. psycopg2 auto-adapts JSONB
+        columns to Python objects on SELECT, so under PostgreSQL `value` is
+        already a list/dict — calling json.loads() on it raises TypeError
+        (confirmed 2026-07-28: every /monitor/runtime-digest call 500'd
+        against the live Postgres-backed container, even though the identical
+        SQLite-backed unit tests passed — the two backends were never
+        exercised by the same test). Mirrors the existing decode pattern in
+        trace/learning_journal.py's _decode().
+        """
+        if isinstance(value, str):
+            return json.loads(value) if value else default
+        return value if value is not None else default
+
+    # ------------------------------------------------------------------
+    # Daily AI review & tuning suggestions (post-market advisor)
+    # ------------------------------------------------------------------
+
+    def save_daily_ai_review(self, review_date: date, summary_text: str, model_id: str | None) -> None:
+        now = datetime.now(timezone.utc).isoformat()
+        if self._mode == "postgres":
+            sql = (
+                "INSERT INTO daily_ai_reviews (review_date, summary_text, model_id, created_at) "
+                "VALUES (%s,%s,%s,%s) "
+                "ON CONFLICT (review_date) DO UPDATE SET "
+                "summary_text=EXCLUDED.summary_text, model_id=EXCLUDED.model_id, created_at=EXCLUDED.created_at"
+            )
+            params: Any = (review_date, summary_text, model_id, now)
+        else:
+            sql = (
+                "INSERT INTO daily_ai_reviews (review_date, summary_text, model_id, created_at) "
+                "VALUES (?,?,?,?) "
+                "ON CONFLICT(review_date) DO UPDATE SET "
+                "summary_text=excluded.summary_text, model_id=excluded.model_id, created_at=excluded.created_at"
+            )
+            params = (review_date.isoformat(), summary_text, model_id, now)
+        with self._cursor() as cur:
+            cur.execute(sql, params)
+
+    def get_daily_ai_review(self, review_date: date) -> dict | None:
+        sql = self._p("SELECT * FROM daily_ai_reviews WHERE review_date=?")
+        params = (review_date,) if self._mode == "postgres" else (review_date.isoformat(),)
+        with self._cursor() as cur:
+            cur.execute(sql, params)
+            row = cur.fetchone()
+            return _row_to_dict(cur, row) if row else None
+
+    def save_tuning_suggestion(
+        self,
+        review_date: date,
+        parameter: str,
+        current_value: str,
+        proposed_value: str,
+        rationale: str,
+        confidence: float | None,
+        model_id: str | None,
+    ) -> int:
+        now = datetime.now(timezone.utc).isoformat()
+        rd = review_date if self._mode == "postgres" else review_date.isoformat()
+        sql = self._p(
+            "INSERT INTO tuning_suggestions "
+            "(review_date, parameter, current_value, proposed_value, rationale, confidence, "
+            "model_id, status, created_at) VALUES (?,?,?,?,?,?,?,'pending',?)"
+        )
+        with self._cursor() as cur:
+            cur.execute(sql, (rd, parameter, current_value, proposed_value, rationale, confidence, model_id, now))
+            if self._mode == "postgres":
+                cur.execute("SELECT lastval()")
+                return int(cur.fetchone()[0])
+            return int(cur.lastrowid)
+
+    def tuning_suggestions(self, status: str | None = None, limit: int = 50) -> list[dict]:
+        clauses, params = [], []
+        if status:
+            clauses.append("status = ?"); params.append(status)
+        where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+        sql = self._p(f"SELECT * FROM tuning_suggestions {where} ORDER BY id DESC LIMIT ?")
+        with self._cursor() as cur:
+            cur.execute(sql, [*params, limit])
+            return self._rows(cur, cur.fetchall())
+
+    def update_tuning_suggestion_status(self, suggestion_id: int, status: str) -> bool:
+        now = datetime.now(timezone.utc).isoformat()
+        sql = self._p("UPDATE tuning_suggestions SET status=?, reviewed_at=? WHERE id=?")
+        with self._cursor() as cur:
+            cur.execute(sql, (status, now, suggestion_id))
+            return cur.rowcount > 0
+
+    # ------------------------------------------------------------------
+    # Strategy hypotheses (research idea generation — never self-validated)
+    # ------------------------------------------------------------------
+
+    def save_strategy_hypothesis(
+        self,
+        title: str,
+        thesis_text: str,
+        suggested_universe: str | None,
+        suggested_features: str | None,
+        model_id: str | None,
+    ) -> int:
+        now = datetime.now(timezone.utc).isoformat()
+        sql = self._p(
+            "INSERT INTO strategy_hypotheses "
+            "(created_at, title, thesis_text, suggested_universe, suggested_features, "
+            "model_id, status) VALUES (?,?,?,?,?,?,'proposed')"
+        )
+        with self._cursor() as cur:
+            cur.execute(sql, (now, title, thesis_text, suggested_universe, suggested_features, model_id))
+            if self._mode == "postgres":
+                cur.execute("SELECT lastval()")
+                return int(cur.fetchone()[0])
+            return int(cur.lastrowid)
+
+    def strategy_hypotheses(self, status: str | None = None, limit: int = 50) -> list[dict]:
+        clauses, params = [], []
+        if status:
+            clauses.append("status = ?"); params.append(status)
+        where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+        sql = self._p(f"SELECT * FROM strategy_hypotheses {where} ORDER BY id DESC LIMIT ?")
+        with self._cursor() as cur:
+            cur.execute(sql, [*params, limit])
+            return self._rows(cur, cur.fetchall())
+
+    def mark_hypothesis_tested(self, hypothesis_id: int, validation_run_id: str, validation_verdict: str) -> bool:
+        sql = self._p(
+            "UPDATE strategy_hypotheses SET status='tested', validation_run_id=?, "
+            "validation_verdict=? WHERE id=?"
+        )
+        with self._cursor() as cur:
+            cur.execute(sql, (validation_run_id, validation_verdict, hypothesis_id))
+            return cur.rowcount > 0
+
+    # ------------------------------------------------------------------
     # Maintenance
     # ------------------------------------------------------------------
 
@@ -1168,11 +1435,11 @@ class TradingDatabase:
         else:
             conn = getattr(self._local, "conn", None)
             if conn:
-                conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
                 conn.close()
                 self._local.conn = None
 
     def checkpoint(self) -> None:
-        if self._mode == "sqlite":
-            conn = self._sqlite_conn()
-            conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        # No-op under journal_mode=DELETE (see _sqlite_conn()) — DELETE mode
+        # commits straight to the main .db file each transaction, unlike WAL,
+        # which is what this used to flush. Postgres mode never needed this.
+        pass

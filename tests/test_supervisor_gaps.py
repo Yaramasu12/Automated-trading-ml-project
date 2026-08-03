@@ -282,8 +282,10 @@ class TestPerAgentTimeout(unittest.TestCase):
         """In stub mode all agents return instantly — all should appear in votes."""
         sup = AgentCouncilSupervisor(gateway=_stub_gw(), per_agent_timeout_s=10)
         decision = sup.run(_make_ctx())
-        # 9 strategy agents should all complete
-        self.assertEqual(len(decision.votes), 9, f"got {len(decision.votes)} votes, expected 9")
+        # 10 strategy agents should all complete (9 + QuantResearchAgent,
+        # reactivated 2026-08-03 — see test_agent_council.py's
+        # test_ten_strategy_votes_not_nine for the dedicated regression test)
+        self.assertEqual(len(decision.votes), 10, f"got {len(decision.votes)} votes, expected 10")
 
     def test_decision_action_valid_even_with_timeouts(self):
         sup = AgentCouncilSupervisor(gateway=_stub_gw(), per_agent_timeout_s=1)
