@@ -494,6 +494,31 @@ class RuntimeTests(unittest.TestCase):
                 }
             )
 
+    def test_square_off_exclude_segments_skips_options_positions(self):
+        """Regression 2026-08-03: the daily scheduled EOD sweep passes
+        exclude_segments=["OPTIONS"] so it never touches short-vol condor
+        legs — they're held for days on their own expiry-based ExitPlan."""
+        from datetime import date as _date
+        from trading_platform.domain.enums import AssetClass, Exchange, InstrumentType, OptionType, Segment
+        from trading_platform.domain.models import Instrument, Position
+
+        runtime = TradingRuntime()
+        opt_inst = Instrument(
+            symbol="NIFTY24000CE", name="NIFTY", exchange=Exchange.NFO, segment=Segment.OPTIONS,
+            asset_class=AssetClass.INDEX, instrument_type=InstrumentType.OPTION, token="NIFTY24000CE",
+            lot_size=50, expiry=_date(2100, 1, 7), strike=24000.0, option_type=OptionType.CE,
+            underlying="NIFTY",
+        )
+        runtime.portfolio.positions["NIFTY24000CE"] = Position(instrument=opt_inst, quantity=-1, average_price=100.0)
+        runtime.portfolio.positions["RELIANCE"] = Position(
+            instrument=runtime.instrument_master.get("RELIANCE"), quantity=10, average_price=2800.0,
+        )
+
+        result = asyncio.run(runtime.square_off({"scope": "GLOBAL", "exclude_segments": ["OPTIONS"],
+                                                  "reason": "test_eod"}))
+
+        self.assertEqual(result["positions_targeted"], 1)   # only RELIANCE, not the option leg
+
 
 if __name__ == "__main__":
     unittest.main()

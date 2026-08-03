@@ -76,6 +76,11 @@ class SquareOffRequest(BaseModel):
     reason: str = ""
     strategy_name: str | None = None
     trace_id: str | None = None
+    # Position segments (e.g. "OPTIONS") to skip entirely — used by the daily
+    # scheduled EOD sweeps so they never touch short-vol/options positions,
+    # which are held for days on their own expiry-based ExitPlan. A genuine
+    # manual/kill-switch square-off omits this and flattens everything.
+    exclude_segments: list[str] | None = None
 
 
 class StateResponse(BaseModel):

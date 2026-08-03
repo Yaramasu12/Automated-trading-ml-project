@@ -5,7 +5,7 @@ import logging
 from datetime import datetime, timezone
 from typing import Callable, Awaitable
 
-from trading_platform.domain.enums import OrderPriority, OrderType, ProductType, Side
+from trading_platform.domain.enums import OrderPriority, OrderType, ProductType, Segment, Side
 from trading_platform.domain.models import OrderIntent, Signal
 from trading_platform.exit.exit_plan import ExitPlan, ExitTrigger
 
@@ -257,12 +257,19 @@ class ExitManager:
             if trigger == ExitTrigger.PARTIAL_TARGET and plan.partial_exit_qty and plan.partial_exit_qty > 0
             else plan.quantity
         )
+        # Match the position's own product type — closing a CARRYFORWARD
+        # (options/short-vol) position with an INTRADAY exit does not net out
+        # at the broker (see broker/angel_one.py's producttype mapping).
+        close_product_type = (
+            ProductType.CARRYFORWARD if plan.instrument.segment == Segment.OPTIONS
+            else ProductType.INTRADAY
+        )
         intent = OrderIntent(
             signal=signal,
             instrument=plan.instrument,
             quantity=exit_qty,
             order_type=OrderType.MARKET,
-            product_type=ProductType.INTRADAY,
+            product_type=close_product_type,
             priority=priority,
         )
         await self._enqueue(intent)

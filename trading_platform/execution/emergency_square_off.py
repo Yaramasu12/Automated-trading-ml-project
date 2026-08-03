@@ -8,7 +8,7 @@ import urllib.request
 from datetime import datetime, timezone
 from typing import Callable, Awaitable
 
-from trading_platform.domain.enums import OrderPriority, OrderType, ProductType, Side, SquareOffScope
+from trading_platform.domain.enums import OrderPriority, OrderType, ProductType, Segment, Side, SquareOffScope
 from trading_platform.domain.models import OrderIntent, Signal
 from trading_platform.portfolio.ledger import PortfolioLedger
 
@@ -54,7 +54,10 @@ class EmergencySquareOff:
         """
         now = datetime.now(timezone.utc)
         positions = self._portfolio.positions
-        _symbols_filter: set[str] | None = set(symbols) if symbols else None
+        # `is not None`, not truthiness: an explicitly empty allow-list
+        # (every position filtered out, e.g. by exclude_segments upstream)
+        # must square off nothing, not silently fall back to no-filter/GLOBAL.
+        _symbols_filter: set[str] | None = set(symbols) if symbols is not None else None
 
         targets: list = []
         for pos in positions.values():
@@ -114,12 +117,19 @@ class EmergencySquareOff:
                     "square_off_reason": reason,
                 },
             )
+            # Match the position's own product type — closing a CARRYFORWARD
+            # (options/short-vol) position with an INTRADAY exit does not net
+            # out at the broker (see broker/angel_one.py's producttype mapping).
+            close_product_type = (
+                ProductType.CARRYFORWARD if pos.instrument.segment == Segment.OPTIONS
+                else ProductType.INTRADAY
+            )
             intent = OrderIntent(
                 signal=signal,
                 instrument=pos.instrument,
                 quantity=abs(pos.quantity),
                 order_type=OrderType.MARKET,
-                product_type=ProductType.INTRADAY,
+                product_type=close_product_type,
                 priority=OrderPriority.EMERGENCY_EXIT,
             )
             try:

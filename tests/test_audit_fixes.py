@@ -243,6 +243,38 @@ class ExitPlanLifecycleTests(unittest.IsolatedAsyncioTestCase):
         mgr.on_exit_fill("RELIANCE", plan_id=plan.plan_id, trigger="STOP_LOSS")
         self.assertEqual(mgr.active_plan_count, 0)
 
+    async def test_exit_intent_product_type_matches_position(self):
+        """Regression 2026-08-03: closing a CARRYFORWARD (options) position
+        with an INTRADAY exit does not net out at the broker — the exit must
+        submit with the same product type the position was held under."""
+        from trading_platform.domain.enums import Segment
+
+        enqueued: list[OrderIntent] = []
+
+        async def enqueue(intent):
+            enqueued.append(intent)
+
+        # RELIANCE (equity) — closes must stay INTRADAY.
+        equity_plan = self._plan()
+        mgr = ExitManager(enqueue)
+        mgr.register(equity_plan)
+        status = await mgr._emit_exit_intent(
+            equity_plan, ExitTrigger.STOP_LOSS, 2758.0, datetime.now(timezone.utc))
+        self.assertEqual(status, "emitted")
+        self.assertEqual(enqueued[-1].product_type, ProductType.INTRADAY)
+
+        # A NIFTY option — closes must be CARRYFORWARD.
+        opt_symbol = next(i.symbol for i in _MASTER.by_underlying("NIFTY", Segment.OPTIONS))
+        trade = Trade("t2", "o2", opt_symbol, Side.SELL, 1, 100.0, 0.0,
+                      datetime.now(timezone.utc), "short_vol_condor")
+        opt_plan = ExitPlan.from_trade(trade, instrument=_MASTER.get(opt_symbol),
+                                       expiry_date=date(2100, 1, 7))
+        mgr.register(opt_plan)
+        status = await mgr._emit_exit_intent(
+            opt_plan, ExitTrigger.EXPIRY, 5.0, datetime.now(timezone.utc))
+        self.assertEqual(status, "emitted")
+        self.assertEqual(enqueued[-1].product_type, ProductType.CARRYFORWARD)
+
     async def test_unconfirmed_exit_rearms_after_pending_window(self):
         mgr = ExitManager(lambda i: None)
         plan = self._plan()
@@ -285,6 +317,88 @@ class AngelOneOrderShapeTests(unittest.TestCase):
         self.assertEqual(params["variety"], "NORMAL")
         self.assertEqual(params["stoploss"], "0")
         self.assertEqual(params["squareoff"], "0")
+
+
+class SqliteJournalModeTests(unittest.TestCase):
+    """Regression 2026-07-29: OMSEventStore and PaperLearningJournal both use
+    journal_mode=WAL, which requires a shared-memory-mapped -shm sidecar file
+    that doesn't reliably open over a Docker Desktop Windows bind mount when
+    written concurrently from two containers (trading-api + scheduler, both
+    mounting ./data). Every real write 500'd with "sqlite3.OperationalError:
+    unable to open database file" raised from the PRAGMA journal_mode=WAL
+    line itself — not from sqlite3.connect(), which succeeded. Switched to
+    DELETE, which needs no shared memory mapping."""
+
+    def test_oms_event_store_uses_delete_journal_mode(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = OMSEventStore(Path(tmp) / "oms_events.db")
+            try:
+                mode = store._conn().execute("PRAGMA journal_mode").fetchone()[0]
+                self.assertEqual(mode.lower(), "delete")
+            finally:
+                store.close()
+
+    def test_paper_learning_journal_uses_delete_journal_mode(self):
+        from trading_platform.trace.learning_journal import PaperLearningJournal
+
+        with tempfile.TemporaryDirectory() as tmp:
+            journal = PaperLearningJournal(Path(tmp) / "paper_learning_journal.db")
+            try:
+                mode = journal._conn().execute("PRAGMA journal_mode").fetchone()[0]
+                self.assertEqual(mode.lower(), "delete")
+            finally:
+                journal.close()
+
+    def test_oms_checkpoint_is_a_safe_no_op(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = OMSEventStore(Path(tmp) / "oms_events.db")
+            try:
+                store.checkpoint()  # must not raise under DELETE journal mode
+            finally:
+                store.close()
+
+    def test_trading_database_sqlite_uses_delete_journal_mode(self):
+        from trading_platform.data.persistence import TradingDatabase
+
+        with tempfile.TemporaryDirectory() as tmp:
+            db = TradingDatabase(db_path=Path(tmp) / "trading.db")
+            try:
+                mode = db._sqlite_conn().execute("PRAGMA journal_mode").fetchone()[0]
+                self.assertEqual(mode.lower(), "delete")
+                db.checkpoint()  # must not raise under DELETE journal mode
+            finally:
+                db.close()
+
+    def test_trace_store_and_trading_database_agree_on_journal_mode(self):
+        # Regression 2026-07-29: TraceStore and TradingDatabase both default
+        # to (and, in TradingRuntime.__init__, are BOTH constructed against)
+        # the same physical file, data/trading.db. TraceStore was missed in
+        # the WAL->DELETE fix, so each one fought to set a different journal
+        # mode on its own connection to the same file — which requires
+        # exclusive access — and every single TradingRuntime() construction
+        # 500'd with "sqlite3.OperationalError: database is locked" as a
+        # result. They must always agree.
+        from trading_platform.data.persistence import TradingDatabase
+        from trading_platform.trace.store import TraceStore
+
+        with tempfile.TemporaryDirectory() as tmp:
+            shared_path = Path(tmp) / "trading.db"
+            db = TradingDatabase(db_path=shared_path)
+            trace_store = TraceStore(base_dir=Path(tmp) / "traces", db_path=shared_path)
+            try:
+                db_mode = db._sqlite_conn().execute("PRAGMA journal_mode").fetchone()[0]
+                trace_mode = trace_store._db_conn().execute("PRAGMA journal_mode").fetchone()[0]
+                self.assertEqual(db_mode.lower(), trace_mode.lower())
+                # The actual failure mode: a write through either store must
+                # not deadlock against the other's open connection.
+                db.save_risk_event(event_type="test", reason="regression check")
+            finally:
+                db.close()
+                # TraceStore has no close() — release its connection directly
+                # so Windows can clean up the TemporaryDirectory afterwards
+                # (an open sqlite handle inside the tempdir otherwise makes
+                # shutil.rmtree fail with a confusing NotADirectoryError).
+                trace_store._db_conn().close()
 
 
 if __name__ == "__main__":

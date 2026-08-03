@@ -32,7 +32,7 @@ from trading_platform.agent.market_hours import (
     now_ist,
     seconds_to_next_open,
 )
-from trading_platform.domain.enums import OrderPriority, OrderType, ProductType
+from trading_platform.domain.enums import OrderPriority, OrderType, ProductType, Segment
 from trading_platform.domain.models import OrderIntent
 
 if TYPE_CHECKING:
@@ -49,8 +49,19 @@ EQUITY_UNDERLYINGS = [
     # ── Nifty 50 equities with F&O ───────────────────────────────────────────
     "RELIANCE", "TCS", "INFY", "HDFCBANK", "ICICIBANK", "SBIN",
     "WIPRO", "KOTAKBANK", "AXISBANK", "MARUTI", "SUNPHARMA",
-    "TATAMOTORS", "BAJFINANCE", "HINDUNILVR", "BHARTIARTL", "NTPC",
-    "ASIANPAINT", "LTIM", "ONGC", "POWERGRID", "TITAN",
+    # TATAMOTORS demerged (Oct 2025) into TMPV (passenger vehicles, keeps the
+    # original NSE token 3456) and TMCV (commercial vehicles) — "TATAMOTORS"
+    # no longer exists as a listing. Confirmed 2026-07-29: absent from the
+    # entire 115k-instrument Angel One master (cash/futures/options all
+    # empty), which was silently degrading every scan to a synthetic-data
+    # fallback. Using TMPV to match LIVE_FEED_DEFAULT_SYMBOLS' existing choice.
+    "TMPV", "BAJFINANCE", "HINDUNILVR", "BHARTIARTL", "NTPC",
+    # LTIM removed 2026-07-29: confirmed absent from the raw Angel One
+    # instrument master under this or any related name (LTI/MINDTREE/INDTREE
+    # all checked) — genuinely no tradeable contract upstream right now, not
+    # a lookup bug in this codebase. Re-add if/when Angel One's feed lists it
+    # again; scanning it meanwhile only produced synthetic-data-only decisions.
+    "ASIANPAINT", "ONGC", "POWERGRID", "TITAN",
     "ITC", "LT", "HCLTECH", "M&M", "COALINDIA",
     "HEROMOTOCO", "HINDALCO", "JSWSTEEL", "ULTRACEMCO", "GRASIM",
     "BPCL", "CIPLA", "DRREDDY", "EICHERMOT",
@@ -321,6 +332,7 @@ class TradingAgent:
         # Runs at most once per trading day when the entry window is open.
         if equity_open:
             await self._maybe_enter_short_vol(now)
+            await self._maybe_exit_short_vol(now)
 
         # Main trading cycle — orchestrated (profit-first) path
         await self._orchestrated_scan_and_execute(active_underlyings)
@@ -352,18 +364,21 @@ class TradingAgent:
             self._state.shortvol_entry_date = today
         submitted = [r for r in result.get("results", []) if r.get("submitted")]
         if not submitted and continuous:
-            # Deliberately quiet on no-op cycles in continuous mode (would
-            # otherwise log every 5 min forever) — but that silence is
-            # indistinguishable from "never running" from the outside. One
-            # visible line per no-op cycle until this is confirmed working.
-            # logger.info is silently dropped app-wide — nothing in this package
-            # calls logging.basicConfig, so the root logger sits at Python's
-            # implicit default (WARNING). Confirmed by absence: no exception
-            # ever showed up either, at logger.warning calls that definitely do
-            # surface (AgentCouncilSupervisor timeouts, live-feed errors).
-            # logger.warning here is a deliberate, temporary level bump for
-            # visibility, not a real warning condition.
-            logger.warning("short-vol auto-entry: no submissions — %s", result.get("results", []))
+            # logger.warning here previously relied on Python's logging
+            # last-resort stderr handler for visibility, but nothing in this
+            # package calls logging.basicConfig and no handler was actually
+            # attached — confirmed 2026-08-03 by grepping a full live session's
+            # container logs for this exact message: zero matches across 4
+            # scan cycles despite the code running every time. Route through
+            # _log_activity instead — the same mechanism "Scan #N" and
+            # "ORCHESTRATOR SKIP" already use, proven to surface in
+            # /agent/status — so each cycle's short-vol verdict (and why) is
+            # actually visible without querying /short-vol/preview separately.
+            reasons = "; ".join(
+                f"{r.get('underlying', '?')}:{r.get('structure', '?')} {r.get('reason', 'no reason given')}"
+                for r in result.get("results", [])
+            )
+            self._log_activity(f"SHORT-VOL: no entry this cycle — {reasons}")
             return   # nothing new to enter this scan — stay quiet
         self._log_activity(
             f"SHORT-VOL auto-entry: {len(submitted)} structure(s) submitted "
@@ -372,6 +387,44 @@ class TradingAgent:
         self._publish("agent.short_vol_auto_entry", {
             "ts": now_ist().isoformat(), "result": result,
         })
+
+    async def _maybe_exit_short_vol(self, now: datetime) -> None:
+        """Active profit-target/stop-loss exit for open short-vol structures,
+        evaluated every cycle. The per-leg ExitPlan's EXPIRY trigger (see the
+        multi-leg branch in runtime._on_fill) is the backstop if this never
+        fires — holding to expiry is safe for a defined-risk, cash-settled
+        index condor either way."""
+        executor = getattr(self._runtime, "short_vol_executor", None)
+        if executor is None:
+            return
+        try:
+            structures = executor.find_open_structures()
+        except Exception as exc:
+            logger.warning("short-vol exit-evaluation error: %s", exc)
+            return
+        if not structures:
+            return
+        holding: list[str] = []
+        for s in structures:
+            underlying, expiry, positions = s["underlying"], s["expiry"], s["positions"]
+            try:
+                verdict = executor.evaluate_exit(underlying, expiry, positions)
+            except Exception as exc:
+                logger.warning("short-vol exit evaluation failed for %s %s: %s", underlying, expiry, exc)
+                continue
+            if verdict.get("action") != "close":
+                holding.append(f"{underlying}:{expiry.isoformat()} {verdict.get('reason', 'holding')}")
+                continue
+            try:
+                await executor.close_structure(underlying, expiry, positions, verdict.get("reason", ""))
+            except Exception as exc:
+                logger.warning("short-vol close failed for %s %s: %s", underlying, expiry, exc)
+                continue
+            self._log_activity(
+                f"SHORT-VOL EXIT: {underlying} {expiry.isoformat()} closed — {verdict.get('reason', '')}"
+            )
+        if holding:
+            self._log_activity(f"SHORT-VOL EXIT: holding — {'; '.join(holding)}")
 
     # ──────────────────────────────────────────────────────────────── routines
 
@@ -425,6 +478,21 @@ class TradingAgent:
             logger.error("Pre-market routine error: %s", exc)
             self._log_activity(f"Pre-market error: {exc}", level="error")
 
+    def _intraday_equity_positions(self) -> list[str]:
+        """Symbols the daily EOD sweep should square off: not a commodity, and
+        not an options position. Options (short-vol condor legs) are held for
+        days on their own expiry-based ExitPlan, not squared off intraday —
+        see ShortVolExecutor / the multi-leg ExitPlan branch in runtime._on_fill."""
+        out = []
+        for s in self._runtime.portfolio.position_symbols():
+            if s in COMMODITY_SET:
+                continue
+            pos = self._runtime.portfolio.positions.get(s)
+            if pos is not None and pos.instrument.segment == Segment.OPTIONS:
+                continue
+            out.append(s)
+        return out
+
     async def _eod_routine(self) -> None:
         self._log_activity("EOD: squaring off all equity positions (15:25 IST)")
         try:
@@ -433,8 +501,7 @@ class TradingAgent:
             # carrying an intraday position overnight is the failure we must avoid.
             squared_total = 0
             for attempt in range(1, 4):
-                positions = self._runtime.portfolio.position_symbols()
-                equity_positions = [s for s in positions if s not in COMMODITY_SET]
+                equity_positions = self._intraday_equity_positions()
                 if not equity_positions:
                     break
                 result = await self._runtime.square_off_manager.square_off(
@@ -449,7 +516,7 @@ class TradingAgent:
                 )
                 # Give the closes time to fill before re-checking.
                 await asyncio.sleep(6)
-            remaining = [s for s in self._runtime.portfolio.position_symbols() if s not in COMMODITY_SET]
+            remaining = self._intraday_equity_positions()
             if remaining:
                 logger.critical(
                     "EOD: %d equity position(s) STILL OPEN after 3 square-off attempts: %s "

@@ -7,6 +7,7 @@ Runs scheduled jobs every trading day:
   15:20 IST  — EOD auto square-off (NSE close is 15:30; give 10-min buffer)
   15:35 IST  — Stop live feed
   15:36 IST  — Save daily P&L report to the SQLite database
+  15:40 IST  — Local-model post-market review + tuning suggestions (advisory only)
   16:15 IST  — Re-validate the return forecaster on fresh daily candles
   16:30 IST  — Re-validate the intraday forecaster on 5-minute candles
   23:25 IST  — MCX EOD square-off
@@ -50,6 +51,7 @@ _JOBS: list[tuple[int, int, str]] = [
     (15, 20, "eod_square_off"),        # equity EOD — NSE/BSE close at 15:30
     (15, 35, "stop_feed"),
     (15, 36, "daily_pnl_report"),
+    (15, 40, "daily_ai_review"),       # after the P&L snapshot exists, local-model review
     (16, 15, "model_retrain"),         # after the equity close, before MCX EOD
     (16, 30, "intraday_retrain"),
     (23, 25, "mcx_eod_square_off"),    # commodity EOD — MCX close at 23:30
@@ -198,9 +200,14 @@ def run_eod_square_off() -> None:
         if settings.angel_one_configured:
             # POST to the API with a reason so liquidation/audit state is explicit.
             try:
+                # exclude_segments=["OPTIONS"]: short-vol condor legs are held
+                # for days on their own expiry-based ExitPlan, not squared off
+                # intraday — only the daily scheduled sweep excludes them; a
+                # manual/kill-switch square-off omits this and closes everything.
                 _api_post(
                     "/execution/square-off",
-                    b'{"scope": "GLOBAL", "reason": "scheduled_eod_square_off_15:20_ist"}',
+                    b'{"scope": "GLOBAL", "reason": "scheduled_eod_square_off_15:20_ist", '
+                    b'"exclude_segments": ["OPTIONS"]}',
                 )
                 logger.info("EOD square-off triggered via API")
             except Exception as api_exc:
@@ -291,6 +298,18 @@ def run_daily_pnl_report() -> None:
         logger.error("daily_pnl_report failed: %s", exc)
 
 
+def run_daily_ai_review() -> None:
+    """Trigger the local-model post-market review (advisory only — the API side
+    only ever stores suggestions as status='pending'; nothing here approves or
+    applies anything)."""
+    logger.info("JOB: daily_ai_review — triggering local-model post-market review")
+    try:
+        _api_post("/ai-council/daily-review/run", b"{}", retries=2, timeout=60)
+        logger.info("Daily AI review triggered via API")
+    except Exception as exc:
+        logger.warning("daily_ai_review failed (non-critical, advisory only): %s", exc)
+
+
 def run_start_feed() -> None:
     logger.info("JOB: start_feed — starting live feed before market open")
     try:
@@ -317,10 +336,15 @@ def run_mcx_eod_square_off() -> None:
         settings = load_settings()
         if settings.angel_one_configured:
             try:
-                # Use the square-off API endpoint for commodity scope
+                # Use the square-off API endpoint for commodity scope. This is
+                # GLOBAL (no symbol filter), so without exclude_segments it would
+                # also close index-options short-vol condors that survived the
+                # 15:20 IST equity EOD sweep — they're held for days on their
+                # own expiry-based ExitPlan, not squared off by either EOD job.
                 _api_post(
                     "/execution/square-off",
-                    b'{"scope": "GLOBAL", "reason": "mcx_eod_squareoff_23:25"}',
+                    b'{"scope": "GLOBAL", "reason": "mcx_eod_squareoff_23:25", '
+                    b'"exclude_segments": ["OPTIONS"]}',
                 )
                 logger.info("MCX EOD square-off triggered via API")
             except Exception as api_exc:
@@ -555,6 +579,7 @@ _JOB_FNS = {
     "eod_square_off": run_eod_square_off,
     "stop_feed": run_stop_feed,
     "daily_pnl_report": run_daily_pnl_report,
+    "daily_ai_review": run_daily_ai_review,
     "model_retrain": run_model_retrain,
     "intraday_retrain": run_intraday_retrain,
     "mcx_eod_square_off": run_mcx_eod_square_off,

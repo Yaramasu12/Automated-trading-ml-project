@@ -293,5 +293,171 @@ class OptionPriceFetchTests(unittest.TestCase):
         self.assertTrue(any(s > 0 for s in slept), slept)
 
 
+class EnterProductTypeTests(unittest.TestCase):
+    """Fix 2026-08-03: short-vol legs are held for days, so they must be
+    submitted as CARRYFORWARD, not the default INTRADAY (which the broker
+    force-squares-off same day in LIVE, and which our own EOD sweep used to
+    close in PAPER)."""
+
+    def test_enter_submits_legs_as_carryforward(self):
+        rt = SimpleNamespace(submit_multi_leg=mock.AsyncMock(return_value={"submitted": True}))
+        ex = ShortVolExecutor(rt)
+        fake_plan = {
+            "enter": True, "vrp": 3.0, "expiry": "2100-01-07",
+            "legs": [
+                {"symbol": "NIFTY24000CE", "side": "SELL", "price": 100.0, "quantity": 1, "is_wing": False},
+                {"symbol": "NIFTY24300CE", "side": "BUY", "price": 40.0, "quantity": 1, "is_wing": True},
+                {"symbol": "NIFTY23000PE", "side": "SELL", "price": 90.0, "quantity": 1, "is_wing": False},
+                {"symbol": "NIFTY22700PE", "side": "BUY", "price": 35.0, "quantity": 1, "is_wing": True},
+            ],
+        }
+        ex.build = lambda underlying, expiry=None, structure="condor": fake_plan
+        result = asyncio.run(ex.enter("NIFTY", None, "condor"))
+        self.assertTrue(result["submitted"])
+        submitted_payload = rt.submit_multi_leg.call_args[0][0]
+        self.assertEqual(len(submitted_payload["legs"]), 4)
+        for leg in submitted_payload["legs"]:
+            self.assertEqual(leg["product_type"], "CARRYFORWARD")
+
+
+class ActiveExitPolicyTests(unittest.TestCase):
+    """Fix 2026-08-03: structure-level profit-target/stop-loss exit — the
+    per-leg ExitPlan only fires on expiry; this is the active management on
+    top of it."""
+
+    def _condor_positions(self, exp, underlying="NIFTY"):
+        # sell call (short), buy wing call (long), sell put (short), buy wing put (long)
+        strikes = {"NIFTY": (24000.0, 24300.0, 23000.0, 22700.0),
+                   "BANKNIFTY": (55000.0, 55600.0, 53000.0, 52400.0)}[underlying]
+        cs, cw, ps, pw = strikes
+        legs = {
+            (cs, OptionType.CE): (-1, 100.0),
+            (cw, OptionType.CE): (1, 40.0),
+            (ps, OptionType.PE): (-1, 90.0),
+            (pw, OptionType.PE): (1, 35.0),
+        }
+        out = {}
+        for (strike, ot), (qty, avg) in legs.items():
+            inst = _option(underlying, strike, ot, exp)
+            out[inst.symbol] = Position(instrument=inst, quantity=qty, average_price=avg)
+        return out
+
+    def _executor(self, positions, prices):
+        def gc(inst, a, b, tf):
+            return [SimpleNamespace(close=prices[inst.symbol])]
+        rt = SimpleNamespace(
+            portfolio=SimpleNamespace(positions=positions),
+            angel_one_history=SimpleNamespace(get_candles=gc),
+            submit_multi_leg=mock.AsyncMock(return_value={"submitted": True}),
+        )
+        return ShortVolExecutor(rt)
+
+    def test_find_open_structures_groups_by_underlying_and_expiry(self):
+        from datetime import date as _date
+        exp1, exp2 = _date(2100, 1, 7), _date(2100, 2, 4)
+        flat_inst = _option("NIFTY", 21000.0, OptionType.CE, exp1)
+        positions = {
+            **self._condor_positions(exp1),
+            **{f"bn_{k}": v for k, v in self._condor_positions(exp2, underlying="BANKNIFTY").items()},
+            "FLAT": Position(instrument=flat_inst, quantity=0, average_price=50.0),
+            "RELIANCE": Position(
+                instrument=Instrument(symbol="RELIANCE", name="RELIANCE", exchange=Exchange.NSE,
+                                       segment=Segment.CASH, asset_class=AssetClass.EQUITY,
+                                       instrument_type=InstrumentType.EQUITY, token="1"),
+                quantity=10, average_price=2800.0),
+        }
+        ex = self._executor(positions, {})
+        groups = ex.find_open_structures()
+        keys = {(g["underlying"], g["expiry"]) for g in groups}
+        self.assertEqual(keys, {("NIFTY", exp1), ("BANKNIFTY", exp2)})
+        nifty_group = next(g for g in groups if g["underlying"] == "NIFTY")
+        self.assertEqual(len(nifty_group["positions"]), 4)
+
+    def test_find_open_structures_filters_by_underlying(self):
+        from datetime import date as _date
+        exp = _date(2100, 1, 7)
+        ex = self._executor(self._condor_positions(exp), {})
+        self.assertEqual(len(ex.find_open_structures("NIFTY")), 1)
+        self.assertEqual(len(ex.find_open_structures("BANKNIFTY")), 0)
+
+    def test_evaluate_exit_profit_target(self):
+        from datetime import date as _date
+        exp = _date(2100, 1, 7)
+        positions = self._condor_positions(exp)
+        # Both shorts decayed a lot (profit), wings decayed some (small loss) —
+        # net well over 50% of the 5750 credit received.
+        prices = {"NIFTY24000CE": 20.0, "NIFTY24300CE": 10.0, "NIFTY23000PE": 15.0, "NIFTY22700PE": 5.0}
+        ex = self._executor(positions, prices)
+        with mock.patch.dict(os.environ, {"SHORTVOL_FETCH_SPACING": "0", "SHORTVOL_PROFIT_TARGET_PCT": "0.50"}):
+            verdict = ex.evaluate_exit("NIFTY", exp, list(positions.values()))
+        self.assertEqual(verdict["action"], "close")
+        self.assertIn("profit target", verdict["reason"])
+        self.assertGreaterEqual(verdict["captured_pct"], 0.50)
+
+    def test_evaluate_exit_stop_loss(self):
+        from datetime import date as _date
+        exp = _date(2100, 1, 7)
+        positions = self._condor_positions(exp)
+        # Short call blows out hard against us, wing only partially offsets —
+        # well beyond a 1.5x-credit loss.
+        prices = {"NIFTY24000CE": 400.0, "NIFTY24300CE": 50.0, "NIFTY23000PE": 90.0, "NIFTY22700PE": 35.0}
+        ex = self._executor(positions, prices)
+        with mock.patch.dict(os.environ, {"SHORTVOL_FETCH_SPACING": "0", "SHORTVOL_STOP_LOSS_MULTIPLE": "1.5"}):
+            verdict = ex.evaluate_exit("NIFTY", exp, list(positions.values()))
+        self.assertEqual(verdict["action"], "close")
+        self.assertIn("stop loss", verdict["reason"])
+
+    def test_evaluate_exit_holds_when_no_threshold_crossed(self):
+        from datetime import date as _date
+        exp = _date(2100, 1, 7)
+        positions = self._condor_positions(exp)
+        # No move at all -> 0% captured, well inside both thresholds.
+        prices = {"NIFTY24000CE": 100.0, "NIFTY24300CE": 40.0, "NIFTY23000PE": 90.0, "NIFTY22700PE": 35.0}
+        ex = self._executor(positions, prices)
+        with mock.patch.dict(os.environ, {"SHORTVOL_FETCH_SPACING": "0"}):
+            verdict = ex.evaluate_exit("NIFTY", exp, list(positions.values()))
+        self.assertEqual(verdict["action"], "hold")
+        self.assertAlmostEqual(verdict["captured_pct"], 0.0, places=6)
+
+    def test_evaluate_exit_holds_when_price_unavailable(self):
+        from datetime import date as _date
+        exp = _date(2100, 1, 7)
+        positions = self._condor_positions(exp)
+
+        def gc(inst, a, b, tf):
+            return []   # no candles -> _option_last_price returns 0.0
+
+        rt = SimpleNamespace(
+            portfolio=SimpleNamespace(positions=positions),
+            angel_one_history=SimpleNamespace(get_candles=gc),
+        )
+        ex = ShortVolExecutor(rt)
+        with mock.patch.dict(os.environ, {"SHORTVOL_FETCH_SPACING": "0"}):
+            verdict = ex.evaluate_exit("NIFTY", exp, list(positions.values()))
+        self.assertEqual(verdict["action"], "hold")
+        self.assertIn("no current price", verdict["reason"])
+
+    def test_close_structure_submits_opposite_side_and_opens_position_false(self):
+        from datetime import date as _date
+        exp = _date(2100, 1, 7)
+        positions = self._condor_positions(exp)
+        prices = {"NIFTY24000CE": 20.0, "NIFTY24300CE": 10.0, "NIFTY23000PE": 15.0, "NIFTY22700PE": 5.0}
+        ex = self._executor(positions, prices)
+        with mock.patch.dict(os.environ, {"SHORTVOL_FETCH_SPACING": "0"}):
+            result = asyncio.run(ex.close_structure("NIFTY", exp, list(positions.values()), "profit target"))
+        self.assertTrue(result["submitted"])
+        submitted_payload = ex._rt.submit_multi_leg.call_args[0][0]
+        by_symbol = {leg["symbol"]: leg for leg in submitted_payload["legs"]}
+        # Closing a short (quantity<0) = BUY; closing a long (quantity>0) = SELL.
+        self.assertEqual(by_symbol["NIFTY24000CE"]["side"], "BUY")
+        self.assertEqual(by_symbol["NIFTY24300CE"]["side"], "SELL")
+        self.assertEqual(by_symbol["NIFTY23000PE"]["side"], "BUY")
+        self.assertEqual(by_symbol["NIFTY22700PE"]["side"], "SELL")
+        for leg in submitted_payload["legs"]:
+            self.assertEqual(leg["product_type"], "CARRYFORWARD")
+            self.assertFalse(leg["metadata"]["opens_position"])
+            self.assertNotEqual(leg["priority"], "ENTRY")
+
+
 if __name__ == "__main__":
     unittest.main()

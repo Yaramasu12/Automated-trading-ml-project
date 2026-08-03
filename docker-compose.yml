@@ -68,6 +68,11 @@ services:
       - SHORTVOL_STRUCTURES=${SHORTVOL_STRUCTURES:-condor}
       - SHORTVOL_CONTINUOUS=${SHORTVOL_CONTINUOUS:-false}
       - SHORTVOL_MIN_DTE=${SHORTVOL_MIN_DTE:-1}
+      # Structure-level active exit: close early at 50% of credit captured, or
+      # stop out at a 1.5x-credit loss (well inside the wing-capped max loss).
+      # Expiry (in the per-leg ExitPlan) is the backstop if neither fires.
+      - SHORTVOL_PROFIT_TARGET_PCT=${SHORTVOL_PROFIT_TARGET_PCT:-0.50}
+      - SHORTVOL_STOP_LOSS_MULTIPLE=${SHORTVOL_STOP_LOSS_MULTIPLE:-1.5}
       - EXIT_TARGET_PCT=${EXIT_TARGET_PCT:-0.008}
       - EXIT_STOP_PCT=${EXIT_STOP_PCT:-0.005}
       - EXIT_TRAIL_PCT=${EXIT_TRAIL_PCT:-0.004}
@@ -121,8 +126,10 @@ services:
       - LOCAL_LLM_PRIMARY_MODEL=${LOCAL_LLM_PRIMARY_MODEL:-gemma4-31b}
       - LOCAL_LLM_FAST_MODEL=${LOCAL_LLM_FAST_MODEL:-gemma4-e4b}
       - LOCAL_LLM_COORDINATOR_MODEL=${LOCAL_LLM_COORDINATOR_MODEL:-gemma4-26b-moe}
+      - LOCAL_LLM_EMBEDDING_MODEL=${LOCAL_LLM_EMBEDDING_MODEL:-text-embedding-nomic-embed-text-v1.5}
       - LOCAL_LLM_TIMEOUT_SECONDS=${LOCAL_LLM_TIMEOUT_SECONDS:-15}
       - LOCAL_LLM_MAX_OUTPUT_TOKENS=${LOCAL_LLM_MAX_OUTPUT_TOKENS:-2048}
+      - LOCAL_LLM_MAX_CONCURRENT_CALLS=${LOCAL_LLM_MAX_CONCURRENT_CALLS:-2}
       - YEARLY_PROFIT_TARGET=${YEARLY_PROFIT_TARGET:-50000000}
       - AWS_REGION=${AWS_REGION:-ap-south-1}
       - TRADING_API_BASE_URL=${TRADING_API_BASE_URL:-http://trading-api:8000}

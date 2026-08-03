@@ -52,7 +52,7 @@ from trading_platform.governance.live_readiness import (
     InstrumentFreshnessTracker,
     LiveReadinessAggregator,
 )
-from trading_platform.monitoring.metrics import OperationalMonitor
+from trading_platform.monitoring.metrics import OperationalEventLogHandler, OperationalMonitor
 from trading_platform.news.calendar import EconomicCalendar
 from trading_platform.news.intelligence import NewsIntelligence
 from trading_platform.portfolio.target import AnnualTargetTracker
@@ -169,6 +169,21 @@ class TradingRuntime:
         self.synthetic_data = SyntheticDataProvider()
         self.charges_model = ChargesModel()
         self.monitor = OperationalMonitor()
+        # Bridge real WARNING+ log records into THIS instance's monitor event
+        # ring buffer, so the 24/7 runtime monitor loop (below) can read
+        # recent log lines from in-process state. Unlike
+        # install_secret_redaction()'s stateless "attach once ever" guard,
+        # this handler carries a reference to self.monitor — an "attach only
+        # if none exists" guard would leave the root logger forwarding to a
+        # STALE monitor from a previously-constructed TradingRuntime instance
+        # (confirmed 2026-07-28: exactly this, in a test that built a second
+        # TradingRuntime — its monitor silently never received any forwarded
+        # warnings). Remove any prior instance's handler first so the root
+        # logger always forwards to the current TradingRuntime's monitor.
+        root_logger = logging.getLogger()
+        for h in [h for h in root_logger.handlers if isinstance(h, OperationalEventLogHandler)]:
+            root_logger.removeHandler(h)
+        root_logger.addHandler(OperationalEventLogHandler(self.monitor))
         self.db = TradingDatabase(
             database_url=self.settings.database_url or None
         )
@@ -339,7 +354,14 @@ class TradingRuntime:
                 primary_model=self.settings.local_llm_primary_model,
                 fast_model=self.settings.local_llm_fast_model,
                 coordinator_model=self.settings.local_llm_coordinator_model,
+                max_concurrent_calls=self.settings.local_llm_max_concurrent_calls,
+                embedding_model=self.settings.local_llm_embedding_model,
             )
+            # Backfill real embeddings for the seed docs now that the gateway
+            # (and its embed() method) exists. Stub runtime -> embed() always
+            # returns None -> store transparently stays on Jaccard, so this
+            # is always safe to call.
+            self._vector_store.set_embedder(self._llm_gateway.embed)
             self._agent_council = AgentCouncilSupervisor(
                 gateway=self._llm_gateway,
                 trace_store=self.trace_store,
@@ -1254,6 +1276,13 @@ class TradingRuntime:
         # (previously written only on fills — empty whenever no new trade fills).
         import asyncio as _aio
         self._snapshot_task = _aio.create_task(self._periodic_snapshot_loop())
+        # Runs 24/7 regardless of market hours — unlike the trading agent's
+        # scan loop, this is pure observability with nothing to gate on NSE
+        # being open.
+        self._runtime_monitor_task = (
+            _aio.create_task(self._periodic_runtime_monitor_loop())
+            if self.settings.enable_runtime_monitor else None
+        )
         self.monitor.record_event(
             "async_services_started",
             (
@@ -1281,6 +1310,9 @@ class TradingRuntime:
         snap_task = getattr(self, "_snapshot_task", None)
         if snap_task is not None:
             snap_task.cancel()
+        monitor_task = getattr(self, "_runtime_monitor_task", None)
+        if monitor_task is not None:
+            monitor_task.cancel()
         await self.scheduler.stop()
         await self.exit_manager.stop()
         self.live_feed.stop()
@@ -1773,7 +1805,16 @@ class TradingRuntime:
         for index, raw_leg in enumerate(raw_legs, start=1):
             leg_payload = dict(raw_leg)
             leg_payload.setdefault("strategy_name", strategy_name)
-            leg_payload.setdefault("priority", "PROTECTIVE_MULTI_LEG" if index == 1 else "HEDGE")
+            # ENTRY, not PROTECTIVE_MULTI_LEG/HEDGE: _on_fill (api/runtime.py,
+            # `if intent.priority != OrderPriority.ENTRY`), the event-risk gate,
+            # and the capital-protection gate (execution/scheduler.py) all use
+            # priority-relative-to-ENTRY as an entry/exit classifier. The old
+            # defaults collided with that and silently (a) skipped ExitPlan
+            # registration for every multi-leg entry, (b) bypassed event-risk
+            # and capital-protection checks. Callers that submit a CLOSING
+            # multi-leg order must explicitly pass a non-ENTRY priority (e.g.
+            # "TARGET"/"STOP_LOSS") plus metadata={"opens_position": False}.
+            leg_payload.setdefault("priority", "ENTRY")
             metadata = dict(leg_payload.get("metadata") or {})
             metadata.update({"multi_leg_group": group_id, "leg_index": index})
             leg_payload["metadata"] = metadata
@@ -1826,10 +1867,24 @@ class TradingRuntime:
         from trading_platform.domain.enums import SquareOffScope
 
         scope = SquareOffScope(str(payload.get("scope", "GLOBAL")).upper())
+        # exclude_segments lets a scheduled sweep (e.g. the daily 15:20 IST EOD
+        # job) skip position types it shouldn't touch — options/short-vol legs
+        # are held for days on their own expiry-based ExitPlan, not squared off
+        # intraday. A genuine manual/kill-switch GLOBAL square-off (no
+        # exclude_segments passed) still flattens everything, options included.
+        exclude_segments = payload.get("exclude_segments")
+        symbols = None
+        if exclude_segments:
+            excluded = {str(s).upper() for s in exclude_segments}
+            symbols = [
+                sym for sym, pos in self.portfolio.positions.items()
+                if pos.quantity != 0 and pos.instrument.segment.value not in excluded
+            ]
         result = await self.square_off_manager.square_off(
             scope=scope,
             strategy_name=payload.get("strategy_id") or payload.get("strategy_name"),
             symbol=str(payload["symbol"]).upper() if payload.get("symbol") else None,
+            symbols=symbols,
             reason=str(payload.get("reason") or "manual_square_off"),
         )
         self.oms.append(
@@ -2628,6 +2683,143 @@ class TradingRuntime:
             except Exception as exc:
                 note_swallowed("periodic_snapshot", exc)
 
+    async def _periodic_runtime_monitor_loop(self) -> None:
+        """24/7 local-model observability loop — independent of market hours,
+        unlike the trading agent's scan loop (NSE only trades 9:15am-3:30pm
+        IST, so that loop correctly sleeps outside that window; this one is
+        pure read-only observability and has no reason to).
+
+        A deterministic digest (swallowed-error count, AI-capability status,
+        gateway status, scheduler stats, recent WARNING+ log events from
+        OperationalMonitor) is computed and stored on every tick regardless of
+        whether the LLM call below succeeds — the monitor's baseline signal
+        never depends on the model. Only the natural-language summary/anomaly
+        gloss on top is optional: under AI-council load the shared
+        LocalModelGateway semaphore may be saturated, in which case
+        generate() already fails fast to its safe stub and this loop just
+        stores the digest with no prose, never blocking or crashing.
+        """
+        import asyncio as _aio
+        interval = float(self.settings.runtime_monitor_interval_seconds)
+        while True:
+            try:
+                await _aio.sleep(interval)
+                await _aio.to_thread(self._run_monitor_tick)
+            except _aio.CancelledError:
+                break
+            except Exception as exc:
+                note_swallowed("periodic_runtime_monitor", exc)
+
+    _SEVERITY_RANK = {"ok": 0, "warn": 1, "critical": 2}
+
+    def _run_monitor_tick(self) -> None:
+        metrics: dict[str, Any] = {
+            "swallowed_errors": swallowed_error_count(),
+            "ai_capabilities": ai_capabilities(self),
+            "scheduler": self.scheduler.stats,
+        }
+        gw = self._llm_gateway
+        try:
+            metrics["gateway"] = gw.status() if gw else None
+        except Exception as exc:
+            note_swallowed("monitor_tick.gateway_status", exc)
+            metrics["gateway"] = None
+
+        # Deterministic baseline severity, reusing OperationalMonitor's own
+        # HEALTHY/DEGRADED/HALTED computation (kill switch, stale market data,
+        # rejection rate, latency) instead of re-deriving health from scratch.
+        # Expected, designed-for degradation — the heuristic neural baseline,
+        # the absent news feed, concurrency-saturated stub fallbacks under AI
+        # council load — is NOT an anomaly and must not move severity, or
+        # every single tick would cry wolf. Only concrete signals escalate:
+        # OperationalMonitor's own HALTED/DEGRADED verdict, a swallowed-error
+        # count that rose since the last tick (logging_safety.py's own
+        # definition of "investigate this"), or the gateway being genuinely
+        # unreachable (fallback_active — server down, not just a saturated
+        # concurrency slot, which never flips this flag).
+        op_status = self.monitor.snapshot(
+            execution_mode=self.execution_mode.value,
+            live_armed=self.live_armed,
+            kill_switch_active=self.kill_switch_active,
+        ).status
+        severity = {"HALTED": "critical", "DEGRADED": "warn"}.get(op_status, "ok")
+
+        # since = the previous tick's timestamp, so the model only ever sees
+        # warnings that are actually new since it last looked — not a rolling
+        # "last N ever" window. Regression 2026-07-28: a single one-time
+        # startup log line ("AI layers running DEGRADED/ADVISORY-ONLY...")
+        # never aged out of a count-based window while overall warning
+        # traffic stayed low, so every tick re-read it as fresh and kept
+        # escalating severity for state that hadn't changed since process
+        # start (see OperationalMonitor.warnings_since's docstring). Falls
+        # back to the monitor's own start time on the very first tick ever,
+        # which correctly does still see that startup line once.
+        since = self.monitor.started_at
+        try:
+            prev = self.db.recent_monitor_digests(limit=1)
+            prev_swallowed = prev[0]["metrics"].get("swallowed_errors", 0) if prev else 0
+            if prev:
+                raw_ts = prev[0]["ts"]
+                # sqlite gives back the stored ISO string; psycopg2 auto-decodes
+                # TIMESTAMPTZ to a real datetime — handle both (same class of
+                # backend divergence as the JSONB anomalies/metrics columns).
+                since = raw_ts if isinstance(raw_ts, datetime) else datetime.fromisoformat(raw_ts)
+        except Exception as exc:
+            note_swallowed("monitor_tick.prev_digest", exc)
+            prev_swallowed = metrics["swallowed_errors"]
+
+        warnings = self.monitor.warnings_since(since, limit=20)
+        if metrics["swallowed_errors"] > prev_swallowed:
+            severity = max(severity, "warn", key=self._SEVERITY_RANK.get)
+        if metrics["gateway"] and metrics["gateway"].get("fallback_active"):
+            severity = max(severity, "warn", key=self._SEVERITY_RANK.get)
+
+        summary_text: str | None = None
+        anomalies: list[str] = []
+        if gw is not None:
+            digest_prompt = (
+                f"Runtime digest: deterministic_severity={severity}, "
+                f"swallowed_errors={metrics['swallowed_errors']} (previous tick: {prev_swallowed}), "
+                f"new_warning_count_since_last_check={len(warnings)}, "
+                f"new_warnings_since_last_check={[w['message'][:160] for w in warnings[-8:]]}. "
+                "Respond in strict JSON with keys: summary (one sentence, plain "
+                "English status of the application for a human operator), "
+                "anomalies (list[str], empty if nothing beyond the deterministic "
+                "severity stands out), severity (ok|warn|critical). Only escalate "
+                "above deterministic_severity for something in "
+                "new_warnings_since_last_check that is genuinely new — if that "
+                "list is empty, or only repeats an already-known permanent "
+                "condition (e.g. a baseline/heuristic model or missing data "
+                "source that was already degraded last check), stay at "
+                "deterministic_severity. Never downgrade below it."
+            )
+            try:
+                resp = gw.generate(
+                    gw.fast_model,
+                    "You are an SRE assistant summarizing a trading application's health. "
+                    "You only observe; you cannot and must not suggest trades.",
+                    digest_prompt,
+                )
+                if resp.get("failure_mode") is None:
+                    summary_text = resp.get("summary") or resp.get("reasoning")
+                    model_anomalies = resp.get("anomalies")
+                    if isinstance(model_anomalies, list):
+                        anomalies = [str(a) for a in model_anomalies][:10]
+                    model_severity = str(resp.get("severity", "")).lower()
+                    if model_severity in self._SEVERITY_RANK:
+                        # Escalate-only: the model may never quietly downgrade
+                        # a deterministic critical/warn signal to ok.
+                        severity = max(severity, model_severity, key=self._SEVERITY_RANK.get)
+            except Exception as exc:
+                note_swallowed("monitor_tick.llm_summary", exc)
+
+        try:
+            self.db.save_monitor_digest(
+                severity=severity, summary_text=summary_text, anomalies=anomalies, metrics=metrics,
+            )
+        except Exception as exc:
+            note_swallowed("monitor_tick.save", exc)
+
     def _can_submit_live_orders(self) -> bool:
         return (
             self.execution_mode.value.startswith("LIVE")
@@ -3048,8 +3240,19 @@ class TradingRuntime:
             # Count of deliberately-swallowed exceptions — a rising number means
             # hot-path failures are being silently absorbed; investigate.
             "swallowed_errors": swallowed_error_count(),
+            "runtime_monitor": self.latest_monitor_digest(),
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }
+
+    def latest_monitor_digest(self) -> dict | None:
+        """Most recent entry from the 24/7 runtime monitor loop, or None before
+        the first tick / when the monitor is disabled."""
+        try:
+            recent = self.db.recent_monitor_digests(limit=1)
+            return recent[0] if recent else None
+        except Exception as exc:
+            note_swallowed("latest_monitor_digest", exc)
+            return None
 
     # ------------------------------------------------------------------
     # Execution scheduler
@@ -3430,6 +3633,230 @@ class TradingRuntime:
             council = AgentCouncilSupervisor(gateway=gateway, trace_store=self.trace_store)
         decision = council.run(ctx)
         return decision.to_dict()
+
+    # ------------------------------------------------------------------
+    # Post-market daily review & tuning advisor
+    #
+    # Triggered once/day by daily_scheduler.py's "daily_ai_review" job, after
+    # daily_pnl_report has already run. Every number fed to the model below is
+    # already-computed, real data (today's trades, the latest equity snapshot,
+    # ReflectionEngine's per-agent accuracy) — never anything the model itself
+    # estimates. The model may only *propose* tuning changes: every suggestion
+    # is stored with status="pending" and nothing here ever writes to .env or
+    # restarts anything. Applying one is the same manual .env-edit + rebuild
+    # workflow used for every other config value in this repo — approval just
+    # records intent, matching the CLAUDE.md rule that config.py/.env stay
+    # human-gated.
+    # ------------------------------------------------------------------
+
+    # The env-documented "Trade-gate tuning" knobs (docker-compose.yml's
+    # trading-api environment block) that are safe to propose changes to —
+    # deliberately excludes anything risk/execution/broker/credential-related.
+    _TUNABLE_PARAMETERS = (
+        "CREW_HOLD_BAND", "PROFIT_GUARD_SHARPE_MIN", "PROFIT_GUARD_EV_MIN",
+        "PROFIT_GUARD_KELLY_MIN", "FUSION_PROCEED_THRESHOLD", "NEURAL_UNCERTAINTY_VETO",
+    )
+
+    def run_daily_ai_review(self) -> dict:
+        """Review today's real PAPER session and propose 0-N tuning suggestions.
+
+        Returns the persisted review + suggestions so the scheduler's job log
+        shows exactly what was proposed.
+        """
+        today = date.today()
+        today_start = datetime.combine(today, datetime.min.time(), tzinfo=timezone.utc)
+        exec_mode = self.execution_mode.value
+
+        today_trades = self.db.trades(since=today_start, execution_mode=exec_mode, limit=2000)
+        snapshot = self.db.latest_snapshot(execution_mode=exec_mode)
+        pnl_history = self.db.daily_pnl_history(limit=7)
+        reflection_stats = self.master_orchestrator._reflection_engine.stats()
+        current_params = {p: os.getenv(p, "") for p in self._TUNABLE_PARAMETERS}
+
+        model_id = None
+        summary_text = f"{len(today_trades)} trade(s), no local model available for a debrief."
+        suggestions: list[dict] = []
+
+        gw = self._llm_gateway
+        if gw is not None:
+            prompt = (
+                f"Today's PAPER session ({today.isoformat()}): {len(today_trades)} trades, "
+                f"equity={snapshot.get('equity') if snapshot else 'n/a'}, "
+                f"realized_pnl={snapshot.get('realized_pnl') if snapshot else 'n/a'}. "
+                f"Last 7 days' daily P&L: {pnl_history}. "
+                f"Per-agent accuracy/weights from the reflection engine: {reflection_stats.get('agent_accuracy')}. "
+                f"Current tunable parameters: {current_params}. "
+                "Respond in strict JSON with keys: summary (2-3 sentence plain-English "
+                "debrief of the session), suggestions (list of objects, each with "
+                "parameter [must be one of the current tunable parameter names given "
+                "above], current_value, proposed_value, rationale, confidence "
+                "0.0-1.0 — return an empty list if nothing in today's data supports "
+                "a change; do not suggest changes without a concrete reason drawn "
+                "from the numbers above)."
+            )
+            try:
+                resp = gw.generate(
+                    gw.coordinator_model,
+                    "You are a trading-operations reviewer. You may only propose "
+                    "parameter tuning suggestions for a human to approve — you "
+                    "cannot change configuration or place trades.",
+                    prompt,
+                    # This is a once/day scheduled call, not per-cycle-budget
+                    # constrained like the AI council — 60s gives headroom over
+                    # the 27s measured for a real (non-empty) debrief without
+                    # touching the shared LOCAL_LLM_TIMEOUT_SECONDS the council's
+                    # per-agent budget is deliberately built around.
+                    timeout=60,
+                )
+                if resp.get("failure_mode") is None:
+                    model_id = resp.get("model_id")
+                    summary_text = resp.get("summary") or resp.get("reasoning") or summary_text
+                    raw_suggestions = resp.get("suggestions")
+                    if isinstance(raw_suggestions, list):
+                        suggestions = [s for s in raw_suggestions if isinstance(s, dict)]
+            except Exception as exc:
+                note_swallowed("run_daily_ai_review.llm", exc)
+
+        try:
+            self.db.save_daily_ai_review(review_date=today, summary_text=summary_text, model_id=model_id)
+        except Exception as exc:
+            note_swallowed("run_daily_ai_review.save_review", exc)
+
+        saved_suggestions: list[dict] = []
+        for s in suggestions:
+            parameter = str(s.get("parameter", ""))
+            if parameter not in self._TUNABLE_PARAMETERS:
+                continue  # never persist a suggestion for a parameter outside the allowed list
+            try:
+                sid = self.db.save_tuning_suggestion(
+                    review_date=today,
+                    parameter=parameter,
+                    current_value=str(s.get("current_value", current_params.get(parameter, ""))),
+                    proposed_value=str(s.get("proposed_value", "")),
+                    rationale=str(s.get("rationale", "")),
+                    confidence=float(s.get("confidence", 0.0) or 0.0),
+                    model_id=model_id,
+                )
+                saved_suggestions.append({"id": sid, "parameter": parameter, **s})
+            except Exception as exc:
+                note_swallowed("run_daily_ai_review.save_suggestion", exc)
+
+        return {
+            "review_date": today.isoformat(),
+            "summary": summary_text,
+            "model_id": model_id,
+            "suggestions": saved_suggestions,
+        }
+
+    def daily_ai_review(self, review_date: date | None = None) -> dict | None:
+        return self.db.get_daily_ai_review(review_date or date.today())
+
+    def tuning_suggestions(self, status: str | None = None, limit: int = 50) -> list[dict]:
+        return self.db.tuning_suggestions(status=status, limit=limit)
+
+    def set_tuning_suggestion_status(self, suggestion_id: int, status: str) -> bool:
+        if status not in ("approved", "rejected"):
+            raise ValueError(f"invalid status: {status!r}")
+        return self.db.update_tuning_suggestion_status(suggestion_id, status)
+
+    # ------------------------------------------------------------------
+    # Strategy/edge research assistant — idea generation only.
+    #
+    # The model may only ever *propose* a hypothesis; it is never treated as
+    # validation. Nothing here auto-runs a backtest — a human picks a
+    # promising hypothesis and manually runs it through the same walk-forward
+    # workflow every other strategy in this repo has gone through (see
+    # scripts/train_return_forecaster.py and daily_scheduler.py's
+    # model_retrain job), then records the real verdict via
+    # mark_hypothesis_tested. This is the one place in this feature set where
+    # blurring "advisory" into "the edge source" is a real risk — see
+    # CLAUDE.md's honesty-discipline section — so the line is enforced here,
+    # not left to caller discipline.
+    # ------------------------------------------------------------------
+
+    # What's already been tried and rejected, so the model doesn't keep
+    # re-proposing dead ends. Mirrors CLAUDE.md's own summary; update this
+    # list as new rejections land rather than querying model_runs live, since
+    # the set of *strategy* rejections (vs. per-horizon model retrain runs)
+    # isn't itself structured data anywhere yet.
+    _KNOWN_REJECTED_STRATEGIES = (
+        "daily-bar TA features for directional return prediction (AUC ~0.50 on 2500 days)",
+        "12-1 month momentum on Angel One's full ~5.5y history",
+        "various classic factor/mean-reversion/momentum strategies tested individually "
+        "across NSE/BSE/MCX — see recent commit history for the full list",
+    )
+
+    def generate_strategy_hypotheses(self) -> dict:
+        """Ask the local model for 1-3 new, concrete, testable strategy ideas.
+
+        Stored as status='proposed' — never auto-validated. See class docstring
+        above for why that boundary is enforced here rather than by convention.
+        """
+        gw = self._llm_gateway
+        if gw is None:
+            return {"hypotheses": [], "note": "AI council disabled — no local model available."}
+
+        prompt = (
+            f"Already tried and rejected (do not re-propose these): "
+            f"{'; '.join(self._KNOWN_REJECTED_STRATEGIES)}. "
+            "Propose 1-3 new, concrete, testable strategy hypotheses for Indian "
+            "equity/derivatives markets (NSE/BSE/MCX) that have NOT been tried yet. "
+            "Respond in strict JSON with key hypotheses: a list of objects, each "
+            "with title (short), thesis (2-4 sentences explaining the proposed "
+            "edge and why it might exist), suggested_universe (which symbols/asset "
+            "class), suggested_features (what data/indicators a backtest would need)."
+        )
+        try:
+            resp = gw.generate(
+                gw.primary_model,
+                "You are a quantitative research assistant. You propose testable "
+                "hypotheses only — you never claim a hypothesis is validated, and "
+                "you cannot run backtests or change what the trading system does.",
+                prompt,
+                # Manually-triggered, occasional call — a human is waiting on it,
+                # not a per-cycle budget. Confirmed 2026-07-28: two consecutive
+                # real attempts at the default 30s both timed out on this
+                # multi-hypothesis prompt (longer output than the daily review's);
+                # after raising the timeout, qwen3.6-35b-a3b (a "thinking" model)
+                # then hit finish_reason="length" with empty content — it spent
+                # the whole default 2048 max_tokens on reasoning_content before
+                # ever emitting the final answer. Both budgets had to grow.
+                timeout=90,
+                max_tokens=4096,
+            )
+        except Exception as exc:
+            note_swallowed("generate_strategy_hypotheses.llm", exc)
+            return {"hypotheses": [], "note": "local model call failed"}
+
+        if resp.get("failure_mode") is not None:
+            return {"hypotheses": [], "note": f"local model unavailable: {resp['failure_mode']}"}
+
+        raw = resp.get("hypotheses")
+        if not isinstance(raw, list):
+            return {"hypotheses": [], "note": "model did not return a hypotheses list"}
+
+        saved = []
+        for h in raw:
+            if not isinstance(h, dict) or not h.get("title"):
+                continue
+            try:
+                hid = self.db.save_strategy_hypothesis(
+                    title=str(h["title"]),
+                    thesis_text=str(h.get("thesis", "")),
+                    suggested_universe=str(h.get("suggested_universe", "")),
+                    suggested_features=str(h.get("suggested_features", "")),
+                    model_id=resp.get("model_id"),
+                )
+                saved.append({"id": hid, **h})
+            except Exception as exc:
+                note_swallowed("generate_strategy_hypotheses.save", exc)
+        return {"hypotheses": saved}
+
+    def strategy_hypotheses(self, status: str | None = None, limit: int = 50) -> list[dict]:
+        return self.db.strategy_hypotheses(status=status, limit=limit)
+
+    def mark_hypothesis_tested(self, hypothesis_id: int, validation_run_id: str, validation_verdict: str) -> bool:
+        return self.db.mark_hypothesis_tested(hypothesis_id, validation_run_id, validation_verdict)
 
     # ------------------------------------------------------------------
     # ------------------------------------------------------------------

@@ -342,6 +342,7 @@ class ShortVolExecutor:
             {
                 "symbol": l["symbol"], "side": l["side"], "price": l["price"],
                 "quantity": l["quantity"], "strategy_name": f"short_vol_{structure}",
+                "product_type": "CARRYFORWARD",   # held for days, not squared off intraday
                 "metadata": {"is_wing": l["is_wing"], "vrp": plan["vrp"],
                              "expiry": exp, "structure": structure},
             }
@@ -450,3 +451,103 @@ class ShortVolExecutor:
                     res = {"submitted": False, "reason": f"error: {exc}"}
                 results.append({**tag, **res})
         return {"ran": True, "results": results}
+
+    # ── active exit management (profit target / stop loss) ───────────────────
+
+    def find_open_structures(self, underlying: str | None = None) -> list[dict]:
+        """Group open options positions by (underlying, expiry) — one entry per
+        condor/spread structure currently held. Mirrors has_open_condor's
+        filter but returns the full leg set instead of a bool."""
+        groups: dict[tuple[str, date], list] = {}
+        for pos in self._rt.portfolio.positions.values():
+            if pos.quantity == 0:
+                continue
+            inst = pos.instrument
+            if inst.segment != Segment.OPTIONS:
+                continue
+            u = (inst.underlying or "").strip().upper()
+            if underlying is not None and u != underlying.strip().upper():
+                continue
+            if inst.expiry is None:
+                continue
+            groups.setdefault((u, inst.expiry), []).append(pos)
+        return [
+            {"underlying": u, "expiry": exp, "positions": positions}
+            for (u, exp), positions in groups.items()
+        ]
+
+    def evaluate_exit(self, underlying: str, expiry: date, positions: list) -> dict:
+        """Decide whether to close an open structure now: profit target
+        (captured enough of the credit) or stop loss (lost too much of it).
+        Otherwise hold — the per-leg expiry-triggered ExitPlan is the backstop.
+
+        Reuses Position.unrealized_pnl() per leg rather than re-deriving P&L
+        math: total P&L if closed now = sum of each leg's unrealized P&L at
+        its current mark. Net credit received at entry is the negative of the
+        entry cash flow (shorts received cash, longs paid cash)."""
+        profit_target_pct = float(os.getenv("SHORTVOL_PROFIT_TARGET_PCT", "0.50"))
+        stop_loss_multiple = float(os.getenv("SHORTVOL_STOP_LOSS_MULTIPLE", "1.5"))
+
+        net_credit = 0.0
+        total_pnl = 0.0
+        for pos in positions:
+            inst = pos.instrument
+            current_price = self._option_last_price(inst)
+            if current_price <= 0:
+                return {"action": "hold", "reason": f"no current price for {inst.symbol}"}
+            net_credit += -(pos.quantity * pos.average_price * inst.lot_size)
+            total_pnl += pos.unrealized_pnl(current_price)
+
+        if net_credit <= 0:
+            # Net-debit structure (paid more than received) — the target/stop
+            # rules below assume a net-credit condor; decline to manage rather
+            # than misapply them to a shape they weren't designed for.
+            return {"action": "hold", "reason": "non-credit structure — no active exit rule"}
+
+        captured_pct = total_pnl / net_credit
+        if captured_pct >= profit_target_pct:
+            return {
+                "action": "close", "reason": f"profit target: captured {captured_pct:.0%} of credit "
+                                              f"(target {profit_target_pct:.0%})",
+                "captured_pct": captured_pct,
+            }
+        if total_pnl <= -stop_loss_multiple * net_credit:
+            return {
+                "action": "close", "reason": f"stop loss: lost {-captured_pct:.0%} of credit "
+                                              f"(limit {stop_loss_multiple:.0%})",
+                "captured_pct": captured_pct,
+            }
+        return {
+            "action": "hold", "reason": f"holding, captured {captured_pct:.0%} of credit "
+                                         f"(target {profit_target_pct:.0%})",
+            "captured_pct": captured_pct,
+        }
+
+    async def close_structure(self, underlying: str, expiry: date, positions: list, reason: str) -> dict:
+        """Submit the closing legs (opposite side, full quantity) for an open
+        structure. opens_position=False + a non-ENTRY priority route the fill
+        through _on_fill's exit branch, which clears the ExitPlan registered
+        at entry via the normal on_exit_fill path (symbol-based fallback,
+        since no specific exit_plan_id is threaded through here)."""
+        legs_payload = []
+        for pos in positions:
+            inst = pos.instrument
+            current_price = self._option_last_price(inst)
+            if current_price <= 0:
+                return {"submitted": False, "reason": f"no current price for {inst.symbol}"}
+            legs_payload.append({
+                "symbol": inst.symbol,
+                "side": "SELL" if pos.quantity > 0 else "BUY",
+                "price": current_price,
+                "quantity": abs(pos.quantity),
+                "strategy_name": "short_vol_exit",
+                "product_type": "CARRYFORWARD",
+                "priority": "TARGET",
+                "metadata": {"opens_position": False, "exit_reason": reason,
+                             "expiry": expiry.isoformat()},
+            })
+        result = await self._rt.submit_multi_leg({
+            "legs": legs_payload, "strategy_name": "short_vol_exit",
+            "group_id": f"close_{underlying}_{expiry.isoformat()}",
+        })
+        return {"submitted": True, "result": result}
