@@ -63,7 +63,13 @@ class PaperLearningJournal:
     def _conn(self) -> sqlite3.Connection:
         if not getattr(self._local, "conn", None):
             conn = sqlite3.connect(str(self.db_path), check_same_thread=False)
-            conn.execute("PRAGMA journal_mode=WAL")
+            # See oms_store.py's _conn() for the full diagnosis: WAL mode's
+            # -shm sidecar file doesn't reliably open over a Docker Desktop
+            # Windows bind mount when written concurrently from both the
+            # trading-api and scheduler containers — confirmed 2026-07-29,
+            # same "unable to open database file" raised from this exact
+            # PRAGMA. DELETE needs no shared memory mapping.
+            conn.execute("PRAGMA journal_mode=DELETE")
             conn.execute("PRAGMA synchronous=NORMAL")
             conn.row_factory = sqlite3.Row
             self._local.conn = conn
@@ -232,10 +238,13 @@ class PaperLearningJournal:
     def close(self) -> None:
         conn = getattr(self._local, "conn", None)
         if conn:
-            conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
             conn.close()
             self._local.conn = None
 
     def checkpoint(self) -> None:
-        conn = self._conn()
-        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        # No-op under journal_mode=DELETE (see _conn()) — DELETE mode commits
+        # straight to the main .db file each transaction, unlike WAL, which
+        # is what this used to flush. Kept as a method so callers (e.g.
+        # daily_scheduler.py's per-job checkpoint sweep) don't need to know
+        # which journal mode is active.
+        pass

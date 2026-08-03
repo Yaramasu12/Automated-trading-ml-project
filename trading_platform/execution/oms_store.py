@@ -91,7 +91,19 @@ class OMSEventStore:
     def _conn(self) -> sqlite3.Connection:
         if not getattr(self._local, "conn", None):
             conn = sqlite3.connect(str(self.db_path), check_same_thread=False)
-            conn.execute("PRAGMA journal_mode=WAL")
+            # WAL mode needs a shared-memory-mapped -shm sidecar file alongside
+            # the main .db file, which doesn't reliably work over a Docker
+            # Desktop Windows bind mount — confirmed 2026-07-29: every write
+            # from this store 500'd with "sqlite3.OperationalError: unable to
+            # open database file" raised from exactly this PRAGMA, even though
+            # the plain sqlite3.connect() one line above it succeeded (the .db
+            # file itself opens fine; only the WAL sidecar setup fails). This
+            # store is written concurrently by both the trading-api and
+            # scheduler containers via the same host-mounted ./data volume,
+            # which is exactly the multi-process-over-bind-mount case where
+            # WAL is least reliable. DELETE (the traditional rollback journal)
+            # needs no shared memory mapping and is the standard workaround.
+            conn.execute("PRAGMA journal_mode=DELETE")
             conn.execute("PRAGMA synchronous=NORMAL")
             conn.row_factory = sqlite3.Row
             self._local.conn = conn
@@ -197,12 +209,15 @@ class OMSEventStore:
             return cur.fetchone()[0]
 
     def checkpoint(self) -> None:
-        conn = self._conn()
-        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        # No-op under journal_mode=DELETE (see _conn()) — DELETE mode commits
+        # straight to the main .db file each transaction, unlike WAL, which
+        # is what this used to flush. Kept as a method so callers (e.g.
+        # daily_scheduler.py's per-job checkpoint sweep) don't need to know
+        # which journal mode is active.
+        pass
 
     def close(self) -> None:
         conn = getattr(self._local, "conn", None)
         if conn:
-            conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
             conn.close()
             self._local.conn = None

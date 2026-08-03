@@ -74,7 +74,16 @@ class TraceStore:
     def _db_conn(self) -> sqlite3.Connection:
         if not getattr(self._db_local, "conn", None):
             conn = sqlite3.connect(str(self._db_path), check_same_thread=False)
-            conn.execute("PRAGMA journal_mode=WAL")
+            # Must match TradingDatabase._sqlite_conn()'s journal mode exactly
+            # — this store shares the same physical file (data/trading.db,
+            # both default to it) via a separate connection. Regression
+            # 2026-07-29: this was the one place still requesting WAL after
+            # TradingDatabase was switched to DELETE (see its _sqlite_conn()
+            # for the corruption story); two connections to the same file
+            # each fighting to set a different journal mode is exactly what
+            # produced "database is locked" errors constructing a single
+            # TradingRuntime (it builds both self.db and self.trace_store).
+            conn.execute("PRAGMA journal_mode=DELETE")
             conn.execute("PRAGMA synchronous=NORMAL")
             self._db_local.conn = conn
         return self._db_local.conn
