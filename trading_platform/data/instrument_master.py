@@ -66,11 +66,14 @@ LIQUID_EQUITIES = {
     "AXISBANK": "5900",
     "MARUTI": "10999",
     "SUNPHARMA": "3351",
-    "TATAMOTORS": "3456",
+    # TMPV inherited TATAMOTORS' original NSE token (3456) in the post-demerger
+    # listing — see trading_agent.py's EQUITY_UNDERLYINGS comment for the full
+    # story. LTIM removed: no current token, symbol absent from Angel One's
+    # instrument master entirely (confirmed 2026-07-29).
+    "TMPV": "3456",
     "BAJFINANCE": "317",
     "HINDUNILVR": "1394",
     "ASIANPAINT": "236",
-    "LTIM": "17818",
     "BHARTIARTL": "10604",
     "ONGC": "2475",
     "NTPC": "11630",
@@ -115,13 +118,18 @@ EQUITY_FO_UNDERLYINGS = {
     "AXISBANK":   {"lot_size": 1200, "strike_step": 10,  "base": 1050},
     "MARUTI":     {"lot_size": 100,  "strike_step": 100, "base": 11000},
     "SUNPHARMA":  {"lot_size": 700,  "strike_step": 10,  "base": 1650},
-    "TATAMOTORS": {"lot_size": 1500, "strike_step": 5,   "base": 750},
+    # TMPV (post-demerger successor to TATAMOTORS, see LIQUID_EQUITIES comment
+    # above) — real lot_size/strike_step/base read from Angel One's live
+    # options chain 2026-07-29 (lot_size 1600 confirmed exact; strike_step and
+    # base are representative of the observed near-ATM strike spacing since
+    # this fallback only ever approximates). LTIM entry removed — no longer
+    # scanned (see trading_agent.py), so this config would never be read.
+    "TMPV":       {"lot_size": 1600, "strike_step": 500, "base": 34000},
     "BAJFINANCE": {"lot_size": 125,  "strike_step": 100, "base": 7000},
     "HINDUNILVR": {"lot_size": 300,  "strike_step": 20,  "base": 2300},
     "BHARTIARTL": {"lot_size": 950,  "strike_step": 10,  "base": 1600},
     "NTPC":       {"lot_size": 3000, "strike_step": 5,   "base": 370},
     "ASIANPAINT": {"lot_size": 200,  "strike_step": 20,  "base": 2800},
-    "LTIM":       {"lot_size": 150,  "strike_step": 20,  "base": 5000},
     "ONGC":       {"lot_size": 1975, "strike_step": 5,   "base": 290},
     "POWERGRID":  {"lot_size": 2700, "strike_step": 5,   "base": 320},
     "TITAN":      {"lot_size": 375,  "strike_step": 20,  "base": 3300},

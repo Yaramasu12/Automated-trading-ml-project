@@ -5,7 +5,7 @@ Eight builders, one shape. Naked-short blocked by default.
 Each builder is a pure function of ``BuilderContext``: instrument-master,
 underlying, spot, expiry, premium oracle. Wing widths in *strike-step
 counts*, not rupees — so a builder works the same on NIFTY (step 50)
-as on TATAMOTORS (step 5).
+as on SBIN (step 10).
 """
 from __future__ import annotations
 

@@ -95,8 +95,12 @@ class SyntheticDataProvider:
         "RELIANCE": 1452, "TCS": 2444, "INFY": 1175, "HDFCBANK": 770,
         "ICICIBANK": 1250, "SBIN": 1060, "WIPRO": 201, "KOTAKBANK": 372,
         "AXISBANK": 1263, "MARUTI": 13428, "SUNPHARMA": 1807,
-        "TATAMOTORS": 341, "BAJFINANCE": 941, "HINDUNILVR": 2292,
-        "LTIM": 4240, "LT": 4036, "HCLTECH": 1196, "ITC": 310,
+        # TATAMOTORS demerged into TMPV/TMCV Oct 2025 (see trading_agent.py's
+        # EQUITY_UNDERLYINGS comment) — anchor read from TMPV's real option
+        # strike distribution 2026-07-29, not the old TATAMOTORS price. LTIM
+        # removed: no longer scanned (confirmed absent from Angel One's feed).
+        "TMPV": 34000, "BAJFINANCE": 941, "HINDUNILVR": 2292,
+        "LT": 4036, "HCLTECH": 1196, "ITC": 310,
         "BAJAJFINSV": 1756, "TITAN": 4373, "ONGC": 288, "NTPC": 397,
         "COALINDIA": 474, "POWERGRID": 318, "CIPLA": 1318,
         "DRREDDY": 1279, "DIVISLAB": 6601, "EICHERMOT": 7261,
