@@ -169,6 +169,17 @@ class TestRuntimeMonitorTick(unittest.TestCase):
 
     def setUp(self):
         self.runtime = TradingRuntime()
+        # Force deterministic stub behavior. TradingRuntime() loads the real
+        # .env from cwd (config.py's _load_env_file), so relying on the
+        # gateway being unreachable to fall back to stub is a latent trap:
+        # confirmed 2026-08-04 — passes on bare Windows (host.docker.internal
+        # in .env doesn't resolve outside a container) but a "stub gateway is
+        # safe" test made a genuine real LM Studio call and failed when run
+        # from inside a container where that hostname DOES resolve. These
+        # tests are about stub-mode behavior specifically, so force it rather
+        # than depend on incidental network reachability.
+        if self.runtime._llm_gateway is not None:
+            self.runtime._llm_gateway.runtime = "stub"
 
     def test_tick_runs_and_stores_a_digest_with_stub_gateway(self):
         before = len(self.runtime.db.recent_monitor_digests(limit=1000))
@@ -215,6 +226,17 @@ class TestRuntimeMonitorTick(unittest.TestCase):
 class TestDailyAiReview(unittest.TestCase):
     def setUp(self):
         self.runtime = TradingRuntime()
+        # Force deterministic stub behavior. TradingRuntime() loads the real
+        # .env from cwd (config.py's _load_env_file), so relying on the
+        # gateway being unreachable to fall back to stub is a latent trap:
+        # confirmed 2026-08-04 — passes on bare Windows (host.docker.internal
+        # in .env doesn't resolve outside a container) but a "stub gateway is
+        # safe" test made a genuine real LM Studio call and failed when run
+        # from inside a container where that hostname DOES resolve. These
+        # tests are about stub-mode behavior specifically, so force it rather
+        # than depend on incidental network reachability.
+        if self.runtime._llm_gateway is not None:
+            self.runtime._llm_gateway.runtime = "stub"
 
     def test_run_daily_ai_review_with_stub_gateway_is_safe(self):
         # Stub responses don't carry "summary"/"suggestions" keys, so this
@@ -255,6 +277,17 @@ class TestDailyAiReview(unittest.TestCase):
 class TestGenerateStrategyHypotheses(unittest.TestCase):
     def setUp(self):
         self.runtime = TradingRuntime()
+        # Force deterministic stub behavior. TradingRuntime() loads the real
+        # .env from cwd (config.py's _load_env_file), so relying on the
+        # gateway being unreachable to fall back to stub is a latent trap:
+        # confirmed 2026-08-04 — passes on bare Windows (host.docker.internal
+        # in .env doesn't resolve outside a container) but a "stub gateway is
+        # safe" test made a genuine real LM Studio call and failed when run
+        # from inside a container where that hostname DOES resolve. These
+        # tests are about stub-mode behavior specifically, so force it rather
+        # than depend on incidental network reachability.
+        if self.runtime._llm_gateway is not None:
+            self.runtime._llm_gateway.runtime = "stub"
 
     def test_generate_with_stub_gateway_is_safe(self):
         result = self.runtime.generate_strategy_hypotheses()
