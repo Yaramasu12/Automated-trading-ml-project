@@ -61,18 +61,35 @@ def ai_capabilities(runtime: Any) -> dict:
     }
 
     # ── News sentiment ────────────────────────────────────────────────────────
-    # Found via log monitoring 2026-07-28: the orchestrator calls
-    # NewsIntelligence.analyze() with the bare underlying symbol ("GOLD") as
-    # the payload, never a real headline — there is no live news ingestion
-    # wired to this call site at all. Even a corrected payload key would just
-    # run sentiment analysis on a ticker string, not real news text, so this
-    # is a genuine no_data_source gap, not a fixable bug — reported honestly
-    # rather than silently defaulting to neutral with no visibility.
-    layers["news_sentiment"] = {
-        "status": "no_data_source",
-        "detail": "no live news feed wired in; orchestrator has nothing real to analyze",
-        "role": "advisory",
-    }
+    # Real as of 2026-08-04: TradingRuntime._periodic_news_fetch_loop ingests
+    # real RSS headlines 24/7 (see news/feed.py) and master_orchestrator.py's
+    # _node_market_intelligence reads them back via
+    # NewsIntelligence.sentiment_for(). Status reflects whether that's
+    # actually producing data right now, not just whether the code exists.
+    if not getattr(s, "enable_news_feed", False):
+        layers["news_sentiment"] = {
+            "status": "disabled",
+            "detail": "news feed loop disabled (ENABLE_NEWS_FEED=false)",
+            "role": "advisory",
+        }
+    else:
+        active = 0
+        try:
+            active = int(runtime.news_intelligence.feature_snapshot().get("active_event_count", 0))
+        except Exception:
+            pass
+        if active > 0:
+            layers["news_sentiment"] = {
+                "status": "real",
+                "detail": f"{active} active real news event(s) ingested",
+                "role": "advisory",
+            }
+        else:
+            layers["news_sentiment"] = {
+                "status": "no_data_source",
+                "detail": "feed loop enabled but no events ingested yet (just started, or all feeds unreachable)",
+                "role": "advisory",
+            }
 
     # ── RL / MARL policies ────────────────────────────────────────────────────
     rl_status = "disabled"

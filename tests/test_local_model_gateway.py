@@ -306,5 +306,90 @@ class TestEmbed(unittest.TestCase):
         self.assertLess(elapsed, 1.0)
 
 
+class TestScoreSentiment(unittest.TestCase):
+    """LocalModelGateway.score_sentiment() — real financial-news sentiment
+    for NewsIntelligence, same safe-None-on-any-failure contract as embed()."""
+
+    def _fake_resp(self, content: str):
+        def fake_urlopen(req, timeout=None):
+            class FakeResp:
+                def __enter__(self):
+                    return self
+                def __exit__(self, *a):
+                    return False
+                def read(self):
+                    return json.dumps({"choices": [{"message": {"content": content}}]}).encode()
+            return FakeResp()
+        return fake_urlopen
+
+    def test_stub_runtime_returns_none(self):
+        gw = LocalModelGateway(runtime="stub")
+        self.assertIsNone(gw.score_sentiment("headline", "summary"))
+
+    def test_successful_score_returns_float(self):
+        gw = LocalModelGateway(runtime="lm_studio", max_concurrent_calls=5)
+        with patch("urllib.request.urlopen", side_effect=self._fake_resp('{"score": 0.6}')):
+            result = gw.score_sentiment("Company beats earnings", "Strong quarter")
+        self.assertEqual(result, 0.6)
+
+    def test_score_is_clamped_to_range(self):
+        gw = LocalModelGateway(runtime="lm_studio", max_concurrent_calls=5)
+        with patch("urllib.request.urlopen", side_effect=self._fake_resp('{"score": 5.0}')):
+            result = gw.score_sentiment("headline", "summary")
+        self.assertEqual(result, 1.0)
+
+    def test_markdown_fenced_json_is_parsed(self):
+        gw = LocalModelGateway(runtime="lm_studio", max_concurrent_calls=5)
+        fenced = '```json\n{"score": -0.4}\n```'
+        with patch("urllib.request.urlopen", side_effect=self._fake_resp(fenced)):
+            result = gw.score_sentiment("headline", "summary")
+        self.assertEqual(result, -0.4)
+
+    def test_malformed_json_returns_none_not_raise(self):
+        gw = LocalModelGateway(runtime="lm_studio", max_concurrent_calls=5)
+        with patch("urllib.request.urlopen", side_effect=self._fake_resp("not json")):
+            result = gw.score_sentiment("headline", "summary")
+        self.assertIsNone(result)
+
+    def test_request_failure_returns_none_not_raise(self):
+        gw = LocalModelGateway(runtime="lm_studio", max_concurrent_calls=5)
+        with patch("urllib.request.urlopen", side_effect=TimeoutError("boom")):
+            result = gw.score_sentiment("headline", "summary")
+        self.assertIsNone(result)
+
+    def test_concurrency_saturated_returns_none_fast(self):
+        gw = LocalModelGateway(runtime="lm_studio", max_concurrent_calls=1, timeout=5)
+        gw._concurrency_wait_s = 0.2
+        started = threading.Event()
+        release = threading.Event()
+
+        def blocking(req, timeout=None):
+            started.set()
+            release.wait(5)
+            class FakeResp:
+                def __enter__(self):
+                    return self
+                def __exit__(self, *a):
+                    return False
+                def read(self):
+                    return json.dumps({"choices": [{"message": {"content": '{"score": 0.0}'}}]}).encode()
+            return FakeResp()
+
+        with patch("urllib.request.urlopen", side_effect=blocking):
+            holder = threading.Thread(target=gw.score_sentiment, args=("h", "s"))
+            holder.start()
+            started.wait(2)
+
+            t0 = time.monotonic()
+            result = gw.score_sentiment("h2", "s2")
+            elapsed = time.monotonic() - t0
+
+            release.set()
+            holder.join(timeout=5)
+
+        self.assertIsNone(result)
+        self.assertLess(elapsed, 1.0)
+
+
 if __name__ == "__main__":
     unittest.main()

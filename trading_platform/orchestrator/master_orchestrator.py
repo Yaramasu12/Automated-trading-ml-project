@@ -350,15 +350,18 @@ class MasterOrchestrator:
         except Exception as e:
             logger.debug("ensure_market_features failed for %s: %s", state.underlying, e)
 
-        # News sentiment — NewsIntelligence.analyze() requires a real headline
-        # (raises "headline is required" otherwise) and there is no live news
-        # feed wired to this call site — state.underlying is a bare symbol
-        # ("GOLD"), not news text, so a call here can never do anything but
-        # fail. Found via log monitoring 2026-07-28: every cycle, every
-        # underlying, was throwing and swallowing this exception for no
-        # benefit. Reported honestly as "no_data_source" in ai_capabilities.py
-        # instead of silently defaulting to neutral with zero visibility.
+        # News sentiment — real as of 2026-08-04: TradingRuntime's
+        # _periodic_news_fetch_loop ingests real RSS headlines 24/7 into
+        # rt.news_intelligence independent of this scan cycle;
+        # sentiment_for() reads back whatever's currently active and mapped
+        # to this underlying, honestly returning 0.0 (neutral) if nothing
+        # matches — same degrade-on-empty-data behavior as before, just now
+        # populated when relevant real news actually exists.
         news_sentiment = 0.0
+        try:
+            news_sentiment = rt.news_intelligence.sentiment_for(state.underlying)
+        except Exception as e:
+            logger.debug("news sentiment lookup failed for %s: %s", state.underlying, e)
 
         # Event risk check — EventRiskGuard.check(as_of: date|None) takes a date, not a symbol.
         # FAIL-SAFE: if the event-risk check itself errors we cannot prove the window is

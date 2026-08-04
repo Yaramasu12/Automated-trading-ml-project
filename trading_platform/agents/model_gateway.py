@@ -82,6 +82,7 @@ class LocalModelGateway:
         coordinator_model: str = "gemma4-26b-moe",
         max_concurrent_calls: int = 2,
         embedding_model: str = "text-embedding-nomic-embed-text-v1.5",
+        sentiment_model: str = "llama-3-8b-instruct-finance-rag",
     ) -> None:
         self.runtime = runtime
         self.base_url = base_url.rstrip("/")
@@ -96,6 +97,7 @@ class LocalModelGateway:
         self.fast_model = fast_model
         self.coordinator_model = coordinator_model
         self.embedding_model = embedding_model
+        self.sentiment_model = sentiment_model
         # Global cap on concurrent in-flight HTTP calls to the local runtime —
         # independent of AGENT_SCAN_CONCURRENCY, which only bounds the outer
         # per-underlying pipeline count, not LLM-call concurrency. One local
@@ -183,6 +185,43 @@ class LocalModelGateway:
             return data["data"][0]["embedding"]
         except Exception as exc:
             logger.debug("LocalModelGateway: embed() failed: %s", exc)
+            return None
+        finally:
+            self._concurrency_sem.release()
+
+    def score_sentiment(self, headline: str, summary: str) -> float | None:
+        """Score financial-news sentiment in [-1, 1] via the local runtime, or
+        None if unavailable — stub runtime, saturated concurrency, unreachable
+        server, or any parse failure. Callers (NewsIntelligence) must treat
+        None as "fall back to the lexicon scorer", never as an error to
+        propagate — same contract as embed().
+
+        Defaults to a plain instruct model (self.sentiment_model), not a
+        "thinking"/reasoning one: a reasoning model spends its token budget on
+        reasoning_content before the answer (confirmed this session with
+        qwen3.6-35b-a3b — finish_reason="length" with empty content), a bad
+        fit for a short, frequent, structured classification call.
+
+        Shares self._concurrency_sem with generate()/embed() — one local
+        runtime, one capacity budget.
+        """
+        if self.runtime == "stub":
+            return None
+        if not self._concurrency_sem.acquire(timeout=self._concurrency_wait_s):
+            return None
+        try:
+            system = (
+                "You are a financial news sentiment classifier. Respond with "
+                "strict JSON only: {\"score\": <float from -1.0 (very negative "
+                "for markets/the mentioned company) to 1.0 (very positive)>}. "
+                "No other text."
+            )
+            user = f"Headline: {headline}\nSummary: {summary}"
+            raw = self._dispatch(self.sentiment_model, system, user, {}, self.timeout, 128)
+            parsed = json.loads(self._strip_code_fence(raw))
+            return max(-1.0, min(1.0, float(parsed["score"])))
+        except Exception as exc:
+            logger.debug("LocalModelGateway: score_sentiment() failed: %s", exc)
             return None
         finally:
             self._concurrency_sem.release()

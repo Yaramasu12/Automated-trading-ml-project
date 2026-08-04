@@ -79,6 +79,9 @@ class Settings:
     local_llm_fast_model: str = "gemma4-e4b"
     local_llm_coordinator_model: str = "gemma4-26b-moe"
     local_llm_embedding_model: str = "text-embedding-nomic-embed-text-v1.5"
+    # Plain instruct model, not a "thinking"/reasoning one — see
+    # LocalModelGateway.score_sentiment()'s docstring for why.
+    local_llm_sentiment_model: str = "llama-3-8b-instruct-finance-rag"
     local_llm_base_url: str = "http://localhost:11434"
     local_llm_timeout_seconds: int = 15
     local_llm_max_output_tokens: int = 2048
@@ -90,6 +93,15 @@ class Settings:
     # independent of market hours. See TradingRuntime._periodic_runtime_monitor_loop.
     enable_runtime_monitor: bool = True
     runtime_monitor_interval_seconds: int = 900
+
+    # Continuous (24/7) news ingestion (RSS -> NewsIntelligence.analyze()),
+    # independent of market hours — news is relevant outside trading hours
+    # too (after-hours earnings, gap risk). See
+    # TradingRuntime._periodic_news_fetch_loop. Advisory only: feeds
+    # news_sentiment, does NOT register EventRiskGuard blocks (see
+    # news/feed.py's module docstring for why that line is drawn here).
+    enable_news_feed: bool = True
+    news_fetch_interval_seconds: int = 300
 
     # Goal governor
     yearly_profit_target: float = 50_000_000.0   # 5 crore INR aspirational target
@@ -209,12 +221,15 @@ def load_settings() -> Settings:
         local_llm_fast_model=os.getenv("LOCAL_LLM_FAST_MODEL", "gemma4-e4b"),
         local_llm_coordinator_model=os.getenv("LOCAL_LLM_COORDINATOR_MODEL", "gemma4-26b-moe"),
         local_llm_embedding_model=os.getenv("LOCAL_LLM_EMBEDDING_MODEL", "text-embedding-nomic-embed-text-v1.5"),
+        local_llm_sentiment_model=os.getenv("LOCAL_LLM_SENTIMENT_MODEL", "llama-3-8b-instruct-finance-rag"),
         local_llm_base_url=os.getenv("LOCAL_LLM_BASE_URL", "http://localhost:11434"),
         local_llm_timeout_seconds=int(os.getenv("LOCAL_LLM_TIMEOUT_SECONDS", "15")),
         local_llm_max_output_tokens=int(os.getenv("LOCAL_LLM_MAX_OUTPUT_TOKENS", "2048")),
         local_llm_max_concurrent_calls=max(1, int(os.getenv("LOCAL_LLM_MAX_CONCURRENT_CALLS", "2"))),
         enable_runtime_monitor=_bool_env("ENABLE_RUNTIME_MONITOR", True),
         runtime_monitor_interval_seconds=max(60, int(os.getenv("RUNTIME_MONITOR_INTERVAL_SECONDS", "900"))),
+        enable_news_feed=_bool_env("ENABLE_NEWS_FEED", True),
+        news_fetch_interval_seconds=max(60, int(os.getenv("NEWS_FETCH_INTERVAL_SECONDS", "300"))),
         yearly_profit_target=float(os.getenv("YEARLY_PROFIT_TARGET", "50000000")),
         database_url=os.getenv("DATABASE_URL", ""),
     )

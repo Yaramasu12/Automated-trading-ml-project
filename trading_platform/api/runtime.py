@@ -54,6 +54,7 @@ from trading_platform.governance.live_readiness import (
 )
 from trading_platform.monitoring.metrics import OperationalEventLogHandler, OperationalMonitor
 from trading_platform.news.calendar import EconomicCalendar
+from trading_platform.news.feed import NewsFeedFetcher
 from trading_platform.news.intelligence import NewsIntelligence
 from trading_platform.portfolio.target import AnnualTargetTracker
 from trading_platform.portfolio.ledger import PortfolioLedger
@@ -196,6 +197,9 @@ class TradingRuntime:
         self.options_chain_collector = OptionsChainCollector(self)
         self.event_bus = InMemoryEventBus()
         self.news_intelligence = NewsIntelligence()
+        # Constructed once (not per-tick) so its seen-link dedup state
+        # persists across _periodic_news_fetch_loop ticks.
+        self._news_fetcher = NewsFeedFetcher()
         # Live-readiness scaffolding: freshness tracker tells the gate
         # whether the instrument master is real, staleness tracker
         # tells the gate whether subscribed symbols are ticking.
@@ -356,12 +360,17 @@ class TradingRuntime:
                 coordinator_model=self.settings.local_llm_coordinator_model,
                 max_concurrent_calls=self.settings.local_llm_max_concurrent_calls,
                 embedding_model=self.settings.local_llm_embedding_model,
+                sentiment_model=self.settings.local_llm_sentiment_model,
             )
             # Backfill real embeddings for the seed docs now that the gateway
             # (and its embed() method) exists. Stub runtime -> embed() always
             # returns None -> store transparently stays on Jaccard, so this
             # is always safe to call.
             self._vector_store.set_embedder(self._llm_gateway.embed)
+            # Same pattern: stub runtime -> score_sentiment() always returns
+            # None -> NewsIntelligence transparently stays on its lexicon
+            # fallback, so this is always safe to call.
+            self.news_intelligence.set_sentiment_scorer(self._llm_gateway.score_sentiment)
             self._agent_council = AgentCouncilSupervisor(
                 gateway=self._llm_gateway,
                 trace_store=self.trace_store,
@@ -1282,6 +1291,12 @@ class TradingRuntime:
         self._runtime_monitor_task = (
             _aio.create_task(self._periodic_runtime_monitor_loop())
             if self.settings.enable_runtime_monitor else None
+        )
+        # Also 24/7 — news is relevant outside trading hours too (after-hours
+        # earnings, gap risk for tomorrow's open).
+        self._news_fetch_task = (
+            _aio.create_task(self._periodic_news_fetch_loop())
+            if self.settings.enable_news_feed else None
         )
         self.monitor.record_event(
             "async_services_started",
@@ -2819,6 +2834,38 @@ class TradingRuntime:
             )
         except Exception as exc:
             note_swallowed("monitor_tick.save", exc)
+
+    async def _periodic_news_fetch_loop(self) -> None:
+        """24/7 real news ingestion — independent of market hours (news is
+        relevant outside trading hours too: after-hours earnings, gap risk
+        for tomorrow's open), same shape as _periodic_runtime_monitor_loop.
+
+        Feeds NewsIntelligence.analyze() directly — deliberately NOT
+        NewsService.news_analyze(), which also registers temporary
+        EventRiskGuard windows (a real, global, platform-wide safety gate).
+        Continuous RSS-volume auto-ingestion going through that path would be
+        a different trust assumption than the rare, human-curated manual
+        submissions it was designed for. This loop is advisory-signal-only;
+        see news/feed.py's module docstring.
+        """
+        import asyncio as _aio
+        interval = float(self.settings.news_fetch_interval_seconds)
+        while True:
+            try:
+                await _aio.sleep(interval)
+                await _aio.to_thread(self._run_news_fetch_tick)
+            except _aio.CancelledError:
+                break
+            except Exception as exc:
+                note_swallowed("periodic_news_fetch", exc)
+
+    def _run_news_fetch_tick(self) -> None:
+        items = self._news_fetcher.fetch_new_items()
+        for payload in items:
+            try:
+                self.news_intelligence.analyze(payload)
+            except Exception as exc:
+                note_swallowed("news_fetch_tick.analyze", exc)
 
     def _can_submit_live_orders(self) -> bool:
         return (

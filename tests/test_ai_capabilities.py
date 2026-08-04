@@ -7,7 +7,8 @@ from trading_platform.api.ai_capabilities import ai_capabilities
 
 
 def _runtime(*, gateway="stub", llm_runtime="stub", quantum="classical",
-             gbm_available=False, neural=True, policies=None):
+             gbm_available=False, neural=True, policies=None,
+             enable_news_feed=False, active_news_events=0):
     neural_svc = None
     if neural:
         neural_svc = SimpleNamespace(_gbm_forecaster=SimpleNamespace(is_available=lambda: gbm_available))
@@ -18,9 +19,14 @@ def _runtime(*, gateway="stub", llm_runtime="stub", quantum="classical",
             kind = next((p.get("kind") for p in (policies or []) if p.get("policy_id") == pid), "real")
             return SimpleNamespace() if kind == "real" else type("MockPolicy", (), {})()
 
+    news_intelligence = SimpleNamespace(
+        feature_snapshot=lambda: {"active_event_count": active_news_events}
+    )
+
     return SimpleNamespace(
-        settings=SimpleNamespace(local_llm_gateway=gateway, local_llm_runtime=llm_runtime, quantum_backend=quantum),
-        neural_service=neural_svc, policy_registry=Reg(),
+        settings=SimpleNamespace(local_llm_gateway=gateway, local_llm_runtime=llm_runtime, quantum_backend=quantum,
+                                  enable_news_feed=enable_news_feed),
+        neural_service=neural_svc, policy_registry=Reg(), news_intelligence=news_intelligence,
     )
 
 
@@ -57,3 +63,21 @@ def test_lm_studio_runtime_reported_as_real():
     cap = ai_capabilities(_runtime(gateway="lm_studio", llm_runtime="lm_studio"))
     assert cap["layers"]["llm_council"]["status"] == "real"
     assert "llm_council" not in cap["degraded_layers"]
+
+
+def test_news_sentiment_disabled_when_feed_off():
+    cap = ai_capabilities(_runtime(enable_news_feed=False))
+    assert cap["layers"]["news_sentiment"]["status"] == "disabled"
+    assert "news_sentiment" in cap["degraded_layers"]
+
+
+def test_news_sentiment_no_data_source_when_enabled_but_empty():
+    cap = ai_capabilities(_runtime(enable_news_feed=True, active_news_events=0))
+    assert cap["layers"]["news_sentiment"]["status"] == "no_data_source"
+    assert "news_sentiment" in cap["degraded_layers"]
+
+
+def test_news_sentiment_real_once_events_ingested():
+    cap = ai_capabilities(_runtime(enable_news_feed=True, active_news_events=3))
+    assert cap["layers"]["news_sentiment"]["status"] == "real"
+    assert "news_sentiment" not in cap["degraded_layers"]

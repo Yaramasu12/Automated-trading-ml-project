@@ -3,26 +3,92 @@ from __future__ import annotations
 import collections
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
-from typing import Any
+from typing import Any, Callable
 from uuid import uuid4
 
+from trading_platform.ai.models import SentimentAnalyzer
+from trading_platform.logging_safety import note_swallowed
 
+
+def _eq(symbol: str, *, sectors: list[str] | None = None, indices: list[str] | None = None) -> dict[str, Any]:
+    return {"symbols": [symbol], "sectors": sectors or [], "indices": indices or ["NIFTY"]}
+
+
+_BANK_INDICES = ["BANKNIFTY", "FINNIFTY", "NIFTY"]
+
+# Ticker/common-name -> scan-universe symbol, sector, index mapping. Covers
+# trading_agent.py's EQUITY_UNDERLYINGS/COMMODITY_UNDERLYINGS (expanded
+# 2026-08-04 from the original ~9 sparse macro-only entries — real headlines
+# about most scanned symbols were silently unmatched). Keys are the natural
+# ALL-CAPS text a headline would use (often the company name, not the
+# ticker, where they differ — e.g. "TATA MOTORS" for TMPV) since _map_entities
+# does a plain substring match against the uppercased headline+summary.
 _ENTITY_MAP: dict[str, dict[str, Any]] = {
-    "RELIANCE": {
-        "symbols": ["RELIANCE"],
-        "sectors": ["energy", "oil_gas"],
-        "indices": ["NIFTY"],
-    },
-    "HDFC": {
-        "symbols": ["HDFCBANK"],
-        "sectors": ["banking"],
-        "indices": ["BANKNIFTY", "FINNIFTY", "NIFTY"],
-    },
-    "ICICI": {
-        "symbols": ["ICICIBANK"],
-        "sectors": ["banking"],
-        "indices": ["BANKNIFTY", "FINNIFTY", "NIFTY"],
-    },
+    "RELIANCE": _eq("RELIANCE", sectors=["energy", "oil_gas"]),
+    "TCS": _eq("TCS", sectors=["it"]),
+    "TATA CONSULTANCY": _eq("TCS", sectors=["it"]),
+    "INFOSYS": _eq("INFY", sectors=["it"]),
+    "HDFC BANK": _eq("HDFCBANK", sectors=["banking"], indices=_BANK_INDICES),
+    "HDFCBANK": _eq("HDFCBANK", sectors=["banking"], indices=_BANK_INDICES),
+    "ICICI BANK": _eq("ICICIBANK", sectors=["banking"], indices=_BANK_INDICES),
+    "ICICIBANK": _eq("ICICIBANK", sectors=["banking"], indices=_BANK_INDICES),
+    "SBI": _eq("SBIN", sectors=["banking"], indices=_BANK_INDICES),
+    "STATE BANK OF INDIA": _eq("SBIN", sectors=["banking"], indices=_BANK_INDICES),
+    "WIPRO": _eq("WIPRO", sectors=["it"]),
+    "KOTAK": _eq("KOTAKBANK", sectors=["banking"], indices=_BANK_INDICES),
+    "AXIS BANK": _eq("AXISBANK", sectors=["banking"], indices=_BANK_INDICES),
+    "MARUTI": _eq("MARUTI", sectors=["auto"]),
+    "SUN PHARMA": _eq("SUNPHARMA", sectors=["pharma"]),
+    "TATA MOTORS": _eq("TMPV", sectors=["auto"]),
+    "BAJAJ FINANCE": _eq("BAJFINANCE", sectors=["nbfc"]),
+    "HINDUSTAN UNILEVER": _eq("HINDUNILVR", sectors=["fmcg"]),
+    "HUL": _eq("HINDUNILVR", sectors=["fmcg"]),
+    "BHARTI AIRTEL": _eq("BHARTIARTL", sectors=["telecom"]),
+    "AIRTEL": _eq("BHARTIARTL", sectors=["telecom"]),
+    "NTPC": _eq("NTPC", sectors=["power"]),
+    "ASIAN PAINTS": _eq("ASIANPAINT", sectors=["paints"]),
+    "ONGC": _eq("ONGC", sectors=["energy", "oil_gas"]),
+    "POWER GRID": _eq("POWERGRID", sectors=["power"]),
+    "TITAN": _eq("TITAN", sectors=["retail"]),
+    "ITC": _eq("ITC", sectors=["fmcg"]),
+    "LARSEN": _eq("LT", sectors=["infra", "construction"]),
+    "L&T": _eq("LT", sectors=["infra", "construction"]),
+    "HCLTECH": _eq("HCLTECH", sectors=["it"]),
+    "HCL TECH": _eq("HCLTECH", sectors=["it"]),
+    "MAHINDRA": _eq("M&M", sectors=["auto"]),
+    "COAL INDIA": _eq("COALINDIA", sectors=["mining"]),
+    "HERO MOTOCORP": _eq("HEROMOTOCO", sectors=["auto"]),
+    "HINDALCO": _eq("HINDALCO", sectors=["metals"]),
+    "JSW STEEL": _eq("JSWSTEEL", sectors=["metals"]),
+    "ULTRATECH": _eq("ULTRACEMCO", sectors=["cement"]),
+    "GRASIM": _eq("GRASIM", sectors=["cement"]),
+    "BPCL": _eq("BPCL", sectors=["energy", "oil_gas"]),
+    "CIPLA": _eq("CIPLA", sectors=["pharma"]),
+    "DR REDDY": _eq("DRREDDY", sectors=["pharma"]),
+    "EICHER MOTORS": _eq("EICHERMOT", sectors=["auto"]),
+    "ADANI ENTERPRISES": _eq("ADANIENT", sectors=["conglomerate"]),
+    "ADANI PORTS": _eq("ADANIPORTS", sectors=["infra", "logistics"]),
+    "APOLLO HOSPITALS": _eq("APOLLOHOSP", sectors=["healthcare"]),
+    "TATA CONSUMER": _eq("TATACONSUM", sectors=["fmcg"]),
+    "TRENT": _eq("TRENT", sectors=["retail"]),
+    "BAJAJ FINSERV": _eq("BAJAJFINSV", sectors=["nbfc"]),
+    "DIVI'S LAB": _eq("DIVISLAB", sectors=["pharma"]),
+    "DIVIS LAB": _eq("DIVISLAB", sectors=["pharma"]),
+    "SHRIRAM FINANCE": _eq("SHRIRAMFIN", sectors=["nbfc"]),
+    # Commodities (MCX) — indices left empty, these aren't NSE index constituents.
+    "GOLD": {"symbols": ["GOLD", "GOLDM"], "sectors": ["precious_metals"], "indices": []},
+    "SILVER": {"symbols": ["SILVER", "SILVERMIC"], "sectors": ["precious_metals"], "indices": []},
+    "CRUDE OIL": {"symbols": ["CRUDEOIL", "CRUDEOILM"], "sectors": ["energy"], "indices": []},
+    "NATURAL GAS": {"symbols": ["NATURALGAS"], "sectors": ["energy"], "indices": []},
+    "COPPER": {"symbols": ["COPPER"], "sectors": ["base_metals"], "indices": []},
+    "ZINC": {"symbols": ["ZINC"], "sectors": ["base_metals"], "indices": []},
+    "NICKEL": {"symbols": ["NICKEL"], "sectors": ["base_metals"], "indices": []},
+    # Index self-reference — headlines about overall market direction.
+    "NIFTY": {"symbols": ["NIFTY"], "sectors": [], "indices": ["NIFTY"]},
+    "SENSEX": {"symbols": ["SENSEX"], "sectors": [], "indices": ["SENSEX"]},
+    "MIDCAP": {"symbols": ["MIDCPNIFTY"], "sectors": [], "indices": ["MIDCPNIFTY"]},
+    "BANKEX": {"symbols": ["BANKEX"], "sectors": ["banking"], "indices": ["BANKEX"]},
+    # Macro / thematic — no single symbol, broad index relevance.
     "BANK": {
         "symbols": [],
         "sectors": ["banking"],
@@ -53,33 +119,6 @@ _ENTITY_MAP: dict[str, dict[str, Any]] = {
         "sectors": ["metals", "chemicals", "pharma"],
         "indices": ["NIFTY"],
     },
-}
-
-_NEGATIVE_WORDS = {
-    "ban",
-    "crash",
-    "default",
-    "downgrade",
-    "fall",
-    "fraud",
-    "loss",
-    "miss",
-    "probe",
-    "recession",
-    "reject",
-    "shock",
-    "war",
-}
-
-_POSITIVE_WORDS = {
-    "beat",
-    "growth",
-    "hike",
-    "profit",
-    "record",
-    "upgrade",
-    "strong",
-    "surge",
 }
 
 _HIGH_IMPACT_WORDS = {
@@ -168,6 +207,19 @@ class NewsIntelligence:
 
     def __init__(self) -> None:
         self._events: collections.deque[NewsAnalysis] = collections.deque(maxlen=10_000)
+        # Lexicon fallback — reuses ai/models.py::SentimentAnalyzer's richer
+        # (~35/30-word) list instead of maintaining a second, smaller,
+        # redundant word set that used to live in this file.
+        self._lexicon = SentimentAnalyzer()
+        # Optional real scorer (e.g. LocalModelGateway.score_sentiment),
+        # injected via set_sentiment_scorer — same pattern as
+        # VectorMemoryStore.set_embedder. None (default) means every score
+        # comes from the lexicon; a stub/unreachable-runtime gateway
+        # correctly degrades to this automatically since it returns None.
+        self._sentiment_scorer: Callable[[str, str], float | None] | None = None
+
+    def set_sentiment_scorer(self, scorer: Callable[[str, str], float | None]) -> None:
+        self._sentiment_scorer = scorer
 
     def analyze(self, payload: dict[str, Any]) -> NewsAnalysis:
         now = datetime.now(timezone.utc)
@@ -182,7 +234,7 @@ class NewsIntelligence:
         text = f"{headline} {summary}"
 
         entities = self._map_entities(text)
-        sentiment_score = self._sentiment_score(text)
+        sentiment_score = self._sentiment_score(headline, summary)
         importance_score = self._importance_score(text, entities, payload)
         global_risk_score = self._global_risk_score(importance_score, sentiment_score, entities)
         recommended_action, reason = self._recommend(global_risk_score, importance_score, sentiment_score)
@@ -252,12 +304,33 @@ class NewsIntelligence:
                 )
         return entities
 
-    def _sentiment_score(self, text: str) -> float:
-        words = {word.strip(".,:;!?()[]{}\"'").lower() for word in text.split()}
-        positives = len(words & _POSITIVE_WORDS)
-        negatives = len(words & _NEGATIVE_WORDS)
-        score = (positives - negatives) / max(1, positives + negatives)
-        return max(-1.0, min(1.0, score))
+    def _sentiment_score(self, headline: str, summary: str) -> float:
+        if self._sentiment_scorer is not None:
+            try:
+                score = self._sentiment_scorer(headline, summary)
+                if score is not None:
+                    return max(-1.0, min(1.0, float(score)))
+            except Exception as exc:
+                note_swallowed("news_intelligence.sentiment_scorer", exc)
+        return self._lexicon.analyze(f"{headline} {summary}").score
+
+    def sentiment_for(self, underlying: str) -> float:
+        """Average sentiment across currently-active events mapped to
+        `underlying` (by symbol or index — same mapping feature_snapshot()
+        uses), or 0.0 (honest neutral) if none — this is what
+        master_orchestrator.py reads instead of a hardcoded 0.0."""
+        symbol = underlying.strip().upper()
+        now = datetime.now(timezone.utc)
+        scores = [
+            event.sentiment_score
+            for event in self._events
+            if event.expires_at > now
+            and any(
+                symbol in entity.mapped_symbols or symbol in entity.mapped_indices
+                for entity in event.entities
+            )
+        ]
+        return sum(scores) / len(scores) if scores else 0.0
 
     def _importance_score(
         self,
