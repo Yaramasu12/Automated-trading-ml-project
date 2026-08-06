@@ -27,13 +27,25 @@ class PositionReconciliation:
         self.portfolio = portfolio
         self.oms = oms
 
+    def _all_symbols(self, broker_positions: dict[str, int]) -> set[str]:
+        # Union, not just broker_positions' own keys: a position the broker no
+        # longer reports (closed/stopped-out broker-side, e.g. a margin call
+        # or a manual close in the broker's own app) must be caught too, not
+        # only quantity mismatches on symbols the broker happens to mention.
+        # Confirmed 2026-08-06: the original broker_positions.items()-only
+        # loop had exactly this blind spot — a fully-broker-closed position
+        # produced zero drift results since it never appeared in that dict.
+        local_symbols = {sym for sym, pos in self.portfolio.positions.items() if pos.quantity != 0}
+        return local_symbols | set(broker_positions.keys())
+
     def reconcile(self, broker_positions: dict[str, int]) -> list[ReconciliationResult]:
         results: list[ReconciliationResult] = []
         now_str = datetime.now(timezone.utc).isoformat()
 
-        for symbol, broker_qty in broker_positions.items():
+        for symbol in sorted(self._all_symbols(broker_positions)):
             position = self.portfolio.positions.get(symbol)
             local_qty = position.quantity if position else 0
+            broker_qty = broker_positions.get(symbol, 0)
             drift = broker_qty - local_qty
             action = "none"
 
@@ -63,9 +75,9 @@ class PositionReconciliation:
         return results
 
     def has_drift(self, broker_positions: dict[str, int]) -> bool:
-        for symbol, broker_qty in broker_positions.items():
+        for symbol in self._all_symbols(broker_positions):
             position = self.portfolio.positions.get(symbol)
             local_qty = position.quantity if position else 0
-            if broker_qty != local_qty:
+            if broker_positions.get(symbol, 0) != local_qty:
                 return True
         return False

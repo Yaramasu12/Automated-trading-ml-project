@@ -148,6 +148,11 @@ class TradingRuntime:
         )
         self.live_armed = False
         self.kill_switch_active = False
+        # Debounce for _run_reconciliation_tick: a drift must show up on 2
+        # consecutive ticks before tripping the kill switch, so a same-tick
+        # fill-timing race (local books it a moment before/after the broker
+        # reflects it) can't false-trip a brand-new automated safety check.
+        self._consecutive_reconciliation_mismatches = 0
         self.retraining_agent = RetrainingAgent()
         self.risk_supervisor = RiskSupervisorAgent()
         self.volatility_forecaster = VolatilityForecaster()
@@ -1350,6 +1355,13 @@ class TradingRuntime:
             _aio.create_task(self._periodic_portfolio_guardian_loop())
             if self.settings.enable_portfolio_guardian else None
         )
+        # Also always started — the tick itself is a no-op outside LIVE mode
+        # (PAPER/BACKTEST have no separate broker to reconcile against), same
+        # gating style as _can_submit_live_orders elsewhere.
+        self._reconciliation_task = (
+            _aio.create_task(self._periodic_reconciliation_loop())
+            if self.settings.enable_reconciliation else None
+        )
         self.monitor.record_event(
             "async_services_started",
             (
@@ -1386,6 +1398,9 @@ class TradingRuntime:
         guardian_task = getattr(self, "_portfolio_guardian_task", None)
         if guardian_task is not None:
             guardian_task.cancel()
+        reconciliation_task = getattr(self, "_reconciliation_task", None)
+        if reconciliation_task is not None:
+            reconciliation_task.cancel()
         await self.scheduler.stop()
         await self.exit_manager.stop()
         self.live_feed.stop()
@@ -2999,6 +3014,74 @@ class TradingRuntime:
         if breach_reason:
             logger.critical("PORTFOLIO GUARDIAN: %s — setting kill switch", breach_reason)
             self.set_kill_switch(True, reason=f"portfolio_guardian: {breach_reason}")
+
+    async def _periodic_reconciliation_loop(self) -> None:
+        """24/7-while-LIVE broker position reconciliation — same always-on
+        shape as _periodic_portfolio_guardian_loop, but for "does the broker
+        agree with our own ledger?" rather than P&L limits.
+
+        Confirmed 2026-08-06 (REDESIGN_PROMPT.md §6.3): PositionReconciliation
+        (execution/reconciliation.py) already existed, worked, and even had a
+        real blind spot fixed the same day (it couldn't detect a position the
+        broker no longer reports at all) — but nothing ever called it except
+        a human hitting POST /execution/reconcile with hand-typed numbers. A
+        silent ledger/broker divergence (a fill this process never learned
+        about, a broker-side stop-out, a manual close in the Angel One app)
+        would otherwise go unnoticed until someone happened to check.
+
+        A no-op outside LIVE mode: PAPER/BACKTEST have no separate broker to
+        diverge from (the paper broker IS the ledger).
+
+        Deliberately does NOT auto-correct positions on a mismatch — only
+        sets the kill switch (blocks new entries) and raises a CRITICAL
+        alert, same reasoning as the portfolio guardian: a brand-new
+        automated mechanism acting on its own detection carries real risk if
+        that detection has a bug. Reconciling the actual discrepancy stays a
+        human decision. Requires 2 consecutive mismatched ticks before
+        tripping, so a same-tick fill-timing race can't false-trip it.
+        """
+        import asyncio as _aio
+        interval = float(self.settings.reconciliation_interval_seconds)
+        while True:
+            try:
+                await _aio.sleep(interval)
+                await _aio.to_thread(self._run_reconciliation_tick)
+            except _aio.CancelledError:
+                break
+            except Exception as exc:
+                note_swallowed("periodic_reconciliation", exc)
+
+    def _run_reconciliation_tick(self) -> None:
+        if self.kill_switch_active:
+            return  # already tripped; stays tripped until a human clears it
+        if not self.execution_mode.value.startswith("LIVE"):
+            self._consecutive_reconciliation_mismatches = 0
+            return
+        try:
+            raw_positions = self.scheduler.broker.positions()
+        except Exception as exc:
+            note_swallowed("reconciliation_tick_fetch", exc)
+            return
+        broker_positions = {
+            str(p["tradingsymbol"]): int(float(p.get("netqty") or 0))
+            for p in raw_positions
+            if p.get("tradingsymbol")
+        }
+
+        if not self.reconciliation.has_drift(broker_positions):
+            self._consecutive_reconciliation_mismatches = 0
+            return
+
+        self._consecutive_reconciliation_mismatches += 1
+        if self._consecutive_reconciliation_mismatches < 2:
+            return  # first sighting — could be a same-tick fill-timing race; confirm next tick
+
+        results = self.reconciliation.reconcile(broker_positions)
+        drifted = [r for r in results if r.drift != 0]
+        summary = ", ".join(f"{r.symbol} local={r.local_qty} broker={r.broker_qty}" for r in drifted)
+        reason = f"broker position mismatch confirmed across 2 ticks: {summary}"
+        logger.critical("RECONCILIATION: %s — setting kill switch", reason)
+        self.set_kill_switch(True, reason=f"broker_reconciliation: {reason}")
 
     def _can_submit_live_orders(self) -> bool:
         return (

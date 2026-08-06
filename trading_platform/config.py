@@ -117,6 +117,23 @@ class Settings:
     enable_portfolio_guardian: bool = True
     portfolio_guardian_interval_seconds: int = 60
 
+    # Continuous (24/7 while EXECUTION_MODE=LIVE; a no-op otherwise —
+    # PAPER/BACKTEST have no separate broker to reconcile against) broker
+    # position reconciliation. REDESIGN_PROMPT.md §6.3 confirmed 2026-08-06:
+    # PositionReconciliation already existed and worked, but was only ever
+    # invoked manually via POST /execution/reconcile — nothing called it on
+    # a schedule with real broker data. See
+    # TradingRuntime._periodic_reconciliation_loop. On a drift confirmed
+    # across 2 consecutive ticks (debounced so a same-tick fill-timing race
+    # can't false-trip it): sets the kill switch (blocks new entries) and
+    # raises a CRITICAL alert. Deliberately does NOT auto-correct positions —
+    # same reasoning as the portfolio guardian: a brand-new automated
+    # mechanism acting on its own detection carries real risk if that
+    # detection has a bug; reconciling the actual discrepancy stays a human
+    # decision.
+    enable_reconciliation: bool = True
+    reconciliation_interval_seconds: int = 30
+
     # Goal governor
     yearly_profit_target: float = 50_000_000.0   # 5 crore INR aspirational target
 
@@ -246,6 +263,8 @@ def load_settings() -> Settings:
         news_fetch_interval_seconds=max(60, int(os.getenv("NEWS_FETCH_INTERVAL_SECONDS", "300"))),
         enable_portfolio_guardian=_bool_env("ENABLE_PORTFOLIO_GUARDIAN", True),
         portfolio_guardian_interval_seconds=max(15, int(os.getenv("PORTFOLIO_GUARDIAN_INTERVAL_SECONDS", "60"))),
+        enable_reconciliation=_bool_env("ENABLE_RECONCILIATION", True),
+        reconciliation_interval_seconds=max(10, int(os.getenv("RECONCILIATION_INTERVAL_SECONDS", "30"))),
         yearly_profit_target=float(os.getenv("YEARLY_PROFIT_TARGET", "50000000")),
         database_url=os.getenv("DATABASE_URL", ""),
     )
