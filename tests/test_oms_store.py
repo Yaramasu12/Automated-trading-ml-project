@@ -143,5 +143,85 @@ class SchemaMigrationTests(unittest.TestCase):
         store2.close()
 
 
+class UnresolvedOrdersTests(unittest.TestCase):
+    """REDESIGN_PROMPT.md §6.3's orphan-order signal — already recorded via
+    fill_unresolved/fill_price_missing, just with no query to surface it
+    until now."""
+
+    def setUp(self):
+        self._tmpdir = tempfile.TemporaryDirectory()
+        self.db_path = Path(self._tmpdir.name) / "oms.db"
+        self.store = OMSEventStore(db_path=self.db_path)
+
+    def tearDown(self):
+        self.store.close()
+        self._tmpdir.cleanup()
+
+    def test_empty_store_has_no_unresolved_orders(self):
+        self.assertEqual(self.store.unresolved_orders(), [])
+
+    def test_normally_progressing_order_is_not_unresolved(self):
+        self.store.append(event_type="intent_queued", order_id="o1")
+        self.store.append(event_type="compliance_approved", order_id="o1")
+        self.store.append(event_type="broker_submitted", order_id="o1")
+        self.store.append(event_type="broker_filled", order_id="o1")
+        self.assertEqual(self.store.unresolved_orders(), [])
+
+    def test_fill_unresolved_as_latest_event_is_flagged(self):
+        self.store.append(event_type="broker_submitted", order_id="o1")
+        self.store.append(event_type="fill_unresolved", order_id="o1")
+        results = self.store.unresolved_orders()
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0]["order_id"], "o1")
+        self.assertEqual(results[0]["event_type"], "fill_unresolved")
+
+    def test_fill_price_missing_as_latest_event_is_flagged(self):
+        self.store.append(event_type="broker_submitted", order_id="o1")
+        self.store.append(event_type="fill_price_missing", order_id="o1")
+        results = self.store.unresolved_orders()
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0]["order_id"], "o1")
+
+    def test_scheduler_fallthrough_bug_still_flagged(self):
+        """The real scheduler.py timeout path appends broker_filled THEN
+        fill_unresolved for the same order_id (a fallthrough with no
+        return) — the LATEST row must still win and flag it."""
+        self.store.append(event_type="broker_submitted", order_id="o1")
+        self.store.append(event_type="broker_filled", order_id="o1")
+        self.store.append(event_type="fill_unresolved", order_id="o1")
+        results = self.store.unresolved_orders()
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0]["order_id"], "o1")
+
+    def test_later_terminal_event_clears_the_flag(self):
+        """A later, non-unresolved event for the same order_id becomes the
+        new "latest" row, so the order no longer shows as unresolved."""
+        self.store.append(event_type="broker_submitted", order_id="o1")
+        self.store.append(event_type="fill_unresolved", order_id="o1")
+        self.store.append(event_type="broker_filled", order_id="o1")
+        self.assertEqual(self.store.unresolved_orders(), [])
+
+    def test_multiple_orders_only_unresolved_ones_returned(self):
+        self.store.append(event_type="broker_submitted", order_id="healthy")
+        self.store.append(event_type="broker_filled", order_id="healthy")
+        self.store.append(event_type="broker_submitted", order_id="stuck")
+        self.store.append(event_type="fill_unresolved", order_id="stuck")
+        results = self.store.unresolved_orders()
+        self.assertEqual([r["order_id"] for r in results], ["stuck"])
+
+    def test_since_filters_out_older_rows(self):
+        self.store.append(event_type="broker_submitted", order_id="o1")
+        self.store.append(event_type="fill_unresolved", order_id="o1")
+        far_future = "2999-01-01T00:00:00+00:00"
+        self.assertEqual(self.store.unresolved_orders(since=far_future), [])
+        self.assertEqual(len(self.store.unresolved_orders(since="2000-01-01T00:00:00+00:00")), 1)
+
+    def test_limit_is_respected(self):
+        for i in range(5):
+            self.store.append(event_type="broker_submitted", order_id=f"o{i}")
+            self.store.append(event_type="fill_unresolved", order_id=f"o{i}")
+        self.assertEqual(len(self.store.unresolved_orders(limit=3)), 3)
+
+
 if __name__ == "__main__":
     unittest.main()

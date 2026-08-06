@@ -868,6 +868,13 @@ def reconcile_positions(payload: dict):
     return runtime.reconcile_positions(broker_positions)
 
 
+@app.get("/execution/unresolved-orders", dependencies=[_AuthDep])
+def unresolved_orders(hours: float = 24.0, limit: int = 200):
+    """Orders whose broker-side fill state was never confirmed within the
+    scheduler's tracking window (the orphan-order signal) — read-only."""
+    return runtime.unresolved_orders(hours=hours, limit=limit)
+
+
 # ---------------------------------------------------------------------------
 # Versioned API aliases matching the implementation blueprint
 # ---------------------------------------------------------------------------

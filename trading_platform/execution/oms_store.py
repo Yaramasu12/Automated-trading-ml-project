@@ -234,6 +234,49 @@ class OMSEventStore:
             cur.execute("SELECT * FROM oms_events ORDER BY id DESC LIMIT ?", (limit,))
             return [dict(row) for row in cur.fetchall()]
 
+    # Orders whose MOST RECENT event is one of these two mean the local
+    # system lost track of the order's true broker-side state — the
+    # "position may exist at the broker without ledger/exit tracking" case
+    # scheduler.py's tracking timeout already logs per-order. This is the
+    # exact orphan signal REDESIGN_PROMPT.md §6.3 asks for; it was already
+    # being recorded, just with no query to surface it (confirmed
+    # 2026-08-06: no "list still-open orders" query existed at all).
+    _UNRESOLVED_EVENT_TYPES = ("fill_unresolved", "fill_price_missing")
+
+    def unresolved_orders(self, since: str | None = None, limit: int = 200) -> list[dict]:
+        """Orders whose latest recorded event is fill_unresolved or
+        fill_price_missing — i.e. the broker's true fill state was never
+        confirmed within the scheduler's tracking window.
+
+        `since` (an ISO-8601 occurred_at string) restricts to recent rows.
+        This matters because the append-only OMS log has no "resolved"
+        event type — once an order lands here, it stays here forever
+        unless some later event (of ANY type) gets appended for the same
+        order_id, even if a human fixed the real position by hand. Without
+        a `since` filter this can surface stale, already-handled orders
+        indefinitely; callers wanting "is this still a live problem" should
+        pass a recent cutoff (e.g. the last few hours) rather than treat an
+        old row here as necessarily still open today.
+        """
+        query = """
+            SELECT e.* FROM oms_events e
+            INNER JOIN (
+                SELECT order_id, MAX(id) AS max_id
+                FROM oms_events
+                GROUP BY order_id
+            ) latest ON e.order_id = latest.order_id AND e.id = latest.max_id
+            WHERE e.event_type IN ({placeholders})
+        """.format(placeholders=",".join("?" * len(self._UNRESOLVED_EVENT_TYPES)))
+        params: list = list(self._UNRESOLVED_EVENT_TYPES)
+        if since is not None:
+            query += " AND e.occurred_at >= ?"
+            params.append(since)
+        query += " ORDER BY e.id DESC LIMIT ?"
+        params.append(limit)
+        with self._cursor() as cur:
+            cur.execute(query, params)
+            return [dict(row) for row in cur.fetchall()]
+
     def event_count(self) -> int:
         with self._cursor() as cur:
             cur.execute("SELECT COUNT(*) FROM oms_events")

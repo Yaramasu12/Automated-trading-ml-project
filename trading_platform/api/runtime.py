@@ -3710,6 +3710,23 @@ class TradingRuntime:
         log = list(itertools.islice(reversed(self._risk_rejection_log), limit))
         return {"count": len(log), "rejections": log}
 
+    def unresolved_orders(self, hours: float = 24.0, limit: int = 200) -> dict:
+        """Orders whose broker-side fill state was never confirmed within
+        the scheduler's tracking window — the orphan-order signal
+        REDESIGN_PROMPT.md §6.3 asks for (see OMSEventStore.unresolved_orders's
+        docstring: this was already being recorded via fill_unresolved/
+        fill_price_missing, just with no query to surface it). Read-only;
+        does not itself take any corrective action — POST /execution/reconcile
+        or manual review is still how a flagged order gets resolved.
+
+        `hours` bounds the lookback since the OMS log has no "resolved"
+        marker — without a cutoff, an old already-handled order would show
+        up forever.
+        """
+        since = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
+        orders = self.oms.unresolved_orders(since=since, limit=limit)
+        return {"count": len(orders), "lookback_hours": hours, "orders": orders}
+
     def governance_dashboard(self) -> dict:
         """Full governance state: goal phase, ML model health, risk supervisor, feature drift."""
         snapshot = self.portfolio.mark_to_market(datetime.now(timezone.utc), {})
