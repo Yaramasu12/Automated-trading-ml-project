@@ -134,6 +134,23 @@ class Settings:
     enable_reconciliation: bool = True
     reconciliation_interval_seconds: int = 30
 
+    # Feeds RiskEngine's existing near_expiry_gamma_exceeds_limit check
+    # (RiskLimits.max_gamma_near_expiry, default 0.05) with REAL net gamma
+    # from open near-expiry (<=1 DTE) option positions instead of the
+    # hardcoded 0.0 every order-submission path passed before 2026-08-06 —
+    # confirmed nothing anywhere computed real gamma, so this check could
+    # never fire in production despite existing in the code for who knows
+    # how long. See TradingRuntime._near_expiry_gamma_exposure.
+    #
+    # Defaults OFF deliberately: 0.05 predates any real gamma ever being
+    # computed, so it has never been calibrated against real lot-weighted
+    # net gamma — enabling this blind risks either rejecting normal
+    # single-structure near-expiry entries (if 0.05 turns out too tight for
+    # the real scale) or providing false confidence (if too loose). Check
+    # real near-expiry net gamma readings via GET /risk/portfolio-greeks
+    # first, retune max_gamma_near_expiry if needed, then enable.
+    enable_gamma_exposure_gate: bool = False
+
     # Goal governor
     yearly_profit_target: float = 50_000_000.0   # 5 crore INR aspirational target
 
@@ -265,6 +282,7 @@ def load_settings() -> Settings:
         portfolio_guardian_interval_seconds=max(15, int(os.getenv("PORTFOLIO_GUARDIAN_INTERVAL_SECONDS", "60"))),
         enable_reconciliation=_bool_env("ENABLE_RECONCILIATION", True),
         reconciliation_interval_seconds=max(10, int(os.getenv("RECONCILIATION_INTERVAL_SECONDS", "30"))),
+        enable_gamma_exposure_gate=_bool_env("ENABLE_GAMMA_EXPOSURE_GATE", False),
         yearly_profit_target=float(os.getenv("YEARLY_PROFIT_TARGET", "50000000")),
         database_url=os.getenv("DATABASE_URL", ""),
     )

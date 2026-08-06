@@ -33,7 +33,7 @@ from trading_platform.decision.pipeline import DecisionPipeline
 from trading_platform.derivatives.engine import ContractSelector, ExpiryCalendar, GreeksCalculator, IVSurfaceBuilder, OptionChainBuilder, RolloverPlanner
 from trading_platform.risk.historical_var import HistoricalVarCalculator
 from trading_platform.risk.portfolio_greeks import PortfolioGreeksCalculator
-from trading_platform.domain.enums import ExecutionMode, OptionType, OrderPriority, OrderType, ProductType, Side
+from trading_platform.domain.enums import ExecutionMode, OptionType, OrderPriority, OrderType, ProductType, Segment, Side
 from trading_platform.domain.models import OrderIntent, Signal
 from trading_platform.event_bus import InMemoryEventBus
 from trading_platform.execution.emergency_square_off import EmergencySquareOff
@@ -67,7 +67,7 @@ from trading_platform.risk.event_risk import EventRiskGuard
 from trading_platform.risk.manual_approval import ManualApprovalGate
 from trading_platform.strategies.factory import StrategyFactory
 from trading_platform.agent.trading_agent import TradingAgent, SCAN_UNDERLYINGS
-from trading_platform.agent.market_hours import now_ist
+from trading_platform.agent.market_hours import now_ist, to_ist
 
 # ── Phase 1–9: new components (lazy-safe imports) ─────────────────────────────
 from trading_platform.trace.ids import new_trace_id
@@ -2529,7 +2529,11 @@ class TradingRuntime:
             daily_pnl=gate_daily_pnl,
             strategy_daily_pnl=float(payload.get("strategy_daily_pnl", 0.0)),
             options_short_exposure=float(payload.get("options_short_exposure", 0.0)),
-            gamma_exposure=float(payload.get("gamma_exposure", 0.0)),
+            gamma_exposure=(
+                float(payload["gamma_exposure"])
+                if payload.get("gamma_exposure") is not None
+                else (self._near_expiry_gamma_exposure(now) if self.settings.enable_gamma_exposure_gate else 0.0)
+            ),
             symbol_exposure_pct=(
                 float(payload["symbol_exposure_pct"])
                 if payload.get("symbol_exposure_pct") is not None
@@ -3620,12 +3624,42 @@ class TradingRuntime:
         )
         return resolution.price if resolution.price and resolution.price > 0 else None
 
+    def _near_expiry_gamma_exposure(self, now: datetime) -> float:
+        """Net gamma (lot-weighted, signed by position direction — the same
+        net_gamma PortfolioGreeksCalculator reports elsewhere) across
+        currently held option positions expiring within 1 day of `now`.
+        Feeds RiskEngine's near_expiry_gamma_exceeds_limit check — see
+        Settings.enable_gamma_exposure_gate's docstring for why that check
+        is opt-in rather than always wired to this.
+
+        Deliberately does NOT include the prospective new order's own
+        gamma — this answers "is the EXISTING near-expiry book already too
+        risky to add to," not "would this specific order push it over,"
+        which would need pricing an order that may not have a resolved
+        market price yet. Only currently-held positions are considered.
+        """
+        today = to_ist(now).date()
+        near_expiry_positions = {
+            symbol: pos for symbol, pos in self.portfolio.positions.items()
+            if pos.quantity != 0
+            and pos.instrument.segment == Segment.OPTIONS
+            and pos.instrument.expiry is not None
+            and (pos.instrument.expiry - today).days <= 1
+        }
+        if not near_expiry_positions:
+            return 0.0
+        snapshot = self.portfolio_greeks_calculator.compute(
+            near_expiry_positions, self._position_spot_price, self._position_mark_price, as_of=today
+        )
+        return snapshot.net_gamma
+
     def portfolio_greeks_snapshot(self) -> dict:
         """Net delta/gamma/theta/vega across every open OPTION position —
         see PortfolioGreeksCalculator's module docstring for the gap this
-        closes (REDESIGN_PROMPT.md §6.1). Read-only/diagnostic: does not
-        feed RiskEngine's order-blocking gate (yet) — that is a
-        deliberately separate, higher-stakes decision.
+        closes (REDESIGN_PROMPT.md §6.1). This full-book view is read-only/
+        diagnostic and does not gate order flow; a narrower near-expiry-only
+        net gamma (see _near_expiry_gamma_exposure) optionally does, behind
+        Settings.enable_gamma_exposure_gate (default off).
         """
         snapshot = self.portfolio_greeks_calculator.compute(
             self.portfolio.positions, self._position_spot_price, self._position_mark_price

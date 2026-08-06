@@ -17,12 +17,13 @@ position's OWN market price, the same "price real risk off the market's own
 implied vol, never an assumed constant" discipline ShortVolExecutor already
 follows for entries) and sums them into net portfolio delta/gamma/theta/vega.
 
-Deliberately NOT wired into RiskEngine's order-blocking gate yet — that is
-a separate, higher-stakes decision (a previously-inert 0.0 input becoming
-real and possibly nonzero could start rejecting orders that went through
-before) requiring its own validation against live/paper positions. This is
-read-only/diagnostic: a Risk Console can show real numbers today; deciding
-what should be BLOCKED by them is deliberately a follow-up.
+This full-book aggregate (TradingRuntime.portfolio_greeks_snapshot) is
+read-only/diagnostic and does not gate order flow. A narrower slice of it —
+net gamma of just the near-expiry (<=1 DTE) positions — does optionally
+feed RiskEngine's real order-blocking gate, but only behind
+Settings.enable_gamma_exposure_gate (default off): see
+TradingRuntime._near_expiry_gamma_exposure and that setting's docstring for
+why enabling it needs the threshold checked against real data first.
 """
 from __future__ import annotations
 
