@@ -299,9 +299,11 @@ class TradingRuntime:
             lambda trade, intent: self.multi_leg_manager.notify_fill(intent.idempotency_key, trade)
         )
 
-        # Goal governance
+        # Goal governance — annual_target_pct now comes from Settings (see its
+        # docstring in config.py) instead of a hardcoded 0.40 disconnected
+        # from everything else.
         self.goal_governance = GoalGovernance(
-            annual_target_pct=0.40,
+            annual_target_pct=self.settings.annual_target_pct,
             start_capital=self.settings.initial_capital,
             drawdown_halt_pct=self.settings.max_drawdown,
         )

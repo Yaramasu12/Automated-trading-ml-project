@@ -165,6 +165,24 @@ class Settings:
 
     # Goal governor
     yearly_profit_target: float = 50_000_000.0   # 5 crore INR aspirational target
+    # REDESIGN_PROMPT.md §9: CLAUDE.md itself flags yearly_profit_target above
+    # as a "5000%/yr target on ₹10L capital" — a fantasy figure. It still
+    # feeds the ADVISORY-only GoalGovernor (decision_fusion/goal_governor.py,
+    # part of the 9-node orchestrator graph System B that's discarded when
+    # AGENT_DIRECTIONAL_ENABLED=false, i.e. NOT on the live money path) and
+    # the informational-only AnnualTargetTracker (portfolio/target.py, whose
+    # target_progress() API isn't consumed by any position-sizing code) —
+    # left as-is since fixing every one of those non-live-path uses is a
+    # bigger untangling job than this setting's actual consequence today.
+    #
+    # THIS field is the one that matters: it drives GoalGovernance
+    # (goal/governance.py) — the ONE system of the several "goal" concepts
+    # in this codebase whose scaling_factor actually reduces live short-vol
+    # position sizing (see ShortVolExecutor._goal_scaling_factor), so it's a
+    # defensible risk-adjusted %/yr band, not an absolute rupee fantasy.
+    # 35%/yr sits inside REDESIGN_PROMPT.md §9's own suggested 25-40% range —
+    # aggressive but not fantasy for premium selling with tight management.
+    annual_target_pct: float = 0.35
 
     # Database  (empty = SQLite fallback; set DATABASE_URL for PostgreSQL)
     database_url: str = ""
@@ -297,5 +315,6 @@ def load_settings() -> Settings:
         reconciliation_interval_seconds=max(10, int(os.getenv("RECONCILIATION_INTERVAL_SECONDS", "30"))),
         enable_gamma_exposure_gate=_bool_env("ENABLE_GAMMA_EXPOSURE_GATE", False),
         yearly_profit_target=float(os.getenv("YEARLY_PROFIT_TARGET", "50000000")),
+        annual_target_pct=float(os.getenv("ANNUAL_TARGET_PCT", "0.35")),
         database_url=os.getenv("DATABASE_URL", ""),
     )

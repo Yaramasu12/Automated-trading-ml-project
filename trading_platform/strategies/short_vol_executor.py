@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import os
 import time
 from datetime import date, datetime, timedelta
@@ -134,6 +135,39 @@ class ShortVolExecutor:
         except Exception as exc:
             logger.warning("short-vol: chain-history IV read failed for %s: %s", underlying, exc)
             return []
+
+    def _goal_scaling_factor(self) -> tuple[float, str]:
+        """GoalGovernance's current phase-based scaling factor for live
+        position sizing (REDESIGN_PROMPT.md §9) — reduces (or, in HALTED,
+        zeroes) new entries' lot count when annual-return progress is
+        lagging/at-risk. Deliberately separate from, and layered ON TOP OF,
+        RiskEngine/CapitalProtection's own hard drawdown limits: those stay
+        authoritative regardless of this — GoalGovernance checks drawdown
+        independently and returns HALTED for its OWN reason (protecting the
+        annual-target trajectory), not as a substitute risk gate.
+
+        Uses ONLY the phase-based factor, not PositionScaler.scale()'s
+        additional volatility-Kelly adjustment — ShortVolStrategy.kelly_lots()
+        already does its own vol-aware Kelly sizing, so layering
+        PositionScaler's own vol scaling on top would double-count that.
+
+        Returns (factor, phase_name); (1.0, "unavailable") if governance
+        isn't wired (e.g. a bare test executor) or is disabled via
+        ENABLE_GOAL_GOVERNOR=false.
+        """
+        if not _env_flag("ENABLE_GOAL_GOVERNOR", True):
+            return 1.0, "disabled"
+        governance = getattr(self._rt, "goal_governance", None)
+        portfolio = getattr(self._rt, "portfolio", None)
+        if governance is None or portfolio is None:
+            return 1.0, "unavailable"
+        try:
+            snapshot = portfolio.mark_to_market(datetime.now(), {})
+            state = governance.evaluate(current_equity=snapshot.equity, drawdown=snapshot.drawdown)
+            return state.scaling_factor, state.phase.value
+        except Exception as exc:
+            logger.warning("short-vol: goal governance evaluation failed: %s", exc)
+            return 1.0, "error"
 
     def _resolve_option(self, underlying: str, strike: float, option_type, expiry: date):
         """Find the real option Instrument for a strike/type on the nearest expiry."""
@@ -345,12 +379,34 @@ class ShortVolExecutor:
                 )
                 return out
 
+        # Goal governance (REDESIGN_PROMPT.md §9): scales lots down (or to
+        # zero) when annual-return progress is lagging/at-risk, layered on
+        # top of — never a substitute for — RiskEngine/CapitalProtection's
+        # own hard drawdown limits. See _goal_scaling_factor's docstring.
+        goal_scale, goal_phase = self._goal_scaling_factor()
+        out["goal_phase"] = goal_phase
+        out["goal_scaling_factor"] = round(goal_scale, 2)
+        lots = decision.lots
+        if goal_scale < 1.0:
+            lots = math.floor(decision.lots * goal_scale)
+            if lots < 1:
+                out["enter"] = False
+                out["lots"] = 0
+                out["reason"] = (
+                    f"goal governance phase={goal_phase} (scaling={goal_scale:.2f}) "
+                    f"reduced {decision.lots} lot(s) to 0"
+                )
+                return out
+            out["reason"] = f"{decision.reason} [goal governance {goal_phase}: lots {decision.lots}->{lots}]"
+        out["lots"] = lots
+
         vix = iv
         # Quantity is in LOTS (contracts). notional_value and the ledger already
         # multiply by lot_size, so passing lots*lot_size here double-counts the
         # multiplier — inflating option notional ~lot_size× (→ position_size
         # rejections that roll back the whole structure) and P&L on fill.
-        qty = decision.lots
+        # `lots` (not decision.lots) — already goal-governance-scaled above.
+        qty = lots
         for leg in decision.legs:
             inst = self._resolve_option(underlying, leg.strike, leg.option_type, expiry)
             if inst is None:

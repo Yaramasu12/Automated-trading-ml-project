@@ -499,7 +499,7 @@ class IvRankGateTests(unittest.TestCase):
     top of the already-validated VRP threshold — never a silent replacement
     for it, per the "models must earn deployment" rule."""
 
-    def _executor(self, *, atm_premium=250.0, vix_history=None, closes=None):
+    def _executor(self, *, atm_premium=250.0, vix_history=None, closes=None, goal_governance=None):
         from datetime import date as _date, timedelta as _td
         expiry = _date.today() + _td(days=7)
         strikes = [float(k) for k in range(22000, 27050, 50)]
@@ -533,7 +533,11 @@ class IvRankGateTests(unittest.TestCase):
             decision_pipeline=SimpleNamespace(
                 _fetch_bars=lambda u, start, n: [SimpleNamespace(close=c) for c in (closes or _flat_closes())]
             ),
-            portfolio=SimpleNamespace(cash=1_000_000, equity=1_000_000),
+            portfolio=SimpleNamespace(
+                cash=1_000_000, equity=1_000_000,
+                mark_to_market=lambda now, prices: SimpleNamespace(equity=1_000_000, drawdown=0.0),
+            ),
+            goal_governance=goal_governance,
         )
         return ShortVolExecutor(rt)
 
@@ -598,6 +602,72 @@ class IvRankGateTests(unittest.TestCase):
     def test_iv_rank_history_empty_when_collector_absent(self):
         ex = ShortVolExecutor(SimpleNamespace())
         self.assertEqual(ex._iv_rank_history("BANKNIFTY"), [])
+
+
+class GoalGovernanceWiringTests(IvRankGateTests):
+    """2026-08-06 (REDESIGN_PROMPT.md §9): GoalGovernance's phase-based
+    scaling_factor now actually reduces live short-vol lot sizing —
+    reuses IvRankGateTests' full build() fixture (a realistic, entering
+    condor) since this needs an actual decision.lots > 0 to scale."""
+
+    def _governance(self, scaling_factor, phase):
+        from trading_platform.goal.governance import GoalPhase
+        state = SimpleNamespace(
+            scaling_factor=scaling_factor,
+            phase=SimpleNamespace(value=phase) if isinstance(phase, str) else phase,
+        )
+        return SimpleNamespace(evaluate=mock.Mock(return_value=state))
+
+    def test_unavailable_governance_leaves_lots_unchanged(self):
+        ex = self._executor(vix_history=[float(v) for v in range(10, 30)])  # goal_governance=None
+        plan = ex.build("NIFTY")
+        self.assertTrue(plan["enter"], plan.get("reason"))
+        self.assertEqual(plan["goal_phase"], "unavailable")
+        self.assertEqual(plan["goal_scaling_factor"], 1.0)
+
+    def test_on_track_does_not_reduce_lots(self):
+        gov = self._governance(1.0, "ON_TRACK")
+        ex = self._executor(vix_history=[float(v) for v in range(10, 30)], goal_governance=gov)
+        baseline = self._executor(vix_history=[float(v) for v in range(10, 30)]).build("NIFTY")
+        plan = ex.build("NIFTY")
+        self.assertTrue(plan["enter"], plan.get("reason"))
+        self.assertEqual(plan["lots"], baseline["lots"])
+        self.assertEqual(plan["goal_phase"], "ON_TRACK")
+
+    def test_lagging_reduces_lots_by_scaling_factor(self):
+        gov = self._governance(0.80, "LAGGING")
+        ex = self._executor(vix_history=[float(v) for v in range(10, 30)], goal_governance=gov)
+        baseline = self._executor(vix_history=[float(v) for v in range(10, 30)]).build("NIFTY")
+        plan = ex.build("NIFTY")
+        self.assertTrue(plan["enter"], plan.get("reason"))
+        self.assertEqual(plan["lots"], math.floor(baseline["lots"] * 0.80))
+        self.assertIn("goal governance LAGGING", plan["reason"])
+
+    def test_halted_blocks_entry_entirely(self):
+        gov = self._governance(0.0, "HALTED")
+        ex = self._executor(vix_history=[float(v) for v in range(10, 30)], goal_governance=gov)
+        plan = ex.build("NIFTY")
+        self.assertFalse(plan["enter"])
+        self.assertEqual(plan["lots"], 0)
+        self.assertIn("goal governance", plan["reason"])
+        self.assertIn("HALTED", plan["reason"])
+
+    def test_disabled_via_env_flag_ignores_governance_state(self):
+        gov = self._governance(0.0, "HALTED")  # would otherwise block entirely
+        ex = self._executor(vix_history=[float(v) for v in range(10, 30)], goal_governance=gov)
+        with mock.patch.dict(os.environ, {"ENABLE_GOAL_GOVERNOR": "false"}):
+            plan = ex.build("NIFTY")
+        self.assertTrue(plan["enter"], plan.get("reason"))
+        self.assertEqual(plan["goal_phase"], "disabled")
+        gov.evaluate.assert_not_called()
+
+    def test_governance_exception_falls_back_to_full_size(self):
+        gov = SimpleNamespace(evaluate=mock.Mock(side_effect=RuntimeError("boom")))
+        ex = self._executor(vix_history=[float(v) for v in range(10, 30)], goal_governance=gov)
+        plan = ex.build("NIFTY")
+        self.assertTrue(plan["enter"], plan.get("reason"))
+        self.assertEqual(plan["goal_phase"], "error")
+        self.assertEqual(plan["goal_scaling_factor"], 1.0)
 
 
 if __name__ == "__main__":
