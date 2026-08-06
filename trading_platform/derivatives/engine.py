@@ -188,6 +188,42 @@ class IVSurfaceBuilder:
 
 
 # ---------------------------------------------------------------------------
+# Black-Scholes pricing (public, reusable) — same formula ImpliedVolatility-
+# Calculator._bs_price and ShortVolStrategy._bs each already carry privately;
+# this one is the public entry point for anything that needs to reprice an
+# option under a hypothetical spot/vol (e.g. VaR scenario repricing) rather
+# than invert or invert-then-price. Not a refactor of those two — they stay
+# as-is to avoid touching working, tested code for an unrelated task.
+# ---------------------------------------------------------------------------
+
+
+def black_scholes_price(
+    spot: float,
+    strike: float,
+    time_to_expiry_years: float,
+    volatility: float,
+    option_type: OptionType,
+    risk_free_rate: float = 0.06,
+) -> float:
+    """European option price. Returns intrinsic value at expiry/zero-vol
+    (T<=0 or sigma<=0) rather than raising — a scenario-repricing caller
+    (e.g. VaR shocking spot across many scenarios near expiry) needs a
+    sane value for every scenario, not an exception."""
+    if spot <= 0 or strike <= 0:
+        raise ValueError("spot and strike must be positive")
+    if time_to_expiry_years <= 0 or volatility <= 0:
+        intrinsic = (spot - strike) if option_type == OptionType.CE else (strike - spot)
+        return max(0.0, intrinsic)
+    t = time_to_expiry_years
+    sigma = volatility
+    d1 = (math.log(spot / strike) + (risk_free_rate + 0.5 * sigma * sigma) * t) / (sigma * math.sqrt(t))
+    d2 = d1 - sigma * math.sqrt(t)
+    if option_type == OptionType.CE:
+        return spot * _normal_cdf(d1) - strike * math.exp(-risk_free_rate * t) * _normal_cdf(d2)
+    return strike * math.exp(-risk_free_rate * t) * _normal_cdf(-d2) - spot * _normal_cdf(-d1)
+
+
+# ---------------------------------------------------------------------------
 # IV Rank / IV Percentile
 # ---------------------------------------------------------------------------
 

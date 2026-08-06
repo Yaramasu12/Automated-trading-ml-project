@@ -31,6 +31,7 @@ from trading_platform.data.options_chain_collector import OptionsChainCollector
 from trading_platform.decision.orchestrator import DecisionCycleOrchestrator
 from trading_platform.decision.pipeline import DecisionPipeline
 from trading_platform.derivatives.engine import ContractSelector, ExpiryCalendar, GreeksCalculator, IVSurfaceBuilder, OptionChainBuilder, RolloverPlanner
+from trading_platform.risk.historical_var import HistoricalVarCalculator
 from trading_platform.risk.portfolio_greeks import PortfolioGreeksCalculator
 from trading_platform.domain.enums import ExecutionMode, OptionType, OrderPriority, OrderType, ProductType, Side
 from trading_platform.domain.models import OrderIntent, Signal
@@ -126,6 +127,7 @@ class TradingRuntime:
         self.option_chain_builder = OptionChainBuilder(self.instrument_master)
         self.greeks_calculator = GreeksCalculator()
         self.portfolio_greeks_calculator = PortfolioGreeksCalculator()
+        self.historical_var_calculator = HistoricalVarCalculator()
         self.rollover_planner = RolloverPlanner(self.instrument_master)
         self.target_tracker = AnnualTargetTracker()
         self.portfolio = PortfolioLedger(self.settings.initial_capital)
@@ -3600,30 +3602,65 @@ class TradingRuntime:
             },
         }
 
+    def _position_spot_price(self, underlying: str) -> float | None:
+        """Shared spot-price source for PortfolioGreeksCalculator and
+        HistoricalVarCalculator — both need "the underlying's current
+        price," not the option's own mark."""
+        tick = self.live_feed.latest_tick(underlying)
+        if tick and getattr(tick, "last_price", 0) and tick.last_price > 0:
+            return float(tick.last_price)
+        return None
+
+    def _position_mark_price(self, pos) -> float | None:
+        """Shared option-mark source for PortfolioGreeksCalculator and
+        HistoricalVarCalculator — both invert implied vol from each
+        position's OWN current mark rather than assume a constant."""
+        resolution = self.price_service.resolve(
+            pos.instrument.symbol, instrument=pos.instrument, entry_price=pos.average_price
+        )
+        return resolution.price if resolution.price and resolution.price > 0 else None
+
     def portfolio_greeks_snapshot(self) -> dict:
-        """Net delta/gamma/theta/vega across every open OPTION position, with
-        implied vol inverted from each position's OWN current mark (not an
-        assumed constant) — see PortfolioGreeksCalculator's module docstring
-        for the gap this closes (REDESIGN_PROMPT.md §6.1). Read-only/
-        diagnostic: does not feed RiskEngine's order-blocking gate (yet) —
-        that is a deliberately separate, higher-stakes decision.
+        """Net delta/gamma/theta/vega across every open OPTION position —
+        see PortfolioGreeksCalculator's module docstring for the gap this
+        closes (REDESIGN_PROMPT.md §6.1). Read-only/diagnostic: does not
+        feed RiskEngine's order-blocking gate (yet) — that is a
+        deliberately separate, higher-stakes decision.
         """
-        def spot_price(underlying: str) -> float | None:
-            tick = self.live_feed.latest_tick(underlying)
-            if tick and getattr(tick, "last_price", 0) and tick.last_price > 0:
-                return float(tick.last_price)
-            return None
-
-        def mark_price(pos) -> float | None:
-            resolution = self.price_service.resolve(
-                pos.instrument.symbol, instrument=pos.instrument, entry_price=pos.average_price
-            )
-            return resolution.price if resolution.price and resolution.price > 0 else None
-
         snapshot = self.portfolio_greeks_calculator.compute(
-            self.portfolio.positions, spot_price, mark_price
+            self.portfolio.positions, self._position_spot_price, self._position_mark_price
         )
         return snapshot.to_dict()
+
+    def portfolio_var_snapshot(self) -> dict:
+        """95%/99% 1-day historical-simulation VaR across the open options
+        book — see HistoricalVarCalculator's module docstring for
+        methodology (REDESIGN_PROMPT.md §6.1's remaining explicit gap).
+        Read-only/diagnostic, same as portfolio_greeks_snapshot.
+        """
+        def historical_returns(underlying: str) -> list[float]:
+            bars = self.decision_pipeline._fetch_bars(
+                underlying, date.today() - timedelta(days=400), 300
+            )
+            closes = [b.close for b in bars] if bars else []
+            if len(closes) < 2:
+                return []
+            return [
+                math.log(closes[i] / closes[i - 1])
+                for i in range(1, len(closes))
+                if closes[i - 1] > 0 and closes[i] > 0
+            ]
+
+        result = self.historical_var_calculator.compute(
+            self.portfolio.positions, self._position_spot_price, self._position_mark_price,
+            historical_returns,
+        )
+        if result is None:
+            return {
+                "available": False,
+                "reason": "no priceable option positions or insufficient underlying price history",
+            }
+        return result.to_dict()
 
     def agent_trade_log(self, limit: int = 100) -> dict:
         """History of every entry/exit fill the agent processed."""

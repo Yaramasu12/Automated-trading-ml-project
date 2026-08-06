@@ -9,8 +9,10 @@ from trading_platform.derivatives.engine import (
     ContractSelector,
     ExpiryCalendar,
     GreeksCalculator,
+    ImpliedVolatilityCalculator,
     OptionChainBuilder,
     RolloverPlanner,
+    black_scholes_price,
     compute_iv_rank,
 )
 from trading_platform.domain.enums import InstrumentType, OptionType
@@ -115,6 +117,42 @@ class IVRankTests(unittest.TestCase):
     def test_nonpositive_current_returns_none(self):
         history = [float(v) for v in range(10, 10 + MIN_IV_RANK_OBSERVATIONS)]
         self.assertIsNone(compute_iv_rank(0.0, history))
+
+
+class BlackScholesPriceTests(unittest.TestCase):
+    def test_matches_iv_calculator_round_trip(self):
+        # A price -> IV -> price round trip through the two independent
+        # implementations (ImpliedVolatilityCalculator's private _bs_price
+        # and this public function) must agree on the same inputs.
+        spot, strike, dte, ot = 24000.0, 24000.0, 7, OptionType.CE
+        true_price = 150.0
+        iv = ImpliedVolatilityCalculator().calculate(true_price, spot, strike, dte, ot)
+        recovered = black_scholes_price(spot, strike, dte / 365.0, iv, ot)
+        self.assertAlmostEqual(recovered, true_price, places=2)
+
+    def test_call_price_increases_with_spot(self):
+        low = black_scholes_price(23000, 24000, 7 / 365, 0.15, OptionType.CE)
+        high = black_scholes_price(25000, 24000, 7 / 365, 0.15, OptionType.CE)
+        self.assertLess(low, high)
+
+    def test_put_price_decreases_with_spot(self):
+        low = black_scholes_price(23000, 24000, 7 / 365, 0.15, OptionType.PE)
+        high = black_scholes_price(25000, 24000, 7 / 365, 0.15, OptionType.PE)
+        self.assertGreater(low, high)
+
+    def test_zero_time_returns_intrinsic_value(self):
+        self.assertAlmostEqual(black_scholes_price(24500, 24000, 0.0, 0.15, OptionType.CE), 500.0)
+        self.assertAlmostEqual(black_scholes_price(23500, 24000, 0.0, 0.15, OptionType.CE), 0.0)
+        self.assertAlmostEqual(black_scholes_price(23500, 24000, 0.0, 0.15, OptionType.PE), 500.0)
+
+    def test_zero_volatility_returns_intrinsic_value(self):
+        self.assertAlmostEqual(black_scholes_price(24500, 24000, 7 / 365, 0.0, OptionType.CE), 500.0)
+
+    def test_rejects_nonpositive_spot_or_strike(self):
+        with self.assertRaises(ValueError):
+            black_scholes_price(0.0, 24000, 7 / 365, 0.15, OptionType.CE)
+        with self.assertRaises(ValueError):
+            black_scholes_price(24000, -1.0, 7 / 365, 0.15, OptionType.CE)
 
 
 if __name__ == "__main__":

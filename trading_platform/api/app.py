@@ -219,6 +219,13 @@ def portfolio_greeks():
     return runtime.portfolio_greeks_snapshot()
 
 
+@app.get("/risk/portfolio-var", dependencies=[_AuthDep])
+def portfolio_var():
+    """95%/99% 1-day historical-simulation VaR across the open options
+    book — read-only diagnostic (see HistoricalVarCalculator)."""
+    return runtime.portfolio_var_snapshot()
+
+
 @app.get("/governance")
 def governance_dashboard():
     return runtime.governance_dashboard()
