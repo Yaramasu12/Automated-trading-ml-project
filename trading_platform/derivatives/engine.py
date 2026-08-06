@@ -187,6 +187,58 @@ class IVSurfaceBuilder:
         return IVSurface(underlying=underlying, spot_price=spot_price, points=points, as_of=as_of)
 
 
+# ---------------------------------------------------------------------------
+# IV Rank / IV Percentile
+# ---------------------------------------------------------------------------
+
+# Below this many historical observations, a rank/percentile is noise, not
+# signal — matches this codebase's "don't fabricate signal from insufficient
+# data" discipline (CLAUDE.md's honesty-discipline rules): decline rather
+# than return a misleadingly precise number off a handful of samples.
+MIN_IV_RANK_OBSERVATIONS = 20
+
+
+@dataclass(frozen=True)
+class IVRankResult:
+    current: float
+    rank: float           # 0-100: position within [min(history), max(history)]
+    percentile: float      # 0-100: % of historical observations current exceeds
+    lookback_n: int
+    lookback_min: float
+    lookback_max: float
+
+
+def compute_iv_rank(current: float, history: list[float]) -> IVRankResult | None:
+    """IV rank + IV percentile of `current` against a trailing `history`
+    series (same units — vol points/%, e.g. India VIX closes or ATM IV%).
+
+    Two related but distinct industry terms, both computed since traders use
+    them inconsistently:
+
+    - **Rank**: where `current` sits within [min(history), max(history)], as
+      a percentage. 0 = at the lookback low, 100 = at the lookback high.
+    - **Percentile**: the percentage of historical observations `current`
+      exceeds. Diverges from rank when the distribution is skewed — e.g. one
+      extreme spike year compresses rank even when `current` sits high
+      relative to most of the actual distribution.
+
+    Returns `None` with fewer than `MIN_IV_RANK_OBSERVATIONS` valid (positive)
+    history points, rather than a rank computed off too little data.
+    """
+    clean = [float(v) for v in history if v is not None and v > 0]
+    if len(clean) < MIN_IV_RANK_OBSERVATIONS or current <= 0:
+        return None
+    lo, hi = min(clean), max(clean)
+    rank = 50.0 if hi <= lo else (current - lo) / (hi - lo) * 100.0
+    rank = max(0.0, min(100.0, rank))
+    below = sum(1 for v in clean if v < current)
+    percentile = (below / len(clean)) * 100.0
+    return IVRankResult(
+        current=round(current, 2), rank=round(rank, 1), percentile=round(percentile, 1),
+        lookback_n=len(clean), lookback_min=round(lo, 2), lookback_max=round(hi, 2),
+    )
+
+
 @dataclass(frozen=True)
 class OptionChain:
     underlying: str

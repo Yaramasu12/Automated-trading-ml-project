@@ -20,7 +20,11 @@ import time
 from datetime import date, datetime, timedelta
 from typing import Any
 
-from trading_platform.derivatives.engine import ImpliedVolatilityCalculator
+from trading_platform.derivatives.engine import (
+    MIN_IV_RANK_OBSERVATIONS,
+    ImpliedVolatilityCalculator,
+    compute_iv_rank,
+)
 from trading_platform.domain.enums import OptionType, Segment, Side
 from trading_platform.neural.vol_forecaster import VolatilityForecaster
 from trading_platform.strategies.short_vol import ShortVolStrategy
@@ -47,10 +51,6 @@ class ShortVolExecutor:
         # fetched at most once per day (shared by previews and the daily auto-entry),
         # so we don't re-hammer it and trip "exceeding access rate".
         self._price_cache: dict[tuple[str, date], float] = {}
-        # Serialise ALL candle reads: Angel One denies bursts even across
-        # underlyings, so we enforce a minimum wall-clock gap before every fetch
-        # (not just between entries). Monotonic so it is immune to clock changes.
-        self._last_fetch_ts: float = 0.0
         # Short-TTL negative cache: a contract whose fetch just tripped the rate
         # limit is skipped for SHORTVOL_FETCH_NEG_TTL seconds so one throttled
         # underlying (e.g. BANKNIFTY) doesn't burn the whole scan re-hammering the
@@ -104,6 +104,37 @@ class ShortVolExecutor:
             logger.warning("short-vol: VIX fetch failed: %s", exc)
         return 0.0
 
+    def _iv_rank_history(self, underlying: str, lookback_days: int = 365) -> list[float]:
+        """Trailing IV series (vol points, same units as _atm_iv_and_lot's
+        output) for IV-rank/percentile — see compute_iv_rank in
+        derivatives.engine. NIFTY uses India VIX's own long, candle-fetchable
+        published history; every other index falls back to whatever ATM IV
+        history OptionsChainCollector has accumulated from its own EOD
+        snapshots. That's likely far short of MIN_IV_RANK_OBSERVATIONS for a
+        long while for non-NIFTY underlyings — the correct, honest outcome
+        (compute_iv_rank declines rather than fabricate a rank) until enough
+        real history exists, not a bug to work around here."""
+        if underlying.strip().upper() == "NIFTY":
+            try:
+                import dataclasses
+                from trading_platform.domain.enums import Exchange
+                nifty = self._rt.instrument_master.get("NIFTY")
+                inst = dataclasses.replace(nifty, symbol="INDIAVIX", token=_INDIA_VIX_TOKEN, exchange=Exchange("NSE"))
+                to_dt = datetime.now(); from_dt = to_dt - timedelta(days=lookback_days)
+                bars = self._rt.angel_one_history.get_candles(inst, from_dt, to_dt, "ONE_DAY")
+                return [float(b.close) for b in bars]
+            except Exception as exc:
+                logger.warning("short-vol: VIX history fetch failed for IV rank: %s", exc)
+                return []
+        try:
+            collector = getattr(self._rt, "options_chain_collector", None)
+            if collector is None:
+                return []
+            return collector.atm_iv_history(underlying, lookback_days=lookback_days)
+        except Exception as exc:
+            logger.warning("short-vol: chain-history IV read failed for %s: %s", underlying, exc)
+            return []
+
     def _resolve_option(self, underlying: str, strike: float, option_type, expiry: date):
         """Find the real option Instrument for a strike/type on the nearest expiry."""
         opts = [
@@ -127,17 +158,6 @@ class ShortVolExecutor:
         gaps = [b - a for a, b in zip(strikes, strikes[1:]) if b > a]
         return int(min(gaps)) if gaps else 50
 
-    def _throttle_fetch(self) -> None:
-        """Enforce a minimum gap before every candle read so bursts (the CE+PE
-        ATM pair, and back-to-back underlyings) are physically serialised under
-        Angel One's rate limit. Blocking is intentional; build() runs off the
-        event loop via asyncio.to_thread (see enter())."""
-        spacing = float(os.getenv("SHORTVOL_FETCH_SPACING", "0.5"))
-        wait = spacing - (time.monotonic() - self._last_fetch_ts)
-        if wait > 0:
-            time.sleep(wait)
-        self._last_fetch_ts = time.monotonic()
-
     def _option_last_price(self, inst) -> float:
         """Most recent price of an option contract for entry/exit decisions.
 
@@ -151,6 +171,19 @@ class ShortVolExecutor:
         breached — two disconnected price sources for what should be one
         "current price" concept. Falls through to the candle API unchanged
         when PriceResolutionService has neither a live tick nor a model mark.
+
+        The candle fetch itself does one call to angel_one_history.get_candles(),
+        which already serialises AND retries/backs off on rate limits via its
+        own process-wide class-level throttle (see AngelOneHistoricalDataProvider
+        — shared by every caller: decision pipeline, options-chain collector,
+        this method). This used to duplicate that with a second private
+        throttle + retry loop; confirmed 2026-08-06 that was pure redundant
+        latency (up to 3x4 stacked retries with drifted-apart backoff
+        constants) on top of an already-centralized rate limiter, not
+        additional safety — removed. What genuinely IS specific to this
+        method and worth keeping: the per-day price cache and the short-TTL
+        negative cache below, since get_candles() itself caches nothing
+        across calls.
         """
         sym = getattr(inst, "symbol", "?")
         resolution = self._rt.price_service.resolve(sym, instrument=inst)
@@ -166,26 +199,19 @@ class ShortVolExecutor:
         if failed_at is not None and (time.monotonic() - failed_at) < neg_ttl:
             return 0.0   # recently rate-limited; skip until it ages out (retries next scan)
         to_dt = datetime.now(); from_dt = to_dt - timedelta(days=10)
-        attempts = max(1, int(os.getenv("SHORTVOL_FETCH_ATTEMPTS", "4")))
-        for attempt in range(attempts):
-            self._throttle_fetch()
-            try:
-                bars = self._rt.angel_one_history.get_candles(inst, from_dt, to_dt, "ONE_DAY")
-                if bars:
-                    price = float(bars[-1].close)
-                    self._price_cache[key] = price
-                    self._neg_cache.pop(key, None)
-                    return price
-                return 0.0
-            except Exception as exc:
-                if "rate" in str(exc).lower() and attempt < attempts - 1:
-                    time.sleep(min(4.0, 0.8 * (2 ** attempt)))   # 0.8s, 1.6s, 3.2s (capped 4s)
-                    continue
-                if "rate" in str(exc).lower():
-                    self._neg_cache[key] = time.monotonic()
-                logger.warning("short-vol: option price fetch failed for %s: %s", sym, exc)
-                return 0.0
-        return 0.0
+        try:
+            bars = self._rt.angel_one_history.get_candles(inst, from_dt, to_dt, "ONE_DAY")
+        except Exception as exc:
+            if "rate" in str(exc).lower():
+                self._neg_cache[key] = time.monotonic()
+            logger.warning("short-vol: option price fetch failed for %s: %s", sym, exc)
+            return 0.0
+        if not bars:
+            return 0.0
+        price = float(bars[-1].close)
+        self._price_cache[key] = price
+        self._neg_cache.pop(key, None)
+        return price
 
     def _atm_iv_and_lot(self, underlying: str, spot: float, expiry: date) -> tuple[float, int]:
         """The underlying's OWN implied vol (%) from its ATM call+put market prices
@@ -260,6 +286,7 @@ class ShortVolExecutor:
             return {**base, "vix": 0.0, "vrp": 0.0,
                     "reason": f"could not compute {underlying} implied vol (illiquid ATM?)"}
         wing = self._wing_width(spot, step)
+        iv_rank_result = compute_iv_rank(iv, self._iv_rank_history(underlying))
 
         # GARCH volatility forecast for the VRP reference (implied vs *forecast*
         # realized, not trailing realized). Opt-in via SHORTVOL_USE_VOL_FORECAST;
@@ -279,11 +306,44 @@ class ShortVolExecutor:
             "structure": structure, "expiry": expiry.isoformat(), "dte": dte,
             "forecast_vol": round(forecast_vol, 2) if forecast_vol else None,
             "vol_reference": "garch_forecast" if forecast_vol else "trailing_realized",
+            # Diagnostic only by default — see the SHORTVOL_MIN_IV_RANK gate
+            # below for the opt-in secondary confirm. None here means either
+            # not enough IV history yet (non-NIFTY underlyings especially —
+            # see _iv_rank_history) or a genuinely flat lookback range.
+            "iv_rank": iv_rank_result.rank if iv_rank_result else None,
+            "iv_percentile": iv_rank_result.percentile if iv_rank_result else None,
+            "iv_rank_lookback_n": iv_rank_result.lookback_n if iv_rank_result else 0,
             "enter": decision.enter, "reason": decision.reason, "lots": decision.lots,
             "net_credit_pts": decision.net_credit, "max_loss_pts": decision.max_loss,
         }
         if not decision.enter:
             return out
+
+        # Opt-in secondary confirm (REDESIGN_PROMPT.md §4.2): VRP-rich alone
+        # (checked above, inside self.strategy.decide) is the validated,
+        # backtested entry signal and stays the default with this at 0/off —
+        # "models must earn deployment" means a NEW gate doesn't get to
+        # silently start rejecting trades on an already-profitable strategy.
+        # An operator who explicitly sets this expects it enforced, so
+        # insufficient history fails closed (declines) rather than skipping
+        # the check it was asked to apply.
+        min_iv_rank = float(os.getenv("SHORTVOL_MIN_IV_RANK", "0"))
+        if min_iv_rank > 0:
+            if iv_rank_result is None:
+                out["enter"] = False
+                out["reason"] = (
+                    f"SHORTVOL_MIN_IV_RANK={min_iv_rank:.0f} set but insufficient IV history for "
+                    f"{underlying} ({MIN_IV_RANK_OBSERVATIONS}+ observations needed) — declining "
+                    f"rather than trade an unvalidated signal"
+                )
+                return out
+            if iv_rank_result.rank < min_iv_rank:
+                out["enter"] = False
+                out["reason"] = (
+                    f"IV rank {iv_rank_result.rank:.0f} < required {min_iv_rank:.0f} "
+                    f"(VRP alone was rich enough, but IV isn't historically elevated)"
+                )
+                return out
 
         vix = iv
         # Quantity is in LOTS (contracts). notional_value and the ledger already

@@ -295,49 +295,30 @@ class OptionPriceFetchTests(unittest.TestCase):
             calls["n"] += 1
             return [SimpleNamespace(close=123.5)]
         ex = self._executor(gc)
-        with mock.patch.dict(os.environ, {"SHORTVOL_FETCH_SPACING": "0"}):
-            self.assertEqual(ex._option_last_price(self._inst()), 123.5)
-            self.assertEqual(ex._option_last_price(self._inst()), 123.5)  # served from cache
+        self.assertEqual(ex._option_last_price(self._inst()), 123.5)
+        self.assertEqual(ex._option_last_price(self._inst()), 123.5)  # served from cache
         self.assertEqual(calls["n"], 1)
 
-    def test_retries_then_succeeds_on_rate_limit(self):
-        seq = [Exception("Access denied because of exceeding access rate"),
-               [SimpleNamespace(close=88.0)]]
-        def gc(inst, a, b, tf):
-            r = seq.pop(0)
-            if isinstance(r, Exception):
-                raise r
-            return r
-        ex = self._executor(gc)
-        with mock.patch.dict(os.environ, {"SHORTVOL_FETCH_SPACING": "0", "SHORTVOL_FETCH_ATTEMPTS": "4"}), \
-                mock.patch("trading_platform.strategies.short_vol_executor.time.sleep"):
-            self.assertEqual(ex._option_last_price(self._inst()), 88.0)
-
     def test_persistent_rate_limit_negatively_cached(self):
+        """2026-08-06: the retry loop here was removed as duplicate of
+        AngelOneHistoricalDataProvider's own retry/backoff (tested directly
+        in test_angel_one_data.py) — get_candles() is now called once per
+        _option_last_price() call and is expected to have already exhausted
+        its own retries before raising. What this test covers is what's
+        still genuinely this method's own behavior: caching that failure
+        negatively so a persistently rate-limited contract isn't re-fetched
+        every scan cycle."""
         calls = {"n": 0}
         def gc(inst, a, b, tf):
             calls["n"] += 1
             raise Exception("exceeding access rate")
         ex = self._executor(gc)
-        with mock.patch.dict(os.environ, {"SHORTVOL_FETCH_SPACING": "0", "SHORTVOL_FETCH_ATTEMPTS": "2",
-                                          "SHORTVOL_FETCH_NEG_TTL": "60"}), \
-                mock.patch("trading_platform.strategies.short_vol_executor.time.sleep"):
+        with mock.patch.dict(os.environ, {"SHORTVOL_FETCH_NEG_TTL": "60"}):
             self.assertEqual(ex._option_last_price(self._inst()), 0.0)
-            n_after_first = calls["n"]
+            self.assertEqual(calls["n"], 1)
             # Second call within TTL must NOT re-hammer the throttled contract.
             self.assertEqual(ex._option_last_price(self._inst()), 0.0)
-        self.assertEqual(calls["n"], n_after_first)
-
-    def test_throttle_spaces_consecutive_fetches(self):
-        def gc(inst, a, b, tf):
-            return [SimpleNamespace(close=1.0)]
-        ex = self._executor(gc)
-        slept = []
-        with mock.patch.dict(os.environ, {"SHORTVOL_FETCH_SPACING": "0.5"}), \
-                mock.patch("trading_platform.strategies.short_vol_executor.time.sleep", slept.append):
-            ex._option_last_price(self._inst("A"))   # first fetch: no wait
-            ex._option_last_price(self._inst("B"))   # second: must be spaced
-        self.assertTrue(any(s > 0 for s in slept), slept)
+        self.assertEqual(calls["n"], 1)
 
 
 class EnterProductTypeTests(unittest.TestCase):
@@ -440,7 +421,7 @@ class ActiveExitPolicyTests(unittest.TestCase):
         # net well over 50% of the 5750 credit received.
         prices = {"NIFTY24000CE": 20.0, "NIFTY24300CE": 10.0, "NIFTY23000PE": 15.0, "NIFTY22700PE": 5.0}
         ex = self._executor(positions, prices)
-        with mock.patch.dict(os.environ, {"SHORTVOL_FETCH_SPACING": "0", "SHORTVOL_PROFIT_TARGET_PCT": "0.50"}):
+        with mock.patch.dict(os.environ, {"SHORTVOL_PROFIT_TARGET_PCT": "0.50"}):
             verdict = ex.evaluate_exit("NIFTY", exp, list(positions.values()))
         self.assertEqual(verdict["action"], "close")
         self.assertIn("profit target", verdict["reason"])
@@ -454,7 +435,7 @@ class ActiveExitPolicyTests(unittest.TestCase):
         # well beyond a 1.5x-credit loss.
         prices = {"NIFTY24000CE": 400.0, "NIFTY24300CE": 50.0, "NIFTY23000PE": 90.0, "NIFTY22700PE": 35.0}
         ex = self._executor(positions, prices)
-        with mock.patch.dict(os.environ, {"SHORTVOL_FETCH_SPACING": "0", "SHORTVOL_STOP_LOSS_MULTIPLE": "1.5"}):
+        with mock.patch.dict(os.environ, {"SHORTVOL_STOP_LOSS_MULTIPLE": "1.5"}):
             verdict = ex.evaluate_exit("NIFTY", exp, list(positions.values()))
         self.assertEqual(verdict["action"], "close")
         self.assertIn("stop loss", verdict["reason"])
@@ -466,8 +447,7 @@ class ActiveExitPolicyTests(unittest.TestCase):
         # No move at all -> 0% captured, well inside both thresholds.
         prices = {"NIFTY24000CE": 100.0, "NIFTY24300CE": 40.0, "NIFTY23000PE": 90.0, "NIFTY22700PE": 35.0}
         ex = self._executor(positions, prices)
-        with mock.patch.dict(os.environ, {"SHORTVOL_FETCH_SPACING": "0"}):
-            verdict = ex.evaluate_exit("NIFTY", exp, list(positions.values()))
+        verdict = ex.evaluate_exit("NIFTY", exp, list(positions.values()))
         self.assertEqual(verdict["action"], "hold")
         self.assertAlmostEqual(verdict["captured_pct"], 0.0, places=6)
 
@@ -487,8 +467,7 @@ class ActiveExitPolicyTests(unittest.TestCase):
             ),
         )
         ex = ShortVolExecutor(rt)
-        with mock.patch.dict(os.environ, {"SHORTVOL_FETCH_SPACING": "0"}):
-            verdict = ex.evaluate_exit("NIFTY", exp, list(positions.values()))
+        verdict = ex.evaluate_exit("NIFTY", exp, list(positions.values()))
         self.assertEqual(verdict["action"], "hold")
         self.assertIn("no current price", verdict["reason"])
 
@@ -498,8 +477,7 @@ class ActiveExitPolicyTests(unittest.TestCase):
         positions = self._condor_positions(exp)
         prices = {"NIFTY24000CE": 20.0, "NIFTY24300CE": 10.0, "NIFTY23000PE": 15.0, "NIFTY22700PE": 5.0}
         ex = self._executor(positions, prices)
-        with mock.patch.dict(os.environ, {"SHORTVOL_FETCH_SPACING": "0"}):
-            result = asyncio.run(ex.close_structure("NIFTY", exp, list(positions.values()), "profit target"))
+        result = asyncio.run(ex.close_structure("NIFTY", exp, list(positions.values()), "profit target"))
         self.assertTrue(result["submitted"])
         submitted_payload = ex._rt.submit_multi_leg.call_args[0][0]
         by_symbol = {leg["symbol"]: leg for leg in submitted_payload["legs"]}
@@ -512,6 +490,114 @@ class ActiveExitPolicyTests(unittest.TestCase):
             self.assertEqual(leg["product_type"], "CARRYFORWARD")
             self.assertFalse(leg["metadata"]["opens_position"])
             self.assertNotEqual(leg["priority"], "ENTRY")
+
+
+class IvRankGateTests(unittest.TestCase):
+    """2026-08-06: IV rank/percentile (derivatives.engine.compute_iv_rank) is
+    surfaced as a diagnostic on every build() call, and gated behind
+    SHORTVOL_MIN_IV_RANK (default 0 = off) as an opt-in secondary confirm on
+    top of the already-validated VRP threshold — never a silent replacement
+    for it, per the "models must earn deployment" rule."""
+
+    def _executor(self, *, atm_premium=250.0, vix_history=None, closes=None):
+        from datetime import date as _date, timedelta as _td
+        expiry = _date.today() + _td(days=7)
+        strikes = [float(k) for k in range(22000, 27050, 50)]
+        opts = [
+            _option("NIFTY", k, ot, expiry)
+            for k in strikes for ot in (OptionType.CE, OptionType.PE)
+        ]
+        nifty_index = Instrument(
+            symbol="NIFTY", name="NIFTY", exchange=Exchange.NSE, segment=Segment.CASH,
+            asset_class=AssetClass.INDEX, instrument_type=InstrumentType.INDEX, token="26000",
+        )
+        master = SimpleNamespace(
+            by_underlying=lambda u, seg=None: opts,
+            nearest_expiry=lambda u, today, segment=None: expiry,
+            get=lambda sym: nifty_index,
+        )
+
+        def gc(inst, a, b, tf):
+            sym = getattr(inst, "symbol", "")
+            if sym == "INDIAVIX":
+                return [SimpleNamespace(close=v) for v in (vix_history or [])]
+            return [SimpleNamespace(close=atm_premium)]
+
+        rt = SimpleNamespace(
+            instrument_master=master,
+            live_feed=SimpleNamespace(latest_tick=lambda u: SimpleNamespace(last_price=24000.0)),
+            price_service=SimpleNamespace(
+                resolve=lambda *a, **k: SimpleNamespace(price=None, source=None, is_stale=True)
+            ),
+            angel_one_history=SimpleNamespace(get_candles=gc),
+            decision_pipeline=SimpleNamespace(
+                _fetch_bars=lambda u, start, n: [SimpleNamespace(close=c) for c in (closes or _flat_closes())]
+            ),
+            portfolio=SimpleNamespace(cash=1_000_000, equity=1_000_000),
+        )
+        return ShortVolExecutor(rt)
+
+    def test_diagnostic_fields_present_and_gate_off_by_default(self):
+        ex = self._executor(vix_history=[float(v) for v in range(10, 30)])  # 20 obs, enough
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("SHORTVOL_MIN_IV_RANK", None)
+            plan = ex.build("NIFTY")
+        self.assertTrue(plan["enter"], plan.get("reason"))
+        self.assertIsNotNone(plan["iv_rank"])
+        self.assertIsNotNone(plan["iv_percentile"])
+        self.assertEqual(plan["iv_rank_lookback_n"], 20)
+
+    def test_insufficient_history_is_diagnostic_only_when_gate_disabled(self):
+        ex = self._executor(vix_history=[])  # no VIX history at all
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("SHORTVOL_MIN_IV_RANK", None)
+            plan = ex.build("NIFTY")
+        self.assertTrue(plan["enter"], plan.get("reason"))  # VRP alone still governs
+        self.assertIsNone(plan["iv_rank"])
+        self.assertEqual(plan["iv_rank_lookback_n"], 0)
+
+    def test_gate_declines_when_history_insufficient_and_gate_enabled(self):
+        ex = self._executor(vix_history=[])
+        with mock.patch.dict(os.environ, {"SHORTVOL_MIN_IV_RANK": "50"}):
+            plan = ex.build("NIFTY")
+        self.assertFalse(plan["enter"])
+        self.assertIn("insufficient IV history", plan["reason"])
+
+    def test_gate_declines_when_rank_below_threshold(self):
+        # Current IV (~18.8 from atm_premium=250, see module math) sits near
+        # the LOW end of a history that mostly ranges much higher.
+        ex = self._executor(vix_history=[float(v) for v in range(15, 60)])
+        with mock.patch.dict(os.environ, {"SHORTVOL_MIN_IV_RANK": "80"}):
+            plan = ex.build("NIFTY")
+        self.assertFalse(plan["enter"])
+        self.assertIn("IV rank", plan["reason"])
+        self.assertIn("required 80", plan["reason"])
+
+    def test_gate_allows_when_rank_meets_threshold(self):
+        # History capped low so current IV sits at/near the lookback high.
+        ex = self._executor(vix_history=[float(v) for v in range(5, 15)] * 2)
+        with mock.patch.dict(os.environ, {"SHORTVOL_MIN_IV_RANK": "50"}):
+            plan = ex.build("NIFTY")
+        self.assertTrue(plan["enter"], plan.get("reason"))
+        self.assertGreaterEqual(plan["iv_rank"], 50.0)
+
+    def test_iv_rank_history_uses_vix_for_nifty(self):
+        ex = self._executor(vix_history=[12.0, 13.0])
+        history = ex._iv_rank_history("NIFTY")
+        self.assertEqual(history, [12.0, 13.0])
+
+    def test_iv_rank_history_uses_chain_collector_for_other_underlyings(self):
+        rt = SimpleNamespace(
+            options_chain_collector=SimpleNamespace(
+                atm_iv_history=lambda underlying, lookback_days=365: [11.0, 14.0]
+            )
+        )
+        ex = ShortVolExecutor(rt)
+        self.assertEqual(ex._iv_rank_history("BANKNIFTY"), [11.0, 14.0])
+
+    def test_iv_rank_history_empty_when_collector_absent(self):
+        ex = ShortVolExecutor(SimpleNamespace())
+        self.assertEqual(ex._iv_rank_history("BANKNIFTY"), [])
 
 
 if __name__ == "__main__":

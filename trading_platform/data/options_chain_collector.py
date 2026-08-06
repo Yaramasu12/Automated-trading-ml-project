@@ -143,6 +143,53 @@ class OptionsChainCollector:
                     underlying, expiry, len(rows), len(selected) * 2)
         return {"underlying": underlying, "expiry": expiry.isoformat(), "rows": len(rows)}
 
+    def atm_iv_history(self, underlying: str, lookback_days: int | None = None) -> list[float]:
+        """Per-trading-day ATM implied vol (vol points, e.g. 15.2 not 0.152)
+        derived from the accumulated chain-history CSV: for each captured
+        date, average the CE+PE IV at the strike nearest that date's own
+        spot. This is the IV-rank lookback series for underlyings with no
+        published VIX-like index (see derivatives.engine.compute_iv_rank and
+        ShortVolExecutor's use of it) — empty (or short) until enough EOD
+        snapshots have accumulated, since this collector runs once/trading
+        day; callers must handle "not enough history yet" honestly rather
+        than treat an empty/short list as zero IV.
+        """
+        path = self._csv_path(underlying)
+        if not path.exists():
+            return []
+        by_date: dict[str, list[dict]] = {}
+        try:
+            with path.open() as fh:
+                for row in csv.DictReader(fh):
+                    by_date.setdefault(row["date"], []).append(row)
+        except Exception as exc:
+            note_swallowed("options_chain_collector.atm_iv_history_read", exc)
+            return []
+        dates = sorted(by_date.keys())
+        if lookback_days:
+            dates = dates[-lookback_days:]
+        history: list[float] = []
+        for d in dates:
+            rows = by_date[d]
+            try:
+                spot = float(rows[0]["spot"])
+                strikes = sorted({float(r["strike"]) for r in rows if r.get("strike")})
+            except (KeyError, ValueError, IndexError):
+                continue
+            if not strikes:
+                continue
+            nearest = min(strikes, key=lambda s: abs(s - spot))
+            ivs: list[float] = []
+            for r in rows:
+                try:
+                    if r.get("iv") and float(r["strike"]) == nearest:
+                        ivs.append(float(r["iv"]) * 100.0)  # annualised fraction -> vol points
+                except ValueError:
+                    continue
+            if ivs:
+                history.append(sum(ivs) / len(ivs))
+        return history
+
     def _csv_path(self, underlying: str) -> Path:
         return self._out_dir / f"{underlying}_chain_history.csv"
 

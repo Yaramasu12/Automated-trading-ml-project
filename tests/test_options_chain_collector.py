@@ -168,6 +168,77 @@ class OptionsChainCollectorTests(unittest.TestCase):
         self.assertEqual(collector.status(), {})
 
 
+class AtmIvHistoryTests(unittest.TestCase):
+    """atm_iv_history() feeds derivatives.engine.compute_iv_rank's lookback
+    series for underlyings without a published VIX-like index."""
+
+    def setUp(self):
+        self._tmpdir = tempfile.TemporaryDirectory()
+        self.out_dir = Path(self._tmpdir.name)
+
+    def tearDown(self):
+        self._tmpdir.cleanup()
+
+    def _write_rows(self, underlying: str, rows: list[dict]) -> None:
+        collector = OptionsChainCollector(SimpleNamespace(), out_dir=str(self.out_dir))
+        collector._append_csv(underlying, rows)
+
+    def _row(self, d, strike, otype, spot, iv):
+        return {"date": d, "underlying": "NIFTY", "expiry": "2100-01-01", "dte": 5,
+                "option_type": otype, "strike": strike, "spot": spot, "ltp": 100.0, "iv": iv, "delta": 0.5}
+
+    def test_no_file_yet_returns_empty(self):
+        collector = OptionsChainCollector(SimpleNamespace(), out_dir=str(self.out_dir))
+        self.assertEqual(collector.atm_iv_history("NIFTY"), [])
+
+    def test_averages_ce_and_pe_at_nearest_strike_per_date(self):
+        # Two strikes captured; spot=24000 is nearest to strike 24000, not 23900.
+        self._write_rows("NIFTY", [
+            self._row("2026-08-01", 23900, "CE", 24000, 0.14),
+            self._row("2026-08-01", 24000, "CE", 24000, 0.15),
+            self._row("2026-08-01", 24000, "PE", 24000, 0.17),
+        ])
+        collector = OptionsChainCollector(SimpleNamespace(), out_dir=str(self.out_dir))
+
+        history = collector.atm_iv_history("NIFTY")
+
+        self.assertEqual(len(history), 1)
+        self.assertAlmostEqual(history[0], 16.0)  # avg(0.15, 0.17) * 100, 23900 excluded
+
+    def test_one_entry_per_trading_day_across_multiple_dates(self):
+        self._write_rows("NIFTY", [
+            self._row("2026-08-01", 24000, "CE", 24000, 0.15),
+            self._row("2026-08-02", 24100, "CE", 24100, 0.16),
+            self._row("2026-08-03", 24200, "CE", 24200, 0.14),
+        ])
+        collector = OptionsChainCollector(SimpleNamespace(), out_dir=str(self.out_dir))
+
+        history = collector.atm_iv_history("NIFTY")
+
+        self.assertEqual(len(history), 3)
+
+    def test_lookback_days_limits_to_most_recent(self):
+        rows = [self._row(f"2026-08-{d:02d}", 24000, "CE", 24000, 0.15) for d in range(1, 11)]
+        self._write_rows("NIFTY", rows)
+        collector = OptionsChainCollector(SimpleNamespace(), out_dir=str(self.out_dir))
+
+        history = collector.atm_iv_history("NIFTY", lookback_days=3)
+
+        self.assertEqual(len(history), 3)
+
+    def test_rows_missing_iv_are_skipped_not_treated_as_zero(self):
+        self._write_rows("NIFTY", [
+            self._row("2026-08-01", 24000, "CE", 24000, ""),   # IV computation failed for this leg
+            self._row("2026-08-01", 24000, "PE", 24000, 0.15),
+        ])
+        collector = OptionsChainCollector(SimpleNamespace(), out_dir=str(self.out_dir))
+
+        history = collector.atm_iv_history("NIFTY")
+
+        self.assertEqual(len(history), 1)
+        self.assertAlmostEqual(history[0], 15.0)  # only the PE leg counted
+
+
 class ChainSnapshotWindowTests(unittest.TestCase):
     def test_window_is_before_entry_cutoff_and_eod_squareoff(self):
         from datetime import datetime
