@@ -194,6 +194,68 @@ class MultiIndexTests(unittest.TestCase):
                 self.assertEqual(leg.strike % 100, 0)
 
 
+class DeltaTargetedStrikeTests(unittest.TestCase):
+    """2026-08-06 (REDESIGN_PROMPT.md §4.2): "delta bands" strike selection
+    as an opt-in mode on the EXISTING defined-risk condor/spread
+    construction — never a naked strangle/jade lizard, which would conflict
+    with this codebase's "defined risk only" rule. Wings are still added
+    around whatever strike this picks."""
+
+    def setUp(self):
+        self.s = ShortVolStrategy(sd=1.25, wing_width=300, risk_budget=0.05, min_vrp=2.0)
+
+    def test_delta_targeted_strike_has_delta_close_to_target(self):
+        from trading_platform.derivatives.engine import GreeksCalculator
+        spot, step, dte, iv, target = 24000.0, 50, 7, 0.15, 0.16
+        strike = self.s._delta_targeted_strike(spot, step, dte, iv, OptionType.CE, target)
+        greeks = GreeksCalculator().calculate(spot, strike, dte, iv, OptionType.CE)
+        self.assertLess(abs(greeks.delta - target), 0.05)
+
+    def test_delta_targeted_put_strike_has_delta_close_to_target(self):
+        from trading_platform.derivatives.engine import GreeksCalculator
+        spot, step, dte, iv, target = 24000.0, 50, 7, 0.15, 0.16
+        strike = self.s._delta_targeted_strike(spot, step, dte, iv, OptionType.PE, target)
+        greeks = GreeksCalculator().calculate(spot, strike, dte, iv, OptionType.PE)
+        self.assertLess(abs(abs(greeks.delta) - target), 0.05)
+
+    def test_call_strike_is_above_spot_put_strike_is_below(self):
+        strike_ce = self.s._delta_targeted_strike(24000.0, 50, 7, 0.15, OptionType.CE, 0.16)
+        strike_pe = self.s._delta_targeted_strike(24000.0, 50, 7, 0.15, OptionType.PE, 0.16)
+        self.assertGreater(strike_ce, 24000.0)
+        self.assertLess(strike_pe, 24000.0)
+
+    def test_lower_target_delta_selects_further_otm_strike(self):
+        far = self.s._delta_targeted_strike(24000.0, 50, 7, 0.15, OptionType.CE, 0.10)
+        near = self.s._delta_targeted_strike(24000.0, 50, 7, 0.15, OptionType.CE, 0.30)
+        self.assertGreater(far, near)
+
+    def test_default_strike_mode_is_unchanged_sd_multiple(self):
+        d_default = self.s.decide(spot=24000, vix=16.0, closes=_flat_closes(daily_vol=0.006),
+                                   capital=1_000_000, lot_size=50)
+        d_explicit = self.s.decide(spot=24000, vix=16.0, closes=_flat_closes(daily_vol=0.006),
+                                    capital=1_000_000, lot_size=50, strike_mode="sd_multiple")
+        self.assertEqual(d_default.legs, d_explicit.legs)
+
+    def test_delta_target_mode_still_produces_defined_risk_condor(self):
+        d = self.s.decide(spot=24000, vix=16.0, closes=_flat_closes(daily_vol=0.006),
+                           capital=1_000_000, lot_size=50, strike_mode="delta_target", target_delta=0.16)
+        self.assertTrue(d.enter, d.reason)
+        sells = [l for l in d.legs if l.side == Side.SELL]
+        buys = [l for l in d.legs if l.side == Side.BUY]
+        self.assertEqual(len(sells), 2)   # still exactly 2 short + 2 protective wings —
+        self.assertEqual(len(buys), 2)    # defined risk, not a naked strangle
+        self.assertLessEqual(d.max_loss, self.s.wing_width)
+
+    def test_delta_target_mode_produces_different_strikes_than_sd_multiple(self):
+        d_sd = self.s.decide(spot=24000, vix=16.0, closes=_flat_closes(daily_vol=0.006),
+                              capital=1_000_000, lot_size=50, strike_mode="sd_multiple")
+        d_delta = self.s.decide(spot=24000, vix=16.0, closes=_flat_closes(daily_vol=0.006),
+                                 capital=1_000_000, lot_size=50, strike_mode="delta_target", target_delta=0.16)
+        sd_short_strikes = {l.strike for l in d_sd.legs if l.side == Side.SELL}
+        delta_short_strikes = {l.strike for l in d_delta.legs if l.side == Side.SELL}
+        self.assertNotEqual(sd_short_strikes, delta_short_strikes)
+
+
 class CondorExitContractTests(unittest.TestCase):
     """Locks in the invariant: a defined-risk condor leg is held to expiry —
     a premium swing must NOT stop it out (that would unbalance the structure)."""
@@ -668,6 +730,38 @@ class GoalGovernanceWiringTests(IvRankGateTests):
         self.assertTrue(plan["enter"], plan.get("reason"))
         self.assertEqual(plan["goal_phase"], "error")
         self.assertEqual(plan["goal_scaling_factor"], 1.0)
+
+
+class DeltaModeExecutorWiringTests(IvRankGateTests):
+    """Confirms SHORTVOL_STRIKE_MODE/SHORTVOL_TARGET_DELTA env vars actually
+    reach ShortVolStrategy.decide() through ShortVolExecutor.build()."""
+
+    def test_default_env_uses_sd_multiple(self):
+        ex = self._executor(vix_history=[float(v) for v in range(10, 30)])
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("SHORTVOL_STRIKE_MODE", None)
+            plan = ex.build("NIFTY")
+        self.assertTrue(plan["enter"], plan.get("reason"))
+
+    def test_delta_target_env_changes_selected_strikes(self):
+        ex_sd = self._executor(vix_history=[float(v) for v in range(10, 30)])
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("SHORTVOL_STRIKE_MODE", None)
+            plan_sd = ex_sd.build("NIFTY")
+
+        ex_delta = self._executor(vix_history=[float(v) for v in range(10, 30)])
+        with mock.patch.dict(os.environ, {"SHORTVOL_STRIKE_MODE": "delta_target", "SHORTVOL_TARGET_DELTA": "0.16"}):
+            plan_delta = ex_delta.build("NIFTY")
+
+        self.assertTrue(plan_sd["enter"], plan_sd.get("reason"))
+        self.assertTrue(plan_delta["enter"], plan_delta.get("reason"))
+        sd_strikes = {l["strike"] for l in plan_sd["legs"] if l["side"] == "SELL"}
+        delta_strikes = {l["strike"] for l in plan_delta["legs"] if l["side"] == "SELL"}
+        self.assertNotEqual(sd_strikes, delta_strikes)
+        # Still defined-risk regardless of strike-selection mode.
+        self.assertEqual(len(plan_delta["legs"]), 4)
+        wings = [l for l in plan_delta["legs"] if l["is_wing"]]
+        self.assertEqual(len(wings), 2)
 
 
 if __name__ == "__main__":

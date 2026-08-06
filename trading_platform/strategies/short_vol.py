@@ -28,6 +28,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from trading_platform.derivatives.engine import GreeksCalculator
 from trading_platform.domain.enums import OptionType, Side
 
 
@@ -149,6 +150,38 @@ class ShortVolStrategy:
 
     # ── construction + sizing ──────────────────────────────────────────────────
 
+    def _delta_targeted_strike(
+        self, spot: float, step: int, dte: int, iv: float, option_type: OptionType, target_delta: float,
+    ) -> float:
+        """Nearest listed strike (on the step grid) whose Black-Scholes
+        delta is closest to `target_delta` (absolute value) — the "delta
+        bands" strike selection REDESIGN_PROMPT.md §4.2 asks for ("short
+        strangle with delta bands"), applied to the existing defined-risk
+        condor/spread construction rather than a naked strangle: this picks
+        the SHORT strike only, `decide()` still adds a protective wing
+        beyond it exactly as it does for the sd-multiple strike selection —
+        never a naked leg. Falls back to the sd-multiple strike if no
+        candidate converges (degenerate spot/iv/dte inputs only)."""
+        calc = GreeksCalculator()
+        best_strike, best_diff = None, float("inf")
+        max_steps = max(1, int((spot * 0.20) // step))  # search out to ~20% OTM
+        direction = 1 if option_type == OptionType.CE else -1
+        for i in range(1, max_steps + 1):
+            strike = round((spot + direction * i * step) / step) * step
+            if strike <= 0:
+                continue
+            try:
+                greeks = calc.calculate(spot, strike, dte, iv, option_type)
+            except (ValueError, ZeroDivisionError):
+                continue
+            diff = abs(abs(greeks.delta) - target_delta)
+            if diff < best_diff:
+                best_diff, best_strike = diff, strike
+        if best_strike is not None:
+            return float(best_strike)
+        move = spot * iv * math.sqrt(max(dte, 1) / 252.0)
+        return round((spot + direction * self.sd * move) / step) * step
+
     def _bs(self, S: float, K: float, T: float, sig: float, call: bool, r: float = 0.065) -> float:
         if T <= 0 or sig <= 0:
             return max(0.0, (S - K) if call else (K - S))
@@ -172,6 +205,8 @@ class ShortVolStrategy:
         forecast_vol: float | None = None,
         hold_days: int | None = None,
         structure: str = "condor",
+        strike_mode: str = "sd_multiple",
+        target_delta: float = 0.16,
     ) -> ShortVolDecision:
         """The full entry decision: signal → strikes → sizing. Pure/deterministic.
 
@@ -180,7 +215,15 @@ class ShortVolStrategy:
         India VIX (which would miscompute VRP). `strike_step`/`wing_width` let the
         caller pass the index's real strike spacing and a price-scaled wing so the
         same logic works across NIFTY/BANKNIFTY/SENSEX etc.; both fall back to the
-        NIFTY-tuned defaults when omitted."""
+        NIFTY-tuned defaults when omitted.
+
+        `strike_mode` chooses how the SHORT strikes are picked — "sd_multiple"
+        (default, unchanged behaviour: spot ± sd×implied-move) or
+        "delta_target" (REDESIGN_PROMPT.md §4.2's "delta bands": the nearest
+        strike whose own BS delta is closest to `target_delta`). Either way
+        the wing is still added beyond the short strike exactly the same —
+        this only changes strike selection, never removes the protective
+        leg, so every structure below stays defined-risk regardless of mode."""
         vrp = self.vrp(vix, closes, forecast_vol)
         if spot <= 0 or vix <= 0:
             return ShortVolDecision(False, "no spot/vix", vrp)
@@ -195,8 +238,12 @@ class ShortVolStrategy:
         move = spot * iv * math.sqrt(T)                      # 1-SD expected move
         step = int(strike_step) if strike_step else self.strike_step
         wing = float(wing_width) if wing_width else self.wing_width
-        call_short = round((spot + self.sd * move) / step) * step
-        put_short = round((spot - self.sd * move) / step) * step
+        if (strike_mode or "sd_multiple").lower() == "delta_target":
+            call_short = self._delta_targeted_strike(spot, step, dte, iv, OptionType.CE, target_delta)
+            put_short = self._delta_targeted_strike(spot, step, dte, iv, OptionType.PE, target_delta)
+        else:
+            call_short = round((spot + self.sd * move) / step) * step
+            put_short = round((spot - self.sd * move) / step) * step
         call_wing = call_short + wing
         put_wing = put_short - wing
 

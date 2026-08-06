@@ -334,6 +334,11 @@ class ShortVolExecutor:
             spot=spot, vix=iv, closes=closes, capital=capital, lot_size=lot_size,
             strike_step=step, wing_width=wing, forecast_vol=forecast_vol, hold_days=dte,
             structure=structure,
+            # "Delta bands" strike selection (REDESIGN_PROMPT.md §4.2) — an
+            # opt-in alternative to the default sd-multiple strikes. Still
+            # fully defined-risk either way; see decide()'s own docstring.
+            strike_mode=os.getenv("SHORTVOL_STRIKE_MODE", "sd_multiple"),
+            target_delta=float(os.getenv("SHORTVOL_TARGET_DELTA", "0.16")),
         )
         out: dict = {
             **base, "vix": round(iv, 2), "vrp": round(decision.vrp, 2),
