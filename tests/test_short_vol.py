@@ -232,6 +232,45 @@ class CondorExitContractTests(unittest.TestCase):
         self.assertEqual(trig, ExitTrigger.EXPIRY)
 
 
+def _nifty_index_instrument():
+    return Instrument(
+        symbol="NIFTY", name="NIFTY", exchange=Exchange.NSE,
+        segment=Segment.CASH, asset_class=AssetClass.INDEX,
+        instrument_type=InstrumentType.INDEX, token="26000",
+    )
+
+
+class CurrentVixTests(unittest.TestCase):
+    """2026-08-05 fix: _current_vix() used to go straight to the rate-limited
+    candle API, the same disconnected-price bug as _option_last_price had."""
+
+    def _executor(self, price_resolution, get_candles=None):
+        rt = SimpleNamespace(
+            instrument_master=SimpleNamespace(get=lambda sym: _nifty_index_instrument()),
+            live_feed=SimpleNamespace(
+                register_instruments=mock.Mock(), add_subscriptions=mock.Mock()
+            ),
+            price_service=SimpleNamespace(resolve=lambda *a, **k: price_resolution),
+            angel_one_history=SimpleNamespace(get_candles=get_candles or (lambda *a: [])),
+        )
+        return ShortVolExecutor(rt)
+
+    def test_prefers_live_price(self):
+        ex = self._executor(SimpleNamespace(price=13.42, source="live", is_stale=False))
+        self.assertEqual(ex._current_vix(), 13.42)
+        ex._rt.live_feed.register_instruments.assert_called_once()
+        ex._rt.live_feed.add_subscriptions.assert_called_once_with(["INDIAVIX"])
+
+    def test_falls_back_to_candle_when_no_live_price(self):
+        gc = lambda inst, a, b, tf: [SimpleNamespace(close=14.71)]
+        ex = self._executor(SimpleNamespace(price=None, source=None, is_stale=True), gc)
+        self.assertEqual(ex._current_vix(), 14.71)
+
+    def test_returns_zero_when_nothing_available(self):
+        ex = self._executor(SimpleNamespace(price=None, source=None, is_stale=True), lambda *a: [])
+        self.assertEqual(ex._current_vix(), 0.0)
+
+
 class OptionPriceFetchTests(unittest.TestCase):
     """Rate-limit hardening of the ATM option-price candle fetch."""
 
@@ -239,7 +278,15 @@ class OptionPriceFetchTests(unittest.TestCase):
         return SimpleNamespace(symbol=sym, strike=24000.0, lot_size=75)
 
     def _executor(self, get_candles):
-        rt = SimpleNamespace(angel_one_history=SimpleNamespace(get_candles=get_candles))
+        # price_service resolves to nothing so these tests exercise the
+        # candle-fetch fallback specifically, not the live/model tiers ahead
+        # of it (covered separately in test_price_resolution_service.py).
+        rt = SimpleNamespace(
+            angel_one_history=SimpleNamespace(get_candles=get_candles),
+            price_service=SimpleNamespace(
+                resolve=lambda *a, **k: SimpleNamespace(price=None, source=None, is_stale=True)
+            ),
+        )
         return ShortVolExecutor(rt)
 
     def test_success_is_cached_and_fetched_once(self):
@@ -349,6 +396,11 @@ class ActiveExitPolicyTests(unittest.TestCase):
             portfolio=SimpleNamespace(positions=positions),
             angel_one_history=SimpleNamespace(get_candles=gc),
             submit_multi_leg=mock.AsyncMock(return_value={"submitted": True}),
+            # price_service resolves to nothing so these tests exercise the
+            # candle-fetch fallback via `prices`, matching prior behavior.
+            price_service=SimpleNamespace(
+                resolve=lambda *a, **k: SimpleNamespace(price=None, source=None, is_stale=True)
+            ),
         )
         return ShortVolExecutor(rt)
 
@@ -430,6 +482,9 @@ class ActiveExitPolicyTests(unittest.TestCase):
         rt = SimpleNamespace(
             portfolio=SimpleNamespace(positions=positions),
             angel_one_history=SimpleNamespace(get_candles=gc),
+            price_service=SimpleNamespace(
+                resolve=lambda *a, **k: SimpleNamespace(price=None, source=None, is_stale=True)
+            ),
         )
         ex = ShortVolExecutor(rt)
         with mock.patch.dict(os.environ, {"SHORTVOL_FETCH_SPACING": "0"}):

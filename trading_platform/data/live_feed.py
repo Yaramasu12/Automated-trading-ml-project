@@ -77,7 +77,12 @@ class LiveTickFeed:
     WebSocket is parsed and forwarded to all registered handlers.
     """
 
-    def __init__(self, settings, staleness_tracker: FeedStalenessTracker | None = None) -> None:
+    def __init__(
+        self,
+        settings,
+        staleness_tracker: FeedStalenessTracker | None = None,
+        get_protected_symbols: Callable[[], set] | None = None,
+    ) -> None:
         self._settings = settings
         self._handlers: list[TickHandler] = []
         self._token_map: dict[str, str] = {}          # symbol -> token
@@ -92,6 +97,14 @@ class LiveTickFeed:
         self._lock = threading.Lock()
         # Per-symbol last-tick tracker — answers "did THIS symbol tick recently?"
         self.staleness_tracker = staleness_tracker or FeedStalenessTracker()
+        self._max_symbols = getattr(settings, "live_feed_max_symbols", None)
+        # Called fresh on every add_subscriptions() to get the CURRENT open
+        # positions — symbols in this set always get subscribed even past
+        # the nominal cap; dropping a live subscription for an open position
+        # is exactly the 2026-08-05 bug this exists to prevent. Injected
+        # rather than referencing a portfolio directly, so this module stays
+        # free of a runtime/portfolio dependency.
+        self._get_protected_symbols = get_protected_symbols or (lambda: set())
 
     # ------------------------------------------------------------------
     # Public API
@@ -119,11 +132,40 @@ class LiveTickFeed:
         self._subscribe_symbols(upper)
 
     def add_subscriptions(self, symbols: list[str]) -> None:
+        """Add symbols to the live subscription list, respecting
+        live_feed_max_symbols — except for symbols backing an open position,
+        which are always subscribed regardless of the cap (see __init__'s
+        get_protected_symbols)."""
         with self._lock:
             existing = set(self._subscribed_symbols)
             additions = [s.upper() for s in symbols if s and s.upper() not in existing]
             if not additions:
                 return
+            if self._max_symbols:
+                try:
+                    protected = {s.upper() for s in self._get_protected_symbols()}
+                except Exception as exc:
+                    logger.warning("LiveTickFeed: get_protected_symbols failed: %s", exc)
+                    protected = set()
+                protected_additions = [s for s in additions if s in protected]
+                optional_additions = [s for s in additions if s not in protected]
+                room = max(0, self._max_symbols - len(existing) - len(protected_additions))
+                if len(optional_additions) > room:
+                    dropped = optional_additions[room:]
+                    optional_additions = optional_additions[:room]
+                    logger.warning(
+                        "LiveTickFeed: subscription cap (%d) reached — not subscribing %s",
+                        self._max_symbols, dropped,
+                    )
+                additions = protected_additions + optional_additions
+                if not additions:
+                    return
+                if len(existing) + len(additions) > self._max_symbols:
+                    logger.warning(
+                        "LiveTickFeed: %d open-position symbol(s) pushed subscriptions past "
+                        "the nominal cap (%d) — subscribing them anyway",
+                        len(protected_additions), self._max_symbols,
+                    )
             self._subscribed_symbols.extend(additions)
         self._subscribe_symbols(additions)
 
@@ -195,13 +237,6 @@ class LiveTickFeed:
             "staleness": staleness,
         }
 
-    def staleness_gate(self):
-        """Convenience for the live-readiness aggregator."""
-        with self._lock:
-            syms = list(self._subscribed_symbols)
-            running = self._running
-        return self.staleness_tracker.gate(syms, feed_running=running)
-
     # ------------------------------------------------------------------
     # Internal
     # ------------------------------------------------------------------
@@ -256,11 +291,25 @@ class LiveTickFeed:
             return
         session, feed_token = logged_in
 
+        # Confirmed 2026-08-05: this used to stop trying after _MAX_RETRIES and
+        # stay dead until the (market-hours-gated) scan-loop watchdog noticed
+        # and restarted it — unacceptable for a feed with open positions
+        # depending on it. Past _MAX_RETRIES this keeps retrying forever at
+        # the capped backoff instead of giving up; the retry counter still
+        # governs backoff growth and how often a fresh re-login is attempted.
         retries = 0
-        while self._running and retries < self._MAX_RETRIES:
+        gave_up_logged = False
+        while self._running:
             if retries > 0:
-                base_backoff = min(self._BASE_BACKOFF * (2 ** (retries - 1)), self._MAX_BACKOFF)
+                backoff_retries = min(retries, self._MAX_RETRIES)
+                base_backoff = min(self._BASE_BACKOFF * (2 ** (backoff_retries - 1)), self._MAX_BACKOFF)
                 backoff = base_backoff + random.uniform(0, min(5.0, base_backoff * 0.25))
+                if retries >= self._MAX_RETRIES and not gave_up_logged:
+                    logger.critical(
+                        "LiveTickFeed has failed to reconnect %d times — will keep retrying "
+                        "every ~%ds indefinitely rather than staying dead", retries, self._MAX_BACKOFF,
+                    )
+                    gave_up_logged = True
                 logger.warning("LiveTickFeed reconnect attempt %d — waiting %.1fs", retries, backoff)
                 time.sleep(backoff)
                 if not self._running:
@@ -283,21 +332,23 @@ class LiveTickFeed:
                 self._ws.connect()  # blocks until disconnect, using the cached token
                 # If connect() returns and _running is still True, reconnect
                 retries += 1
+                if retries < self._MAX_RETRIES:
+                    gave_up_logged = False  # a connection that held resets the "gave up" notice
             except Exception as exc:
                 logger.error("LiveTickFeed connection error: %s", exc)
                 retries += 1
                 # The cached token itself may have gone stale (very long-running
                 # feed outliving the JWT) rather than this being a plain socket
-                # drop. One re-login attempt with the retry budget's last try,
-                # rather than assuming a bad token forever.
-                if retries == self._MAX_RETRIES - 1:
+                # drop. Re-login periodically (not every attempt — login has a
+                # stricter rate limit than the socket, see _login's docstring)
+                # instead of assuming a bad token forever; a failed re-login no
+                # longer stops the loop, it just keeps retrying with whatever
+                # session it has at the capped backoff.
+                if retries % self._MAX_RETRIES == 0:
                     refreshed = self._login()
-                    if refreshed is None:
-                        break
-                    session, feed_token = refreshed
+                    if refreshed is not None:
+                        session, feed_token = refreshed
 
-        if retries > self._MAX_RETRIES:
-            logger.error("LiveTickFeed exceeded max retries (%d) — giving up", self._MAX_RETRIES)
         self._running = False
 
     def _on_open(self, ws) -> None:

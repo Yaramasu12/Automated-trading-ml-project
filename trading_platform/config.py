@@ -103,6 +103,20 @@ class Settings:
     enable_news_feed: bool = True
     news_fetch_interval_seconds: int = 300
 
+    # Continuous (24/7) portfolio safety net, independent of market hours AND
+    # of any single strategy's own exit logic — re-evaluates CapitalProtection's
+    # own drawdown_halt_pct/daily_loss_limit_pct against a fresh, live-priced
+    # snapshot on a timer instead of only reactively when a new order happens
+    # to be submitted. See TradingRuntime._periodic_portfolio_guardian_loop —
+    # added 2026-08-05 after a short-vol condor breached its stop-loss by over
+    # 3x with nothing watching for hours (the only price-based check for that
+    # structure runs inside the equity_open-gated entry-scan loop). On breach:
+    # sets the kill switch (blocks new entries) and raises a CRITICAL alert.
+    # Deliberately does NOT auto-liquidate — closing the position stays a
+    # human or strategy-exit-logic decision.
+    enable_portfolio_guardian: bool = True
+    portfolio_guardian_interval_seconds: int = 60
+
     # Goal governor
     yearly_profit_target: float = 50_000_000.0   # 5 crore INR aspirational target
 
@@ -230,6 +244,8 @@ def load_settings() -> Settings:
         runtime_monitor_interval_seconds=max(60, int(os.getenv("RUNTIME_MONITOR_INTERVAL_SECONDS", "900"))),
         enable_news_feed=_bool_env("ENABLE_NEWS_FEED", True),
         news_fetch_interval_seconds=max(60, int(os.getenv("NEWS_FETCH_INTERVAL_SECONDS", "300"))),
+        enable_portfolio_guardian=_bool_env("ENABLE_PORTFOLIO_GUARDIAN", True),
+        portfolio_guardian_interval_seconds=max(15, int(os.getenv("PORTFOLIO_GUARDIAN_INTERVAL_SECONDS", "60"))),
         yearly_profit_target=float(os.getenv("YEARLY_PROFIT_TARGET", "50000000")),
         database_url=os.getenv("DATABASE_URL", ""),
     )

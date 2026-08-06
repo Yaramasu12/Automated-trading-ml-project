@@ -81,6 +81,7 @@ from trading_platform.api.policy_service import PolicyService
 from trading_platform.api.options_service import OptionsService
 from trading_platform.api.regime_meta_service import RegimeMetaService
 from trading_platform.api.live_feed_service import LiveFeedService
+from trading_platform.api.price_service import PriceResolution, PriceResolutionService
 from trading_platform.api.ai_capabilities import ai_capabilities, log_capabilities_at_startup
 from trading_platform.logging_safety import note_swallowed, swallowed_error_count
 from trading_platform.ai.meta_labeler import MetaLabeler
@@ -188,7 +189,12 @@ class TradingRuntime:
         self.db = TradingDatabase(
             database_url=self.settings.database_url or None
         )
-        self.live_feed = LiveTickFeed(self.settings)
+        self.live_feed = LiveTickFeed(
+            self.settings,
+            get_protected_symbols=lambda: {
+                s for s, p in self.portfolio.positions.items() if p.quantity != 0
+            },
+        )
         # Wire live Angel One prices into the paper broker so fills use real market prices
         self.paper_broker.set_live_feed(self.live_feed)
         # Holds `self` and reads instrument_master/decision_pipeline off it lazily
@@ -472,6 +478,14 @@ class TradingRuntime:
         )
         self._options_service = self._build_options_service()
         self._live_feed_service = self._build_live_feed_service()
+        # live_feed and exit_manager are both constructed once and never
+        # reassigned (unlike instrument_master), so this needs no rebuild
+        # hook the way _options_service/_live_feed_service do.
+        self.price_service = PriceResolutionService(
+            live_feed=self.live_feed,
+            exit_manager=self.exit_manager,
+            theoretical_option_mark=self._theoretical_option_mark,
+        )
         self._regime_meta_service = RegimeMetaService(
             regime_classifier=self.regime_classifier,
             synthetic_data=self.synthetic_data,
@@ -675,6 +689,21 @@ class TradingRuntime:
         strategy_name = intent.signal.strategy_name
         fill_price = getattr(trade, "price", None) or intent.signal.price
         side = intent.signal.side.value
+        # Option legs only get a live tick if something already asked for their
+        # chain (options_service's chain endpoint) or the agent's scan universe
+        # happens to include them — neither is guaranteed for an arbitrary
+        # strike. Without a live tick, portfolio_positions() marks the position
+        # from a flat MARK_IV Black-Scholes approximation, which can diverge
+        # sharply from the real premium once actual implied vol departs from
+        # that flat assumption (confirmed 2026-08-05: a FINNIFTY leg marked at
+        # ~44 by the model was quoted ~417 on the real broker feed — the flat
+        # 14% MARK_IV vs. an implied ~31-32% for that strike). Subscribing the
+        # traded symbol here means every position gets real marks from its very
+        # first fill onward, entry or exit.
+        try:
+            self.live_feed.add_subscriptions([symbol])
+        except Exception as exc:
+            note_swallowed("live_feed_subscribe_on_fill", exc)
         self._append_trace_event_for_intent(
             intent,
             "broker_filled",
@@ -1245,6 +1274,21 @@ class TradingRuntime:
         except Exception as exc:
             note_swallowed("restore_state.settle_expired", exc)
 
+        # Live-feed subscriptions are in-memory only (no DB persistence), so a
+        # restart drops them regardless of _on_fill's own subscribe-on-fill fix
+        # (2026-08-05) — a position filled in a *previous* process's lifetime
+        # gets no benefit from that fix until it is re-subscribed here. Without
+        # this, every restart falls back to the flat-MARK_IV Black-Scholes
+        # approximation (or worse, raw entry price) for every already-open
+        # option leg, same root cause as the FINNIFTY mispricing this was
+        # written to fix.
+        try:
+            open_symbols = [s for s, p in self.portfolio.positions.items() if p.quantity != 0]
+            if open_symbols:
+                self.live_feed.add_subscriptions(open_symbols)
+        except Exception as exc:
+            note_swallowed("restore_state.subscribe_open_positions", exc)
+
         if restored_positions or restored_plans:
             logger.info(
                 "restore_state: recovered %d position(s) and %d exit plan(s) for mode=%s",
@@ -1298,6 +1342,12 @@ class TradingRuntime:
             _aio.create_task(self._periodic_news_fetch_loop())
             if self.settings.enable_news_feed else None
         )
+        # Also 24/7, and independent of any one strategy's own exit logic —
+        # see _periodic_portfolio_guardian_loop's own docstring for why.
+        self._portfolio_guardian_task = (
+            _aio.create_task(self._periodic_portfolio_guardian_loop())
+            if self.settings.enable_portfolio_guardian else None
+        )
         self.monitor.record_event(
             "async_services_started",
             (
@@ -1328,6 +1378,12 @@ class TradingRuntime:
         monitor_task = getattr(self, "_runtime_monitor_task", None)
         if monitor_task is not None:
             monitor_task.cancel()
+        news_task = getattr(self, "_news_fetch_task", None)
+        if news_task is not None:
+            news_task.cancel()
+        guardian_task = getattr(self, "_portfolio_guardian_task", None)
+        if guardian_task is not None:
+            guardian_task.cancel()
         await self.scheduler.stop()
         await self.exit_manager.stop()
         self.live_feed.stop()
@@ -2570,13 +2626,15 @@ class TradingRuntime:
             note_swallowed("best_mark.exit_manager", exc)
         return None
 
-    def _theoretical_option_mark(self, pos, now: datetime) -> float | None:
-        """Mark an option position from the LIVE underlying price via Black-Scholes
+    def _theoretical_option_mark(self, inst, now: datetime) -> float | None:
+        """Mark an option instrument from the LIVE underlying price via Black-Scholes
         when the option strike itself has no live tick (index options aren't
         individually subscribed, and the candle API is rate-limited). This makes
         unrealized P&L move with delta + theta decay instead of being stuck at
-        entry (P&L = 0). Approximate IV (MARK_IV) — good enough for P&L trend."""
-        inst = getattr(pos, "instrument", None)
+        entry (P&L = 0). Approximate IV (MARK_IV) — good enough for P&L trend.
+
+        Takes the instrument directly (not a Position) so PriceResolutionService
+        can call it for any option, not just an open position."""
         if inst is None or inst.option_type is None or not inst.strike or inst.expiry is None:
             return None
         underlying = (inst.underlying or "").strip().upper()
@@ -2629,7 +2687,7 @@ class TradingRuntime:
                 continue
             if inst.expiry >= today or pos.quantity == 0:
                 continue
-            settle = self._theoretical_option_mark(pos, now)
+            settle = self._theoretical_option_mark(inst, now)
             if settle is None:
                 settle = 0.0
             side = Side.SELL if pos.quantity > 0 else Side.BUY
@@ -2688,7 +2746,7 @@ class TradingRuntime:
                     if tick and getattr(tick, "last_price", 0) and tick.last_price > 0:
                         marks[sym] = float(tick.last_price)
                     else:
-                        m = self._theoretical_option_mark(pos, now)
+                        m = self._theoretical_option_mark(pos.instrument, now)
                         if m is not None and m > 0:
                             marks[sym] = float(m)
                 snap = self.portfolio.mark_to_market(now, marks)
@@ -2866,6 +2924,79 @@ class TradingRuntime:
                 self.news_intelligence.analyze(payload)
             except Exception as exc:
                 note_swallowed("news_fetch_tick.analyze", exc)
+
+    async def _periodic_portfolio_guardian_loop(self) -> None:
+        """24/7 independent portfolio safety net — same always-on shape as
+        _periodic_runtime_monitor_loop/_periodic_news_fetch_loop, but for
+        risk rather than observability.
+
+        Re-evaluates CapitalProtection's own drawdown_halt_pct/
+        daily_loss_limit_pct against a fresh, live-priced snapshot on a
+        timer, instead of only reactively when a *new* order happens to be
+        submitted (RiskEngine/CapitalProtection's existing checks are
+        order-gates — they never look at positions that already exist).
+
+        Added 2026-08-05: a FINNIFTY short-vol condor breached its
+        structure-level stop-loss by over 3x (-516% of credit vs. a -150%
+        trigger) with nothing noticing for hours, because the only
+        price-based check for multi-leg option structures
+        (short_vol_executor.evaluate_exit) runs inside the entry-scan loop,
+        itself gated to equity_open market hours. This loop has no such
+        gate and no dependency on any single strategy's own exit logic, so
+        a breach can't go unnoticed again just because nothing was
+        watching outside trading hours.
+
+        Deliberately does NOT auto-liquidate on breach — only sets the kill
+        switch (blocks new risk-taking) and raises a CRITICAL alert. A
+        brand-new automated mechanism forcing liquidations on its own first
+        day carries real risk if its own detection logic has a bug;
+        actually closing the position stays a human or (now correctly
+        priced) strategy-exit-logic decision.
+        """
+        import asyncio as _aio
+        interval = float(self.settings.portfolio_guardian_interval_seconds)
+        while True:
+            try:
+                await _aio.sleep(interval)
+                await _aio.to_thread(self._run_portfolio_guardian_tick)
+            except _aio.CancelledError:
+                break
+            except Exception as exc:
+                note_swallowed("periodic_portfolio_guardian", exc)
+
+    def _run_portfolio_guardian_tick(self) -> None:
+        if self.kill_switch_active:
+            return  # already tripped; stays tripped until a human clears it
+        now = datetime.now(timezone.utc)
+        mark_prices: dict[str, float] = {}
+        for symbol, pos in self.portfolio.positions.items():
+            if pos.quantity == 0:
+                continue
+            resolution = self.price_service.resolve(
+                symbol, instrument=getattr(pos, "instrument", None), entry_price=pos.average_price
+            )
+            if resolution.price is not None:
+                mark_prices[symbol] = resolution.price
+        snapshot = self.portfolio.mark_to_market(now, mark_prices)
+
+        session_start = float(getattr(self.scheduler, "_session_start_equity", 0.0) or 0.0)
+        daily_pnl = (snapshot.equity - session_start) if session_start > 0 else 0.0
+        daily_loss_pct = abs(daily_pnl) / snapshot.equity if daily_pnl < 0 and snapshot.equity > 0 else 0.0
+
+        cp = self.capital_protection
+        breach_reason = None
+        if snapshot.drawdown >= cp.drawdown_halt_pct:
+            breach_reason = (
+                f"drawdown circuit breaker: {snapshot.drawdown:.1%} >= {cp.drawdown_halt_pct:.1%}"
+            )
+        elif daily_loss_pct >= cp.daily_loss_limit_pct:
+            breach_reason = (
+                f"daily loss limit: {daily_loss_pct:.1%} >= {cp.daily_loss_limit_pct:.1%}"
+            )
+
+        if breach_reason:
+            logger.critical("PORTFOLIO GUARDIAN: %s — setting kill switch", breach_reason)
+            self.set_kill_switch(True, reason=f"portfolio_guardian: {breach_reason}")
 
     def _can_submit_live_orders(self) -> bool:
         return (
@@ -3329,29 +3460,34 @@ class TradingRuntime:
         return {"updated": True, "symbol_count": len(prices)}
 
     def portfolio_positions(self) -> dict:
-        """All open positions with live mark-to-market P&L."""
+        """All open positions with live mark-to-market P&L.
+
+        Marks come from PriceResolutionService (live tick -> theoretical
+        Black-Scholes -> ExitManager's sticky last-known -> entry price),
+        the same fallback chain every other real-time price read in the
+        platform now shares — see price_service.py's module docstring.
+        """
         now = datetime.now(timezone.utc)
-        live_marks: dict[str, float] = {}     # from an actual live tick
-        model_marks: dict[str, float] = {}    # theoretical (BS off the underlying)
+        resolutions: dict[str, PriceResolution] = {}
         for symbol, pos in self.portfolio.positions.items():
-            tick = self.live_feed.latest_tick(symbol)
-            if tick and tick.last_price > 0:
-                live_marks[symbol] = tick.last_price
-            else:
-                m = self._theoretical_option_mark(pos, now)
-                if m is not None and m > 0:
-                    model_marks[symbol] = round(m, 2)
-        mark_prices: dict[str, float] = {**model_marks, **live_marks}
+            if pos.quantity == 0:
+                continue
+            resolutions[symbol] = self.price_service.resolve(
+                symbol, instrument=getattr(pos, "instrument", None), entry_price=pos.average_price
+            )
+        mark_prices = {
+            symbol: round(r.price, 2) for symbol, r in resolutions.items() if r.price is not None
+        }
         snapshot = self.portfolio.mark_to_market(now, mark_prices)
         positions = []
         for symbol, pos in self.portfolio.positions.items():
             if pos.quantity == 0:
                 continue
+            resolution = resolutions[symbol]
             mark = mark_prices.get(symbol, pos.average_price)
             lot_size = getattr(pos.instrument, "lot_size", 1) if hasattr(pos, "instrument") else 1
             unrealized = pos.unrealized_pnl(mark)
             pnl_pct = unrealized / max(pos.average_price * abs(pos.quantity) * lot_size, 1)
-            source = "live" if symbol in live_marks else ("model" if symbol in model_marks else "entry")
             positions.append({
                 "symbol": symbol,
                 "quantity": pos.quantity,
@@ -3361,8 +3497,9 @@ class TradingRuntime:
                 "unrealized_pnl": round(unrealized, 2),
                 "realized_pnl": round(pos.realized_pnl, 2),
                 "pnl_pct": round(pnl_pct * 100, 2),
-                "live": symbol in live_marks,
-                "price_source": source,
+                "live": resolution.source == "live",
+                "price_source": resolution.source or "entry",
+                "price_is_stale": resolution.is_stale,
             })
         return {
             "count": len(positions),

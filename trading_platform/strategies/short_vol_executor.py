@@ -75,12 +75,27 @@ class ShortVolExecutor:
         return closes, spot
 
     def _current_vix(self) -> float:
-        """Latest India VIX value (implied vol, %)."""
+        """Latest India VIX value (implied vol, %).
+
+        Prefers a live tick via PriceResolutionService — the same source
+        every other real-time price in the platform now goes through — over
+        the historical-candle API. INDIAVIX isn't part of the default scan
+        universe, so it's registered + subscribed to the live feed lazily
+        here; both calls are idempotent, safe to make on every invocation.
+        """
         try:
             import dataclasses
             from trading_platform.domain.enums import Exchange
             nifty = self._rt.instrument_master.get("NIFTY")
             inst = dataclasses.replace(nifty, symbol="INDIAVIX", token=_INDIA_VIX_TOKEN, exchange=Exchange("NSE"))
+            try:
+                self._rt.live_feed.register_instruments([inst])
+                self._rt.live_feed.add_subscriptions(["INDIAVIX"])
+            except Exception as exc:
+                logger.warning("short-vol: could not subscribe INDIAVIX to live feed: %s", exc)
+            resolution = self._rt.price_service.resolve("INDIAVIX", instrument=inst)
+            if resolution.price is not None and resolution.price > 0:
+                return float(resolution.price)
             to_dt = datetime.now(); from_dt = to_dt - timedelta(days=10)
             bars = self._rt.angel_one_history.get_candles(inst, from_dt, to_dt, "ONE_DAY")
             if bars:
@@ -124,14 +139,24 @@ class ShortVolExecutor:
         self._last_fetch_ts = time.monotonic()
 
     def _option_last_price(self, inst) -> float:
-        """Most recent traded price of an option contract (daily candle close).
+        """Most recent price of an option contract for entry/exit decisions.
 
-        Cached per (symbol, day) and retried with exponential backoff on
-        rate-limit, because the candle API throttles hard when several strikes are
-        fetched in a burst. Every read is paced by _throttle_fetch, and a contract
-        that keeps getting denied is negatively cached for a short window so one
-        throttled underlying doesn't starve the rest of the scan."""
+        Goes through PriceResolutionService (live tick -> theoretical
+        Black-Scholes mark) before ever touching the historical daily-candle
+        API below. Confirmed 2026-08-05: this method used to go straight to
+        the candle API, which is rate-limited and returns nothing before
+        today's candle exists (e.g. pre-market), while live_feed already had
+        the real price the whole time. That silently blinded
+        evaluate_exit()/close_structure() exactly when a stop-loss had been
+        breached — two disconnected price sources for what should be one
+        "current price" concept. Falls through to the candle API unchanged
+        when PriceResolutionService has neither a live tick nor a model mark.
+        """
         sym = getattr(inst, "symbol", "?")
+        resolution = self._rt.price_service.resolve(sym, instrument=inst)
+        if resolution.price is not None and resolution.price > 0:
+            return float(resolution.price)
+
         key = (sym, date.today())
         cached = self._price_cache.get(key)
         if cached is not None:

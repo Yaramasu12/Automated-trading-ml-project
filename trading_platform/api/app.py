@@ -694,6 +694,48 @@ async def short_vol_enter(payload: dict | None = None):
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
+@app.post("/short-vol/exit-check", dependencies=[_AuthDep])
+async def short_vol_exit_check(payload: dict | None = None):
+    """Manually evaluate + close open short-vol structures against the same
+    profit-target/stop-loss rule the agent's own exit loop uses
+    (trading_agent._maybe_exit_short_vol) — reuses find_open_structures,
+    evaluate_exit and close_structure unchanged, no new exit logic here.
+
+    For explicit, human-confirmed intervention (e.g. a stop-loss that was
+    silently blind because mark-to-market had no live tick and was breached
+    for a while before anyone could see it — confirmed 2026-08-05). The
+    autonomous scan loop still only runs this during equity market hours;
+    this exists because a confirmed stop-loss breach shouldn't have to wait
+    for the next session just because it was discovered pre-market.
+    """
+    underlying = (payload or {}).get("underlying")
+    executor = runtime.short_vol_executor
+    try:
+        structures = executor.find_open_structures(underlying)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    results = []
+    for s in structures:
+        u, expiry, positions = s["underlying"], s["expiry"], s["positions"]
+        entry: dict = {"underlying": u, "expiry": expiry.isoformat()}
+        try:
+            verdict = executor.evaluate_exit(u, expiry, positions)
+        except Exception as exc:
+            entry["error"] = str(exc)
+            results.append(entry)
+            continue
+        entry["verdict"] = verdict
+        if verdict.get("action") == "close":
+            try:
+                entry["close_result"] = await executor.close_structure(
+                    u, expiry, positions, verdict.get("reason", "")
+                )
+            except Exception as exc:
+                entry["close_error"] = str(exc)
+        results.append(entry)
+    return {"structures_checked": len(structures), "results": results}
+
+
 @app.post("/execution/square-off", dependencies=[_AuthDep])
 async def square_off(req: SquareOffRequest):
     try:

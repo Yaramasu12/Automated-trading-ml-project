@@ -63,7 +63,21 @@ class LiveFeedService:
             symbols = symbols[: self.settings.live_feed_max_symbols]
         # Register ALL instruments so the feed has token+exchange mappings for everything
         self.live_feed.register_instruments(self.instrument_master.all())
+        # subscribe() below REPLACES the whole subscription list. If
+        # restore_state() already subscribed open option positions (so their
+        # marks come from real ticks instead of the flat-MARK_IV theoretical
+        # fallback — see runtime.py's restore_state), a bare subscribe() here
+        # would silently drop them the moment the feed (re)starts, regardless
+        # of who calls this. Preserve anything already subscribed that isn't
+        # already in the new base list.
+        try:
+            previously_subscribed = self.live_feed.subscribed_symbols()
+        except Exception:
+            previously_subscribed = []
         self.live_feed.subscribe(symbols)
+        extra = [s for s in previously_subscribed if s not in set(symbols)]
+        if extra:
+            self.live_feed.add_subscriptions(extra)
         self.live_feed.start()
         self.monitor.record_event(
             "live_feed_started",
