@@ -1,10 +1,15 @@
 from __future__ import annotations
 
+import dataclasses
 import unittest
+from datetime import datetime, timezone
 
 from trading_platform.broker.angel_one import AngelOneBrokerClient
 from trading_platform.config import Settings
-from trading_platform.domain.enums import ExecutionMode
+from trading_platform.domain.enums import (
+    AssetClass, Exchange, ExecutionMode, InstrumentType, OrderType, ProductType, Segment, Side,
+)
+from trading_platform.domain.models import Instrument, OrderIntent, Signal
 
 
 class FakeSmartApi:
@@ -56,6 +61,16 @@ class AngelOneBrokerTests(unittest.TestCase):
 
         self.assertFalse(broker.is_ready())
 
+    def test_algo_id_omitted_from_order_payload_by_default(self):
+        broker = TestableAngelOneBrokerClient(_settings())
+        params = broker._to_angel_order(_intent())
+        self.assertNotIn("algoID", params)
+
+    def test_configured_algo_id_included_in_order_payload(self):
+        broker = TestableAngelOneBrokerClient(dataclasses.replace(_settings(), angel_one_algo_id="ALGO123"))
+        params = broker._to_angel_order(_intent())
+        self.assertEqual(params["algoID"], "ALGO123")
+
 
 def _settings() -> Settings:
     return Settings(
@@ -76,6 +91,21 @@ def _settings() -> Settings:
         angel_one_instrument_master_url="https://example.invalid/OpenAPIScripMaster.json",
         angel_one_instrument_cache_path="data/processed/test_angel_instruments.json",
         aws_region="ap-south-1",
+    )
+
+
+def _intent() -> OrderIntent:
+    instrument = Instrument(
+        symbol="RELIANCE", name="RELIANCE", exchange=Exchange.NSE, segment=Segment.CASH,
+        asset_class=AssetClass.EQUITY, instrument_type=InstrumentType.EQUITY, token="2885", lot_size=1,
+    )
+    signal = Signal(
+        strategy_name="test", symbol="RELIANCE", side=Side.BUY, confidence=1.0,
+        price=2800.0, reason="test", created_at=datetime.now(timezone.utc),
+    )
+    return OrderIntent(
+        signal=signal, instrument=instrument, quantity=1,
+        order_type=OrderType.MARKET, product_type=ProductType.INTRADAY,
     )
 
 

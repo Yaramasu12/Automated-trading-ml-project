@@ -92,6 +92,10 @@ services:
       - ANGEL_ONE_TOTP_SECRET=${ANGEL_ONE_TOTP_SECRET:-}
       - ANGEL_ONE_INSTRUMENT_MASTER_URL=${ANGEL_ONE_INSTRUMENT_MASTER_URL:-https://margincalculator.angelone.in/OpenAPI_File/files/OpenAPIScripMaster.json}
       - ANGEL_ONE_INSTRUMENT_CACHE_PATH=${ANGEL_ONE_INSTRUMENT_CACHE_PATH:-data/processed/angel_one_instruments.json}
+      # SEBI retail-algo Algo-ID (see config.py's angel_one_algo_id docstring)
+      # — empty until you've actually registered with Angel One's
+      # registered-algo program; every order stays untagged until then.
+      - ANGEL_ONE_ALGO_ID=${ANGEL_ONE_ALGO_ID:-}
       # Angel One's published getCandleData limit is ~180/min (3 req/s); real-world
       # forum reports show stricter-than-published enforcement in practice, so
       # 0.35s (~2.9 req/s) keeps meaningful margin rather than pushing to the

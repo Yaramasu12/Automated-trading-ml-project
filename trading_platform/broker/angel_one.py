@@ -193,7 +193,7 @@ class AngelOneBrokerClient(BrokerClient):
         # ExitPlan built after the fill.
         squareoff = "0"
         stoploss = "0"
-        return {
+        params = {
             "variety": "NORMAL",
             "tradingsymbol": instrument.symbol,
             "symboltoken": instrument.token,
@@ -211,4 +211,17 @@ class AngelOneBrokerClient(BrokerClient):
             "stoploss": stoploss,
             "quantity": str(intent.quantity * instrument.lot_size),
         }
+        # SEBI retail-algo compliance groundwork (REDESIGN_PROMPT.md §6.2) —
+        # only added once a real Algo-ID has been configured (empty by
+        # default, so this is a no-op for every deployment today). "algoID"
+        # is this codebase's best-informed guess at Angel One's expected
+        # field name for their registered-algo program, NOT independently
+        # verified against their raw order-placement API docs — confirm the
+        # exact key before relying on it for a real registered algo. Safe to
+        # ship regardless: SmartApi.placeOrderFullResponse only strips None
+        # values, so an unconfigured algo_id (empty string, filtered out
+        # below) never adds anything to the payload sent today.
+        if self.settings.angel_one_algo_id:
+            params["algoID"] = self.settings.angel_one_algo_id
+        return params
 

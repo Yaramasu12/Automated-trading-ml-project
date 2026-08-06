@@ -230,7 +230,7 @@ class TradingRuntime:
         )
 
         # Async execution layer
-        self.oms = OMSEventStore()
+        self.oms = OMSEventStore(algo_id=self.settings.angel_one_algo_id or None)
         self.lock_manager = InstrumentLockManager()
         self.rate_limiter = TokenBucketRateLimiter()
         self.fill_processor = FillProcessor(self.portfolio, self.oms)

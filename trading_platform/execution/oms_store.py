@@ -28,7 +28,9 @@ CREATE TABLE IF NOT EXISTS oms_events (
     fill_price      REAL,
     fill_qty        INTEGER,
     rejection_reason TEXT,
-    metadata        TEXT
+    metadata        TEXT,
+    algo_id         TEXT,
+    signal_hash     TEXT
 )
 """
 
@@ -80,12 +82,22 @@ class OMSEventStore:
     Every order state transition writes one row. Never updates or deletes.
     """
 
-    def __init__(self, db_path: Path | None = None) -> None:
+    def __init__(self, db_path: Path | None = None, algo_id: str | None = None) -> None:
         self.db_path = db_path or _DEFAULT_DB_PATH
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._local = threading.local()
         self._seq = 0
         self._seq_lock = threading.Lock()
+        # SEBI retail-algo compliance groundwork (REDESIGN_PROMPT.md §6.2):
+        # the exchange-issued Algo-ID is a platform-wide constant for the
+        # lifetime of a deployment, not a per-order value — set once here so
+        # every append() call stamps it automatically without every one of
+        # the 20+ call sites across execution/scheduler.py needing to pass
+        # it explicitly. None/empty until a real Algo-ID has actually been
+        # obtained by registering with Angel One (a real-world business
+        # process this codebase can't do on its own); every row is simply
+        # untagged until then, same as today.
+        self._algo_id = algo_id or None
         self._init_schema()
 
     def _conn(self) -> sqlite3.Connection:
@@ -128,6 +140,16 @@ class OMSEventStore:
             cur.execute(_CREATE_IDX_ORDER)
             cur.execute(_CREATE_IDX_IDEM)
             cur.execute(_CREATE_IDX_SYM)
+            # Migration for pre-existing databases created before algo_id/
+            # signal_hash existed: CREATE TABLE IF NOT EXISTS above is a
+            # no-op against an already-created table, so an upgrade needs an
+            # explicit ALTER TABLE. Checked via PRAGMA rather than a bare
+            # try/except so this is idempotent and doesn't mask a genuine
+            # schema error under a different cause.
+            existing_columns = {row[1] for row in cur.execute("PRAGMA table_info(oms_events)").fetchall()}
+            for column in ("algo_id", "signal_hash"):
+                if column not in existing_columns:
+                    cur.execute(f"ALTER TABLE oms_events ADD COLUMN {column} TEXT")
 
     def _next_event_id(self) -> str:
         with self._seq_lock:
@@ -150,17 +172,24 @@ class OMSEventStore:
         fill_qty: int | None = None,
         rejection_reason: str | None = None,
         metadata: dict | None = None,
+        algo_id: str | None = None,
+        signal_hash: str | None = None,
     ) -> str:
         if event_type not in VALID_EVENT_TYPES:
             raise ValueError(f"Unknown OMS event type: {event_type}")
         event_id = self._next_event_id()
+        # Falls back to the platform-wide Algo-ID set at construction — see
+        # __init__'s docstring comment. An explicit per-call value (rare;
+        # mainly for tests) always wins.
+        effective_algo_id = algo_id if algo_id is not None else self._algo_id
         with self._cursor() as cur:
             cur.execute(
                 """INSERT INTO oms_events
                    (event_id, occurred_at, event_type, order_id, idempotency_key,
                     symbol, strategy_name, side, quantity, price, priority,
-                    broker_order_id, fill_price, fill_qty, rejection_reason, metadata)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    broker_order_id, fill_price, fill_qty, rejection_reason, metadata,
+                    algo_id, signal_hash)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
                     event_id,
                     datetime.now(timezone.utc).isoformat(),
@@ -178,6 +207,8 @@ class OMSEventStore:
                     fill_qty,
                     rejection_reason,
                     json.dumps(metadata) if metadata else None,
+                    effective_algo_id,
+                    signal_hash,
                 ),
             )
         return event_id

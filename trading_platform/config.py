@@ -55,6 +55,18 @@ class Settings:
     angel_one_instrument_master_url: str
     angel_one_instrument_cache_path: str
     aws_region: str
+    # SEBI retail-algo compliance groundwork (REDESIGN_PROMPT.md §6.2):
+    # exchange-issued Algo-ID obtained by registering this algorithm with
+    # Angel One's registered-algo program — a real-world business process
+    # this codebase cannot complete on its own. Empty until you actually
+    # have one; every order/OMS-event stays untagged (today's behavior)
+    # until it's set. See OMSEventStore.__init__ (auto-stamps every event)
+    # and broker/angel_one.py's _to_angel_order (adds it to the order
+    # payload) — the exact field name Angel One's raw order-placement API
+    # expects for this hasn't been independently verified against their
+    # registered-algo API docs, only informed by SEBI's general framework;
+    # confirm it before relying on it for a real registered algo.
+    angel_one_algo_id: str = ""
     api_auth_token: str = ""
     api_cors_origins: tuple[str, ...] = ()
     api_auth_required: bool = True
@@ -241,6 +253,7 @@ def load_settings() -> Settings:
             "data/processed/angel_one_instruments.json",
         ),
         aws_region=os.getenv("AWS_REGION", "ap-south-1"),
+        angel_one_algo_id=os.getenv("ANGEL_ONE_ALGO_ID", ""),
         api_auth_token=api_auth_token,
         api_cors_origins=_parse_cors_origins(
             os.getenv("API_CORS_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173")

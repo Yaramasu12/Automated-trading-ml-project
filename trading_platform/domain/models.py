@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from typing import Any
@@ -69,6 +70,23 @@ class Signal:
     reason: str
     created_at: datetime
     metadata: dict[str, Any] = field(default_factory=dict)
+
+
+def compute_signal_hash(signal: Signal) -> str:
+    """Deterministic fingerprint of a Signal for OMS audit-trail integrity
+    (REDESIGN_PROMPT.md §6.2's "signal hash ... to each event" — SEBI
+    retail-algo compliance groundwork). Lets an auditor verify an order's
+    recorded lifecycle traces back to an unmodified signal, without
+    re-deriving the whole Signal object from the OMS row. Not a
+    cryptographic/security hash requirement (nothing here is verifying
+    against an adversarial third party) — just a compact, stable
+    fingerprint of the fields that define what the signal actually said.
+    """
+    payload = "|".join([
+        signal.strategy_name, signal.symbol, signal.side.value,
+        f"{signal.price:.4f}", signal.reason, signal.created_at.isoformat(),
+    ])
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
 
 
 @dataclass(frozen=True)

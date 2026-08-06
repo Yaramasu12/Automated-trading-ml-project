@@ -10,7 +10,7 @@ from typing import Callable, Awaitable, TYPE_CHECKING
 
 from trading_platform.broker.base import BrokerClient
 from trading_platform.domain.enums import OrderPriority, OrderStatus
-from trading_platform.domain.models import Order, OrderIntent, PrioritizedOrderIntent, Trade
+from trading_platform.domain.models import Order, OrderIntent, PrioritizedOrderIntent, Trade, compute_signal_hash
 from trading_platform.event_bus import InMemoryEventBus
 from trading_platform.execution.fill_processor import FillProcessor
 from trading_platform.execution.final_gate import FinalGateDecision, FinalGateFn
@@ -102,6 +102,12 @@ class ExecutionScheduler:
 
     async def enqueue(self, intent: OrderIntent) -> str:
         """Place an intent on the priority queue. Returns event_id."""
+        # SEBI retail-algo audit-trail groundwork (REDESIGN_PROMPT.md §6.2):
+        # computed once per intent and attached to the OMS events recorded
+        # in this method — lets an auditor verify these rows trace back to
+        # an unmodified signal. algo_id itself is stamped automatically by
+        # OMSEventStore (platform-wide constant, see its __init__).
+        signal_hash = compute_signal_hash(intent.signal)
         if self.kill_switch_active and not self._allowed_during_kill_switch(intent):
             self.oms.append(
                 event_type="kill_switch_cancelled",
@@ -111,6 +117,7 @@ class ExecutionScheduler:
                 strategy_name=intent.signal.strategy_name,
                 rejection_reason="kill_switch_active",
                 metadata={"trace_id": intent.signal.metadata.get("trace_id", "")},
+                signal_hash=signal_hash,
             )
             self._publish(
                 "kill_switch.triggered.v1",
@@ -139,6 +146,7 @@ class ExecutionScheduler:
                     strategy_name=intent.signal.strategy_name,
                     rejection_reason=result.reason,
                     metadata={"trace_id": intent.signal.metadata.get("trace_id", "")},
+                    signal_hash=signal_hash,
                 )
                 self._rejected += 1
                 return intent.idempotency_key
@@ -147,6 +155,7 @@ class ExecutionScheduler:
                 order_id=intent.idempotency_key,
                 symbol=intent.instrument.symbol,
                 metadata={"trace_id": intent.signal.metadata.get("trace_id", "")},
+                signal_hash=signal_hash,
             )
             self._publish(
                 "order.risk_approved.v1",
@@ -169,6 +178,7 @@ class ExecutionScheduler:
                     symbol=intent.instrument.symbol,
                     rejection_reason=er.reason,
                     metadata={"trace_id": intent.signal.metadata.get("trace_id", "")},
+                    signal_hash=signal_hash,
                 )
                 self._rejected += 1
                 return intent.idempotency_key
