@@ -31,6 +31,7 @@ from trading_platform.data.options_chain_collector import OptionsChainCollector
 from trading_platform.decision.orchestrator import DecisionCycleOrchestrator
 from trading_platform.decision.pipeline import DecisionPipeline
 from trading_platform.derivatives.engine import ContractSelector, ExpiryCalendar, GreeksCalculator, IVSurfaceBuilder, OptionChainBuilder, RolloverPlanner
+from trading_platform.risk.portfolio_greeks import PortfolioGreeksCalculator
 from trading_platform.domain.enums import ExecutionMode, OptionType, OrderPriority, OrderType, ProductType, Side
 from trading_platform.domain.models import OrderIntent, Signal
 from trading_platform.event_bus import InMemoryEventBus
@@ -124,6 +125,7 @@ class TradingRuntime:
         self.contract_selector = ContractSelector(self.instrument_master)
         self.option_chain_builder = OptionChainBuilder(self.instrument_master)
         self.greeks_calculator = GreeksCalculator()
+        self.portfolio_greeks_calculator = PortfolioGreeksCalculator()
         self.rollover_planner = RolloverPlanner(self.instrument_master)
         self.target_tracker = AnnualTargetTracker()
         self.portfolio = PortfolioLedger(self.settings.initial_capital)
@@ -3514,6 +3516,31 @@ class TradingRuntime:
                 "open_positions": snapshot.open_positions,
             },
         }
+
+    def portfolio_greeks_snapshot(self) -> dict:
+        """Net delta/gamma/theta/vega across every open OPTION position, with
+        implied vol inverted from each position's OWN current mark (not an
+        assumed constant) — see PortfolioGreeksCalculator's module docstring
+        for the gap this closes (REDESIGN_PROMPT.md §6.1). Read-only/
+        diagnostic: does not feed RiskEngine's order-blocking gate (yet) —
+        that is a deliberately separate, higher-stakes decision.
+        """
+        def spot_price(underlying: str) -> float | None:
+            tick = self.live_feed.latest_tick(underlying)
+            if tick and getattr(tick, "last_price", 0) and tick.last_price > 0:
+                return float(tick.last_price)
+            return None
+
+        def mark_price(pos) -> float | None:
+            resolution = self.price_service.resolve(
+                pos.instrument.symbol, instrument=pos.instrument, entry_price=pos.average_price
+            )
+            return resolution.price if resolution.price and resolution.price > 0 else None
+
+        snapshot = self.portfolio_greeks_calculator.compute(
+            self.portfolio.positions, spot_price, mark_price
+        )
+        return snapshot.to_dict()
 
     def agent_trade_log(self, limit: int = 100) -> dict:
         """History of every entry/exit fill the agent processed."""

@@ -212,6 +212,13 @@ def risk_rejection_log(limit: int = 100):
     return runtime.risk_rejection_log(limit=limit)
 
 
+@app.get("/risk/portfolio-greeks", dependencies=[_AuthDep])
+def portfolio_greeks():
+    """Net delta/gamma/theta/vega across the open options book — read-only
+    diagnostic, does not gate order flow (see PortfolioGreeksCalculator)."""
+    return runtime.portfolio_greeks_snapshot()
+
+
 @app.get("/governance")
 def governance_dashboard():
     return runtime.governance_dashboard()
