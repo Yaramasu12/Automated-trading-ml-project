@@ -13,6 +13,8 @@ from typing import Callable
 
 from trading_platform.agent.market_hours import is_entry_allowed, is_mcx_entry_allowed
 from trading_platform.data.feed_staleness import FeedStalenessTracker
+from trading_platform.data.tick_v2 import make_tick_v2
+from trading_platform.streaming.tick_bus import TickBus
 
 logger = logging.getLogger(__name__)
 
@@ -142,6 +144,10 @@ class LiveTickFeed:
         self._last_ticks: dict[str, Tick] = {}
         self._subscribed_symbols: list[str] = []
         self._lock = threading.Lock()
+        # NEW: per-connection UUID for debuggability (replaces hardcoded correlation)
+        self._connection_id: str = str(uuid.uuid4())[:12]
+        # NEW: Redis Streams tick bus (publishes normalized ticks)
+        self._tick_bus = TickBus.get_instance()
         # Sharding state — see _Shard's docstring. Populated lazily: symbols
         # added via subscribe()/add_subscriptions() before start() just sit
         # in _subscribed_symbols until _run() assigns them to shards.
@@ -270,11 +276,17 @@ class LiveTickFeed:
         """Test/replay hook — record a tick as if it arrived from the
         WebSocket. Used by the paper engine and unit tests so the
         staleness tracker doesn't see PAPER mode as "no ticks ever."
+
+        NEW: also publishes to the tick bus so replay exercises the full pipeline.
         """
         with self._lock:
             self._last_ticks[tick.symbol] = tick
             handlers = list(self._handlers)
         self.staleness_tracker.record(tick.symbol, tick.timestamp)
+        # NEW: publish TickV2 to tick bus (replay exercises full pipeline)
+        tick_v2 = make_tick_v2(tick)
+        if tick_v2 is not None:
+            self._tick_bus.publish_tick(tick_v2)
         for handler in handlers:
             try:
                 handler(tick)
@@ -557,7 +569,9 @@ class LiveTickFeed:
 
     def _on_open(self, ws, shard: "_Shard | None" = None) -> None:
         index = shard.index if shard else 0
-        logger.info("LiveTickFeed WebSocket connected (shard %d)", index)
+        logger.info(
+            "LiveTickFeed WebSocket connected (shard %d) [%s]", index, self._connection_id,
+        )
         if shard is not None:
             # Fresh grace period for the heartbeat watchdog: judge silence
             # from this connection moment until the first on_data fires.
@@ -615,6 +629,10 @@ class LiveTickFeed:
                 # Record tick freshness per-symbol so the readiness gate
                 # can answer "did this exact symbol tick in the last 15s?"
                 self.staleness_tracker.record(tick.symbol, tick.timestamp)
+                # NEW: normalize → TickV2 → publish to tick bus
+                tick_v2 = make_tick_v2(tick)
+                if tick_v2 is not None:
+                    self._tick_bus.publish_tick(tick_v2)
                 for handler in handlers:
                     try:
                         handler(tick)
@@ -628,8 +646,8 @@ class LiveTickFeed:
 
     def _on_close(self, ws, shard: "_Shard | None" = None) -> None:
         logger.warning(
-            "LiveTickFeed WebSocket closed (shard %d) — will reconnect if still running",
-            shard.index if shard else 0,
+            "LiveTickFeed WebSocket closed (shard %d) [%s] — will reconnect if still running",
+            shard.index if shard else 0, self._connection_id,
         )
 
     def _parse(self, message) -> Tick | None:

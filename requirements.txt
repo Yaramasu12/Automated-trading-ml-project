@@ -16,3 +16,15 @@ psycopg2-binary==2.9.10
 pytest==8.3.5
 pytest-timeout==2.4.0
 feedparser==6.0.14
+# REDESIGN_PROMPT.md §3.1/§13 Phase 1 — polars is now a hard import of
+# trading_platform/data/options_chain_collector.py, which api/runtime.py
+# loads at startup; redis is a hard import of trading_platform/streaming/
+# tick_bus.py, pulled in transitively by trading_platform/streaming/__init__.py.
+# Both were missing here even though the app already depends on them — see
+# memory redesign-prompt-status. duckdb/feast are used only by still-orphaned
+# Phase 1 research/feature-store modules, not the money path, but are pinned
+# here since they're already required by files that import cleanly.
+polars==1.43.2
+redis==8.1.0
+duckdb==1.5.5
+feast==0.65.0

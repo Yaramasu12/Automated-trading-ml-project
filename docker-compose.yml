@@ -1,5 +1,35 @@
-services:
+# docker-compose.yml — REDESIGN_PROMPT.md §7, §11
+# All services run locally (Apple Silicon or otherwise). Zero cloud dependencies.
+#
+# Core app (trading-api, scheduler, frontend, timescaledb) has no profile —
+# `docker compose up` starts it exactly as before. The newer infra
+# (redis, qdrant, mlflow, prometheus, grafana, loki) is opt-in via
+# `--profile research|paper|live` since nothing in the app wires to it yet
+# (no Redis Streams tick bus, no Qdrant-backed RAG, no MLflow-backed
+# registry are on the live code path — see docs/PHASE1_IMPLEMENTATION_SUMMARY.md's
+# actual wiring status before enabling any of these in anger).
+#
+# NOTE: an earlier version of this file split the app into 7 "microservices"
+# (market-data, strategy-engine, risk-service, execution-service,
+# intelligence, research, fastapi-app) whose commands pointed at
+# `trading_platform.services.*` and `trading_platform.api.main:app` — neither
+# `trading_platform/services/` nor `api/main.py` exist. The app is still one
+# FastAPI monolith (`trading_platform.api.app:app`, per the Dockerfile CMD);
+# splitting it into real services is unstarted Phase-3 work, not a config change.
 
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "100m"
+    max-file: "3"
+
+x-logging-large: &large-logging
+  driver: json-file
+  options:
+    max-size: "500m"
+    max-file: "5"
+
+services:
   # ── PostgreSQL 16 + TimescaleDB + pgvector ───────────────────────────────
   # timescale/timescaledb-ha ships TimescaleDB and pgvector in one image.
   # Data lives in a named volume so it survives container restarts.
@@ -15,14 +45,18 @@ services:
       - "127.0.0.1:5432:5432"
     volumes:
       - timescaledb_data:/home/postgres/pgdata/data
+      # REDESIGN §7 core OLTP tables + hypertables — additive, idempotent (IF NOT EXISTS)
+      - ./deploy/db/init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+      - ./deploy/db/init-timescale.sql:/docker-entrypoint-initdb.d/02-init-timescale.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-trading} -d ${POSTGRES_DB:-trading}"]
       interval: 10s
       timeout: 5s
       retries: 10
       start_period: 30s
+    logging: *large-logging
 
-  # ── FastAPI trading backend ──────────────────────────────────────────────
+  # ── FastAPI trading backend (the one real app process) ───────────────────
   trading-api:
     build:
       context: .
@@ -135,7 +169,6 @@ services:
       - LOCAL_LLM_MAX_OUTPUT_TOKENS=${LOCAL_LLM_MAX_OUTPUT_TOKENS:-2048}
       - LOCAL_LLM_MAX_CONCURRENT_CALLS=${LOCAL_LLM_MAX_CONCURRENT_CALLS:-2}
       - YEARLY_PROFIT_TARGET=${YEARLY_PROFIT_TARGET:-50000000}
-      - AWS_REGION=${AWS_REGION:-ap-south-1}
       - TRADING_API_BASE_URL=${TRADING_API_BASE_URL:-http://trading-api:8000}
     depends_on:
       timescaledb:
@@ -146,6 +179,7 @@ services:
       timeout: 10s
       retries: 5
       start_period: 60s
+    logging: *large-logging
 
   # ── Daily scheduler (EOD square-off, instrument refresh, reports) ────────
   scheduler:
@@ -184,6 +218,7 @@ services:
       timeout: 10s
       retries: 3
       start_period: 30s
+    logging: *default-logging
 
   # ── React frontend (built → Nginx, proxies /api and /ws to backend) ──────
   frontend:
@@ -199,10 +234,103 @@ services:
     depends_on:
       trading-api:
         condition: service_healthy
+    logging: *default-logging
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # Newer infra (REDESIGN §2/§7/§8/§11) — opt-in, `--profile research|paper|live`.
+  # Stock images only, no custom config mounts, so they start clean with
+  # sane defaults. Nothing in trading_platform/ talks to these yet (no Redis
+  # Streams tick bus, no Qdrant-backed RAG, no MLflow registry on the live
+  # code path) — bring them up when you're ready to wire something to them,
+  # not as decoration.
+  # ──────────────────────────────────────────────────────────────────────────
+
+  redis:
+    image: redis:7.4-alpine
+    profiles: ["research", "paper", "live"]
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:6379:6379"
+    volumes:
+      - redis_data:/data
+    logging: *default-logging
+
+  qdrant:
+    image: qdrant/qdrant:v1.11.0
+    profiles: ["research", "paper", "live"]
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:6333:6333"
+      - "127.0.0.1:6334:6334"
+    volumes:
+      - qdrant_data:/qdrant/storage
+    logging: *default-logging
+
+  mlflow:
+    image: ghcr.io/mlflow/mlflow:v2.18.0
+    profiles: ["research", "paper", "live"]
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:5000:5000"
+    command: >
+      mlflow server
+      --backend-store-uri sqlite:////opt/mlflow/mlflow.db
+      --default-artifact-root /opt/mlflow/artifacts
+      --host 0.0.0.0
+      --port 5000
+    volumes:
+      - mlflow_data:/opt/mlflow
+    logging: *default-logging
+
+  prometheus:
+    image: prom/prometheus:v2.55.0
+    profiles: ["research", "paper", "live"]
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:9090:9090"
+    volumes:
+      - prometheus_data:/prometheus
+    logging: *default-logging
+
+  grafana:
+    image: grafana/grafana:11.3.0
+    profiles: ["research", "paper", "live"]
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - grafana_data:/var/lib/grafana
+    logging: *default-logging
+
+  loki:
+    image: grafana/loki:3.4.0
+    profiles: ["research", "paper", "live"]
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:3100:3100"
+    volumes:
+      - loki_data:/loki
+    logging: *default-logging
 
 volumes:
   timescaledb_data:
     name: trading-timescaledb-data
+  redis_data:
+    driver: local
+  qdrant_data:
+    driver: local
+  mlflow_data:
+    driver: local
+  prometheus_data:
+    driver: local
+  grafana_data:
+    driver: local
+  loki_data:
+    driver: local
 
 networks:
   default:

@@ -1,36 +1,510 @@
-"""Daily options-chain snapshot collector — forward data collection for
-strategies this project cannot test yet: skew-conditioned short-vol entries,
-volatility term-structure, and dispersion trading. All three need historical
-IV across strikes/expiries; Angel One has no historical chain archive and
-individual weekly contracts only trade 1-3 weeks, so the only honest path is
-to start capturing real snapshots now and let history accumulate.
-
-One EOD snapshot per underlying per trading day: resolve the nearest
-unexpired options expiry, pick strikes around spot, fetch each contract's
-latest traded price via the same rate-limited Angel One candle path already
-used by ShortVolExecutor, invert Black-Scholes for IV (same
-ImpliedVolatilityCalculator the live short-vol pricing already uses), and
-append one row per (date, underlying, expiry, strike, option_type) to a
-growing CSV under data/options_chain/ — mirrors the existing
-data/historical/*.csv convention.
-
-This is intentionally a SEPARATE, best-effort path: every failure is caught
-and counted via note_swallowed rather than propagated, so a rate-limit or a
-single bad contract can never affect the money-path agent loop that calls it.
 """
+Options Chain Collector.
+
+`OptionsChainCollector` (below) is the original, production-wired EOD
+snapshot collector: forward data collection for strategies this project
+cannot test yet (skew-conditioned short-vol entries, volatility
+term-structure, dispersion trading). One EOD snapshot per underlying per
+trading day: resolve the nearest unexpired options expiry, pick strikes
+around spot, fetch each contract's latest traded price via the same
+rate-limited Angel One candle path already used by ShortVolExecutor, invert
+Black-Scholes for IV (same ImpliedVolatilityCalculator the live short-vol
+pricing already uses), and append one row per (date, underlying, expiry,
+strike, option_type) to a growing CSV under data/options_chain/ — mirrors the
+existing data/historical/*.csv convention. Intentionally best-effort:
+every failure is caught and counted via note_swallowed rather than
+propagated, so a rate-limit or a single bad contract can never affect the
+money-path agent loop that calls it. Constructed as
+`OptionsChainCollector(runtime)` in api/runtime.py — do not change this
+constructor signature without updating that call site and
+tests/test_options_chain_collector.py.
+
+`StreamingOptionsChainCollector` (REDESIGN_PROMPT.md §3/§5) is a newer,
+not-yet-wired-in design: periodic full-chain snapshots + IV-rank/IV-percentile
+tracking via `MarketDataAdapter`/tick-bus, for the eventual VRP entry signal
+(§4.2). It is not a drop-in replacement for `OptionsChainCollector` — it has
+no CSV history, no `capture()`/`atm_iv_history()`/`status()` API, and nothing
+constructs it yet. Do not rename it back to `OptionsChainCollector`; that
+collision previously broke every test in this module plus
+`TradingRuntime.__init__` itself (see memory redesign-prompt-status).
+"""
+
 from __future__ import annotations
 
+import asyncio
 import csv
 import logging
+import time
+from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
+from collections import defaultdict
 
+import polars as pl
+
+from trading_platform.config import Settings
+from trading_platform.data.market_adapter import FeedSource
 from trading_platform.derivatives.engine import GreeksCalculator, ImpliedVolatilityCalculator
 from trading_platform.domain.enums import OptionType, Segment
 from trading_platform.logging_safety import note_swallowed
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Data models (REDESIGN §3/§5 — used by StreamingOptionsChainCollector)
+# ---------------------------------------------------------------------------
+
+@dataclass
+class OptionChainSnapshot:
+    """Represents a full option chain snapshot for an underlying."""
+    underlying: str  # e.g., "NIFTY", "BANKNIFTY"
+    timestamp: int  # unix timestamp
+    spot_price: float
+    expiry_dates: list[str]  # upcoming expiry dates
+    calls: list[dict[str, Any]]  # call option data
+    puts: list[dict[str, Any]]  # put option data
+    source: FeedSource = FeedSource.ANGEL_ONE
+
+    @property
+    def pcr(self) -> float:
+        """Put-Call Ratio (OI-based)."""
+        total_call_oi = sum(c.get("oi", 0) for c in self.calls)
+        total_put_oi = sum(p.get("oi", 0) for p in self.puts)
+        if total_put_oi == 0:
+            return 0.0
+        return total_call_oi / total_put_oi
+
+    @property
+    def atm_strike(self) -> float:
+        """ATM strike (nearest to spot)."""
+        if not self.calls and not self.puts:
+            return 0.0
+        all_strikes = {c["strike"] for c in self.calls} | {p["strike"] for p in self.puts}
+        return min(all_strikes, key=lambda s: abs(s - self.spot_price)) if all_strikes else self.spot_price
+
+    @property
+    def atm_iv(self) -> float:
+        """ATM implied volatility."""
+        atm = self.atm_strike
+        if self.calls:
+            for c in self.calls:
+                if abs(c["strike"] - atm) < 0.01:
+                    return c.get("iv", 0.0)
+        if self.puts:
+            for p in self.puts:
+                if abs(p["strike"] - atm) < 0.01:
+                    return p.get("iv", 0.0)
+        return 0.0
+
+
+@dataclass
+class IVRankRecord:
+    """IV rank history record."""
+    underlying: str
+    expiry: str
+    moneyness: str  # "ATM", "ITM_5", "OTM_5", etc.
+    timestamp: int
+    iv: float
+    iv_min: float
+    iv_max: float
+    iv_rank: float  # percentile (0-100)
+    iv_percentile: float  # alias for rank
+    iv_zscore: float  # (iv - mean) / std
+
+
+# ---------------------------------------------------------------------------
+# IV Rank Calculator
+# ---------------------------------------------------------------------------
+
+class IVRankCalculator:
+    """
+    Computes IV-rank and IV-percentile from historical IV data.
+
+    Maintains a rolling window of IV observations per (underlying, expiry, moneyness).
+    """
+
+    def __init__(self, window_size: int = 252):  # ~1 year of trading days
+        self._window_size = window_size
+        # Key: (underlying, expiry, moneyness) → list of (timestamp, iv)
+        self._history: dict[tuple[str, str, str], list[tuple[int, float]]] = defaultdict(list)
+
+    def add_observation(
+        self,
+        underlying: str,
+        expiry: str,
+        moneyness: str,
+        timestamp: int,
+        iv: float,
+    ) -> None:
+        """Add an IV observation."""
+        key = (underlying, expiry, moneyness)
+        self._history[key].append((timestamp, iv))
+
+        # Trim to window size
+        if len(self._history[key]) > self._window_size:
+            self._history[key] = self._history[key][-self._window_size:]
+
+    def compute_rank(
+        self,
+        underlying: str,
+        expiry: str,
+        moneyness: str,
+        timestamp: int,
+        iv: float,
+    ) -> Optional[IVRankRecord]:
+        """Compute IV-rank for an observation."""
+        key = (underlying, expiry, moneyness)
+        history = self._history.get(key, [])
+
+        if len(history) < 10:  # Need minimum history
+            return None
+
+        iv_values = [v for _, v in history]
+        iv_min = min(iv_values)
+        iv_max = max(iv_values)
+        iv_mean = sum(iv_values) / len(iv_values)
+        iv_std = (sum((v - iv_mean) ** 2 for v in iv_values) / len(iv_values)) ** 0.5
+
+        # IV rank: percentile of current IV in historical distribution
+        if iv_max > iv_min:
+            iv_rank = ((iv - iv_min) / (iv_max - iv_min)) * 100.0
+        else:
+            iv_rank = 50.0
+
+        # Clamp to [0, 100]
+        iv_rank = max(0.0, min(100.0, iv_rank))
+
+        # IV z-score
+        iv_zscore = (iv - iv_mean) / iv_std if iv_std > 0 else 0.0
+
+        return IVRankRecord(
+            underlying=underlying,
+            expiry=expiry,
+            moneyness=moneyness,
+            timestamp=timestamp,
+            iv=iv,
+            iv_min=iv_min,
+            iv_max=iv_max,
+            iv_rank=iv_rank,
+            iv_percentile=iv_rank,
+            iv_zscore=iv_zscore,
+        )
+
+    def get_iv_rank_history(
+        self,
+        underlying: str,
+        expiry: str,
+        moneyness: str,
+        limit: int = 100,
+    ) -> list[IVRankRecord]:
+        """Get IV-rank history for a (underlying, expiry, moneyness) key."""
+        key = (underlying, expiry, moneyness)
+        history = self._history.get(key, [])
+        return [self.compute_rank(underlying, expiry, moneyness, ts, iv)
+                for ts, iv in history[-limit:]]
+
+
+# ---------------------------------------------------------------------------
+# Streaming options chain collector (REDESIGN §3/§5 — not yet wired in)
+# ---------------------------------------------------------------------------
+
+class StreamingOptionsChainCollector:
+    """
+    Collects option chain snapshots periodically via a MarketDataAdapter and
+    publishes to the Redis tick bus, computing IV-rank per moneyness band.
+
+    Not constructed anywhere yet — `OptionsChainCollector` below is the one
+    api/runtime.py actually uses. This is the target design once the
+    MarketDataAdapter/tick-bus plumbing (§3.2) is wired into the real runtime.
+    """
+
+    # Underlyings to track (expandable)
+    DEFAULT_UNDERLYINGS: list[str] = ["NIFTY", "BANKNIFTY", "FINNIFTY", "SENSEX"]
+
+    # Moneyness bands for IV-rank tracking
+    MONEYNESS_BANDS: list[str] = ["ATM", "ITM_5", "ITM_10", "OTM_5", "OTM_10", "OTM_15"]
+
+    def __init__(
+        self,
+        settings: Settings,
+        tick_bus: Any,  # TickBus for publishing
+        underlying: Optional[str] = None,
+        interval_sec: int = 30,  # snapshot every 30-60s
+    ) -> None:
+        self._settings = settings
+        self._tick_bus = tick_bus
+        self._underlying = underlying or "NIFTY"
+        self._interval_sec = interval_sec
+
+        self._running = False
+        self._task: Optional[asyncio.Task] = None
+        self._calculator = IVRankCalculator()
+
+        # IV-rank cache (key → latest rank)
+        self._iv_rank_cache: dict[str, IVRankRecord] = {}
+
+        # Monitor stale chains
+        self._last_snapshot_time: float = 0.0
+        self._staleness_threshold_sec: float = 120.0  # 2 min in market hours
+
+    async def start(self) -> None:
+        """Start periodic chain collection."""
+        self._running = True
+        self._task = asyncio.create_task(self._collect_loop())
+        logger.info("StreamingOptionsChainCollector starting for %s (interval=%ds)", self._underlying, self._interval_sec)
+
+    async def stop(self) -> None:
+        """Stop chain collection."""
+        self._running = False
+        if self._task:
+            self._task.cancel()
+            try:
+                await self._task
+            except asyncio.CancelledError:
+                pass
+        logger.info("StreamingOptionsChainCollector stopped")
+
+    async def _collect_loop(self) -> None:
+        """Main collection loop."""
+        while self._running:
+            try:
+                await self._collect_one()
+            except Exception as e:
+                logger.error("Chain collection error: %s", e)
+
+            # Sleep in small increments for responsiveness
+            for _ in range(self._interval_sec * 10):
+                await asyncio.sleep(0.1)
+                if not self._running:
+                    break
+
+    async def _collect_one(self) -> None:
+        """Collect one chain snapshot."""
+        now = time.time()
+        self._last_snapshot_time = now
+
+        # Determine which underlyings to collect
+        underlyings = [self._underlying] if self._underlying else self.DEFAULT_UNDERLYINGS
+
+        for underlying in underlyings:
+            try:
+                # Get option chain from the market data adapter
+                chain = await self._fetch_chain(underlying)
+                if chain is None:
+                    logger.warning("No chain data for %s", underlying)
+                    continue
+
+                # Publish to tick bus
+                await self._tick_bus.publish_chain_snapshot(chain)
+
+                # Compute IV-rank for each moneyness band
+                await self._compute_iv_rank(chain)
+
+                # Monitor staleness
+                if chain.atm_iv > 0:
+                    logger.debug(
+                        "Chain %s: spot=%.2f, ATM_IV=%.2f, PCR=%.3f",
+                        underlying, chain.spot_price, chain.atm_iv, chain.pcr,
+                    )
+
+            except Exception as e:
+                logger.error("Chain collection failed for %s: %s", underlying, e)
+
+    async def _fetch_chain(self, underlying: str) -> Optional[OptionChainSnapshot]:
+        """Fetch option chain from the market data adapter."""
+        # Try Upstox first (richer data)
+        if self._settings.upstox_enabled:
+            from trading_platform.data.upstox_feed import create_upstox_adapter
+            from trading_platform.config import Settings as AppSettings
+            try:
+                adapter = create_upstox_adapter(AppSettings())
+                raw_chain = await adapter.get_option_chain(underlying)
+                if raw_chain:
+                    return self._parse_chain(raw_chain, FeedSource.UPSTOX)
+            except Exception as e:
+                logger.warning("Upstox chain fetch failed for %s: %s", underlying, e)
+
+        # Fallback to Angel One
+        from trading_platform.data.angel_one_adapter import create_angel_one_adapter
+        from trading_platform.config import Settings as AppSettings
+        try:
+            adapter = create_angel_one_adapter(AppSettings())
+            raw_chain = await adapter.get_option_chain(underlying)
+            if raw_chain:
+                return self._parse_chain(raw_chain, FeedSource.ANGEL_ONE)
+        except Exception as e:
+            logger.warning("Angel One chain fetch failed for %s: %s", underlying, e)
+
+        return None
+
+    def _parse_chain(
+        self,
+        raw_chain: list[dict[str, Any]],
+        source: FeedSource,
+    ) -> OptionChainSnapshot:
+        """Parse raw chain data → OptionChainSnapshot."""
+        calls = []
+        puts = []
+        spot_price = 0.0
+        expiry_dates: set[str] = set()
+
+        for item in raw_chain:
+            strike = float(item.get("strike", 0))
+            option_type = item.get("option_type", item.get("type", "CE"))
+            iv = float(item.get("iv", item.get("implied_volatility", 0)))
+            oi = int(item.get("oi", item.get("open_interest", 0)))
+            delta = float(item.get("delta", 0))
+            gamma = float(item.get("gamma", 0))
+            theta = float(item.get("theta", 0))
+            vega = float(item.get("vega", 0))
+
+            if option_type in ("CE", "CALL", "C"):
+                calls.append({
+                    "strike": strike,
+                    "iv": iv,
+                    "oi": oi,
+                    "delta": delta,
+                    "gamma": gamma,
+                    "theta": theta,
+                    "vega": vega,
+                    "expiry": item.get("expiry", item.get("expiration_date", "")),
+                })
+            else:
+                puts.append({
+                    "strike": strike,
+                    "iv": iv,
+                    "oi": oi,
+                    "delta": delta,
+                    "gamma": gamma,
+                    "theta": theta,
+                    "vega": vega,
+                    "expiry": item.get("expiry", item.get("expiration_date", "")),
+                })
+
+            if item.get("expiry", item.get("expiration_date", "")):
+                expiry_dates.add(item.get("expiry", item.get("expiration_date", "")))
+
+            # Spot price from the data or compute from ATM
+            if item.get("spot_price"):
+                spot_price = float(item["spot_price"])
+
+        # If no spot price in data, compute from ATM
+        if spot_price == 0:
+            all_strikes = {c["strike"] for c in calls} | {p["strike"] for p in puts}
+            if all_strikes:
+                spot_price = min(all_strikes, key=lambda s: s) + 1  # rough estimate
+
+        return OptionChainSnapshot(
+            underlying=self._underlying,
+            timestamp=int(time.time()),
+            spot_price=spot_price,
+            expiry_dates=sorted(expiry_dates),
+            calls=calls,
+            puts=puts,
+            source=source,
+        )
+
+    async def _compute_iv_rank(self, chain: OptionChainSnapshot) -> None:
+        """Compute IV-rank for each moneyness band and add to chain snapshot."""
+        atm = chain.atm_strike
+        if atm == 0:
+            return
+
+        # Determine moneyness for each strike
+        for call in chain.calls:
+            strike = call["strike"]
+            moneyness = self._classify_moneyness(strike, atm)
+            iv = call["iv"]
+            if iv <= 0:
+                continue
+
+            for expiry in chain.expiry_dates:
+                rank = self._calculator.compute_rank(
+                    chain.underlying, expiry, moneyness,
+                    chain.timestamp, iv,
+                )
+                if rank:
+                    key = (chain.underlying, expiry, moneyness)
+                    self._iv_rank_cache[key] = rank
+                    call["iv_rank"] = rank.iv_rank
+                    call["iv_zscore"] = rank.iv_zscore
+
+        for put in chain.puts:
+            strike = put["strike"]
+            moneyness = self._classify_moneyness(strike, atm)
+            iv = put["iv"]
+            if iv <= 0:
+                continue
+
+            for expiry in chain.expiry_dates:
+                rank = self._calculator.compute_rank(
+                    chain.underlying, expiry, moneyness,
+                    chain.timestamp, iv,
+                )
+                if rank:
+                    key = (chain.underlying, expiry, moneyness)
+                    self._iv_rank_cache[key] = rank
+                    put["iv_rank"] = rank.iv_rank
+                    put["iv_zscore"] = rank.iv_zscore
+
+    def _classify_moneyness(self, strike: float, atm: float) -> str:
+        """Classify strike into moneyness band."""
+        if abs(strike - atm) < atm * 0.01:
+            return "ATM"
+        pct = (strike - atm) / atm * 100
+        if pct > 10:
+            return "OTM_15" if pct > 14 else "OTM_10" if pct > 9 else "OTM_5"
+        else:
+            return "ITM_5" if pct < -4 else "ITM_10" if pct < -9 else "ITM_15"
+
+    def get_iv_rank(self, underlying: str, expiry: str, moneyness: str) -> Optional[IVRankRecord]:
+        """Get latest IV-rank for a key."""
+        return self._iv_rank_cache.get((underlying, expiry, moneyness))
+
+    def get_iv_rank_histogram(
+        self, underlying: str, expiry: str, moneyness: str
+    ) -> pl.DataFrame:
+        """Get IV-rank history as Polars DataFrame."""
+        records = self._calculator.get_iv_rank_history(underlying, expiry, moneyness, limit=252)
+        if not records:
+            return pl.DataFrame()
+
+        return pl.DataFrame([
+            {
+                "timestamp": r.timestamp,
+                "iv": r.iv,
+                "iv_rank": r.iv_rank,
+                "iv_zscore": r.iv_zscore,
+            }
+            for r in records
+        ])
+
+    def check_staleness(self) -> bool:
+        """Check if chain data is stale (market hours active)."""
+        if self._last_snapshot_time == 0:
+            return False
+        return (time.time() - self._last_snapshot_time) > self._staleness_threshold_sec
+
+
+def create_streaming_chain_collector(
+    settings: Settings,
+    tick_bus: Any,
+    underlying: Optional[str] = None,
+) -> StreamingOptionsChainCollector:
+    """Create a StreamingOptionsChainCollector."""
+    return StreamingOptionsChainCollector(
+        settings=settings,
+        tick_bus=tick_bus,
+        underlying=underlying,
+        interval_sec=30,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Options chain collector (original — production-wired, do not rename/replace)
+# ---------------------------------------------------------------------------
 
 _FIELDNAMES = ["date", "underlying", "expiry", "dte", "option_type", "strike",
                "spot", "ltp", "iv", "delta"]

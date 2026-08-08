@@ -1,0 +1,99 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+dist/
+build/
+*.egg
+.eggs/
+.mypy_cache/
+.ruff_cache/
+
+# Virtual environments
+venv/
+env/
+.venv/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Environment variables
+.env
+.env.local
+.env.*.local
+!important
+
+# Data files
+data/*.db
+data/*.sqlite
+data/*.parquet
+data/*.csv
+data/raw/*
+data/processed/*
+!data/.gitkeep
+!data/.env.example
+
+# Models
+models/*.pkl
+models/*.h5
+models/*.onnx
+models/*.pt
+!models/.gitkeep
+
+# Logs
+logs/
+*.log
+
+# Docker volumes
+docker/volumes/
+
+# OS
+.DS_Store
+Thumbs.db
+*.orig
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+
+# MLflow
+mlruns/
+.mlflow/
+
+# Local configurations
+config.local.yaml
+config.local.json
+
+# Secrets (never commit)
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+
+# Compiled
+*.o
+*.a
+*.so
+*.dylib
+
+# Build artifacts
+node_modules/
+__pycache__/
+
+# Temporary files
+tmp/
+temp/
+*.tmp

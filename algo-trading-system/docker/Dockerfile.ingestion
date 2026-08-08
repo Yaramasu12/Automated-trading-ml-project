@@ -1,0 +1,29 @@
+# ============================================================
+# Ingestion Service — L1 Market Data Adapter + Feature Pipeline
+# ============================================================
+FROM python:3.11-slim AS base
+
+WORKDIR /app
+
+# System deps: redpanda client, build tools
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl gnupg ca-certificates \
+    && curl -sS https://dl.cloudsmith.io/public/redpanda/redpanda/debian/ubuntu.deb.deb-packages | bash \
+    && apt-get install -y rpk \
+    && rm -rf /var/lib/apt/lists/*
+
+# Python deps — install in layers for cache efficiency
+COPY requirements.txt /tmp/requirements.txt
+RUN pip install --no-cache-dir -r /tmp/requirements.txt
+
+# Copy source
+COPY common/ /app/common/
+COPY ingestion/ /app/ingestion/
+COPY data/ /app/data/
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --retries=3 \
+    CMD python -c "import ingestion; print('healthy')" || exit 1
+
+# Default: run mock replay adapter
+CMD ["python", "-m", "ingestion.mock_replay"]
