@@ -66,7 +66,9 @@ class SubscriptionCapTests(unittest.TestCase):
 
 
 class ReconnectRobustnessTests(unittest.TestCase):
-    """2026-08-05 fix: the feed used to permanently give up after
+    """Patches RawAngelOneWebSocket, the DEFAULT ws class since 2026-08-10 (SmartWebSocketV2 itself was proven to deliver zero ticks — see its docstring). The reconnect/backoff behaviour under test lives in _run(), above the ws-class selection, so it applies identically either way.
+
+    2026-08-05 fix: the feed used to permanently give up after
     _MAX_RETRIES and stay dead until the market-hours-gated scan watchdog
     noticed. It must now keep retrying indefinitely at the capped backoff."""
 
@@ -90,7 +92,7 @@ class ReconnectRobustnessTests(unittest.TestCase):
         fake_ws_instance.connect.side_effect = fake_connect
         fake_ws_cls.return_value = fake_ws_instance
 
-        with mock.patch("SmartApi.smartWebSocketV2.SmartWebSocketV2", fake_ws_cls), \
+        with mock.patch("trading_platform.data.live_feed.RawAngelOneWebSocket", fake_ws_cls), \
                 mock.patch("trading_platform.data.live_feed.time.sleep"):
             feed._run()
 
@@ -114,7 +116,7 @@ class ReconnectRobustnessTests(unittest.TestCase):
         fake_ws_instance.connect.side_effect = fake_connect
         fake_ws_cls = mock.Mock(return_value=fake_ws_instance)
 
-        with mock.patch("SmartApi.smartWebSocketV2.SmartWebSocketV2", fake_ws_cls), \
+        with mock.patch("trading_platform.data.live_feed.RawAngelOneWebSocket", fake_ws_cls), \
                 mock.patch("trading_platform.data.live_feed.time.sleep"):
             feed._run()
 

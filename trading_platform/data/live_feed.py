@@ -18,6 +18,219 @@ from trading_platform.streaming.tick_bus import TickBus
 
 logger = logging.getLogger(__name__)
 
+
+class RawAngelOneWebSocket:
+    """Drop-in replacement for SmartWebSocketV2 that actually delivers ticks.
+
+    PROVEN 2026-08-10. SmartWebSocketV2 opens the socket and then delivers ZERO
+    ticks — "Connection closed due to max retry attempts reached" — while a raw
+    websocket-client connection using the SAME credentials, headers, URL and
+    subscribe payload streams live ticks from the same container seconds later.
+
+    Everything else was eliminated first, so none of these are worth retesting:
+    credentials (REST login SUCCESS), DNS/TCP/TLS (clean, TLSv1.3), stale daily
+    session, socket leaks, the 3-sockets-per-client cap, the "Bearer " prefix,
+    market hours (MCX failed at 21:00 while MCX was OPEN), rate limiting,
+    ping_interval/ping_timeout (patched and retested — did NOT help), and the
+    subscribe payload (byte-identical to the library's).
+
+    The binary tick format is NOT reimplemented — `_parse_binary_data` is
+    borrowed off an uninitialised SmartWebSocketV2 instance, since it is pure
+    byte-decoding with no dependency on the socket. That keeps the one genuinely
+    valuable part of the library and discards only its broken connect path.
+
+    Interface mirrors SmartWebSocketV2 exactly (`on_open`/`on_data`/`on_error`/
+    `on_close`, `connect()`, `subscribe()`, `close_connection()`), so
+    `_run_shard` needs no changes.
+    """
+
+    ROOT_URI = "wss://smartapisocket.angelone.in/smart-stream"
+    HEART_BEAT_INTERVAL = 20
+    PING_TIMEOUT = 10
+    SUBSCRIBE_ACTION = 1
+
+    def __init__(self, auth_token, api_key, client_code, feed_token, **_kw):
+        self.auth_token = _strip_bearer(auth_token)
+        self.api_key = api_key
+        self.client_code = client_code
+        self.feed_token = str(feed_token)
+        self.wsapp = None
+        self.on_open = None
+        self.on_data = None
+        self.on_error = None
+        self.on_close = None
+        self._parser = None
+
+    def _parse(self, payload):
+        """Decode one binary frame using the library's own parser."""
+        if self._parser is None:
+            from SmartApi.smartWebSocketV2 import SmartWebSocketV2  # type: ignore[import]
+            # __new__, not __init__: we want ONLY the decoding methods, and
+            # __init__ would set up the connection state we are replacing.
+            self._parser = SmartWebSocketV2.__new__(SmartWebSocketV2)
+        return self._parser._parse_binary_data(payload)
+
+    def subscribe(self, correlation_id, mode, token_list):
+        if self.wsapp is None:
+            raise RuntimeError("subscribe() before connect()")
+        self.wsapp.send(json.dumps({
+            "correlationID": correlation_id,
+            "action": self.SUBSCRIBE_ACTION,
+            "params": {"mode": mode, "tokenList": token_list},
+        }))
+
+    def close_connection(self):
+        try:
+            if self.wsapp is not None:
+                self.wsapp.close()
+        except Exception as exc:
+            note_swallowed("live_feed.raw_ws_close", exc)
+
+    def connect(self):
+        """Blocks until the socket closes — same contract as the library."""
+        import websocket  # websocket-client, already a pinned dependency
+
+        headers = {
+            "Authorization": self.auth_token,
+            "x-api-key": self.api_key,
+            "x-client-code": self.client_code,
+            "x-feed-token": self.feed_token,
+        }
+
+        def _on_open(_w):
+            if self.on_open:
+                self.on_open(self)
+
+        def _on_message(_w, message):
+            # Text frames are heartbeats ("pong"); only binary carries ticks.
+            if isinstance(message, (bytes, bytearray)):
+                try:
+                    parsed = self._parse(message)
+                except Exception as exc:
+                    note_swallowed("live_feed.raw_ws_parse", exc)
+                    return
+                if parsed and self.on_data:
+                    self.on_data(self, parsed)
+
+        def _on_error(_w, err):
+            if self.on_error:
+                self.on_error(self, err)
+
+        def _on_close(_w, code=None, reason=None):
+            if self.on_close:
+                self.on_close(self, code, reason)
+
+        self.wsapp = websocket.WebSocketApp(
+            self.ROOT_URI, header=headers,
+            on_open=_on_open, on_message=_on_message,
+            on_error=_on_error, on_close=_on_close,
+        )
+        # BOTH ping params — and real certificate verification, unlike the
+        # library's sslopt={"cert_reqs": ssl.CERT_NONE}.
+        self.wsapp.run_forever(
+            ping_interval=self.HEART_BEAT_INTERVAL,
+            ping_timeout=self.PING_TIMEOUT,
+        )
+
+
+def _make_patched_ws_class(base):
+    """SmartWebSocketV2 with certificate verification restored.
+
+    HONEST STATUS: this does NOT fix the dead feed. It was written to test the
+    hypothesis that the wrapper's `run_forever(ping_interval=10)` call, which
+    omits `ping_timeout`, was why the stock wrapper wedges. **Tested
+    2026-08-10: adding ping_timeout did not help** — the patched class opens
+    the socket and still receives zero ticks, exactly like the stock one. The
+    hypothesis is disproven; keep it disproven rather than re-testing it.
+
+    What IS still true and still unexplained: a RAW websocket-client
+    connection with the identical credentials, headers and URL opens and
+    streams live ticks, while any path through this wrapper delivers none.
+    Since ping config is now ruled out, the remaining difference is the
+    SUBSCRIBE path — the raw test sent its own JSON frame in on_open, whereas
+    the wrapper builds and sends its own via .subscribe(). That is the next
+    thing to bisect. See memory websocket-wrapper-is-the-bug for the full list
+    of theories already eliminated (credentials, DNS/TCP/TLS, stale session,
+    socket leaks, the 3-socket cap, Bearer prefix, market hours, rate limits).
+
+    Retained despite not fixing the bug because it does restore TLS
+    certificate verification: the stock wrapper passes
+    `sslopt={"cert_reqs": ssl.CERT_NONE}`, disabling verification for the
+    entire market-data feed. That is worth keeping on its own merits.
+    """
+    import ssl as _ssl
+    import websocket as _ws
+
+    class _PatchedSmartWebSocketV2(base):  # type: ignore[misc,valid-type]
+        PING_TIMEOUT_SECONDS = 10
+
+        def connect(self):  # noqa: D102 - mirrors the base signature
+            headers = {
+                "Authorization": self.auth_token,
+                "x-api-key": self.api_key,
+                "x-client-code": self.client_code,
+                "x-feed-token": self.feed_token,
+            }
+            try:
+                self.wsapp = _ws.WebSocketApp(
+                    self.ROOT_URI, header=headers,
+                    on_open=self._on_open, on_error=self._on_error,
+                    on_close=self._on_close, on_data=self._on_data,
+                    on_ping=self._on_ping, on_pong=self._on_pong,
+                )
+                # ping_timeout MUST be < ping_interval, else websocket-client
+                # raises rather than connecting.
+                interval = max(2, int(getattr(self, "HEART_BEAT_INTERVAL", 10)))
+                timeout = min(self.PING_TIMEOUT_SECONDS, max(1, interval - 1))
+                self.wsapp.run_forever(
+                    sslopt={"cert_reqs": _ssl.CERT_REQUIRED},
+                    ping_interval=interval,
+                    ping_timeout=timeout,
+                )
+            except Exception as exc:
+                logger.error("LiveTickFeed websocket connect failed: %s", exc)
+                raise
+
+    return _PatchedSmartWebSocketV2
+
+
+def _env_flag(name: str, default: bool = False) -> bool:
+    import os
+    return os.getenv(name, str(default)).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _strip_bearer(token: str) -> str:
+    """Angel One hands back 'Bearer <jwt>'; the socket wants the bare JWT."""
+    t = str(token or "")
+    return t[7:] if t.startswith("Bearer ") else t
+
+
+# MCX runs far later than NSE (09:00-23:30 IST vs 09:15-15:30). The feed
+# subscribes MCX contracts too, so gating reconnects on NSE hours alone would
+# silence the feed for the entire 15:30-23:30 commodity session — caught
+# 2026-08-10 when an MCX-hours test was proposed as a way to check the socket
+# outside equity hours.
+_MCX_OPEN_MINUTES = 9 * 60          # 09:00 IST
+_MCX_CLOSE_MINUTES = 23 * 60 + 30   # 23:30 IST
+
+
+def _market_is_open_now() -> bool:
+    """True during NSE **or** MCX trading hours. Fails OPEN (returns True) if
+    the check itself errors — a broken clock must not permanently silence a
+    feed that open positions depend on."""
+    try:
+        from trading_platform.agent.market_hours import is_market_open, now_ist
+        now = now_ist()
+        if is_market_open(now):
+            return True
+        # Weekday MCX session (commodities do not trade at weekends either).
+        if now.weekday() >= 5:
+            return False
+        minutes = now.hour * 60 + now.minute
+        return _MCX_OPEN_MINUTES <= minutes <= _MCX_CLOSE_MINUTES
+    except Exception:
+        return True
+
 # Exchange-mode constants for SmartWebSocketV2
 # Source: Angel One SmartWebSocketV2 documentation
 NSE_CM = 1    # NSE Cash Market
@@ -326,6 +539,7 @@ class LiveTickFeed:
     # ------------------------------------------------------------------
 
     _MAX_RETRIES = 10
+    _CLOSED_MARKET_POLL_SECONDS = 60      # how often to re-check for the open
     _BASE_BACKOFF = 5      # seconds before first retry
     _MAX_BACKOFF = 300     # cap at 5 minutes
     _MAX_TOKENS_PER_SOCKET = 1000  # Angel One SmartWebSocketV2 limit per connection
@@ -401,12 +615,27 @@ class LiveTickFeed:
 
     def _run(self) -> None:
         try:
-            from SmartApi.smartWebSocketV2 import SmartWebSocketV2  # type: ignore[import]
+            import SmartApi.smartWebSocketV2 as _smart_ws_module  # type: ignore[import]
         except ImportError:
             logger.error("smartapi-python not installed — install with: pip install smartapi-python")
             self._running = False
             return
-        self._smart_ws_cls = SmartWebSocketV2
+
+        # Default RAW (proven 2026-08-10 — see RawAngelOneWebSocket's
+        # docstring): SmartWebSocketV2's own connect() delivers zero ticks
+        # while a raw websocket-client connection with identical credentials
+        # streams live data from the same box. Set
+        # LIVE_FEED_USE_LIBRARY_WEBSOCKET=true to fall back to the stock
+        # library (e.g. if a smartapi-python upgrade fixes it upstream).
+        #
+        # Resolved through the MODULE attribute, not imported directly, so
+        # `mock.patch("SmartApi.smartWebSocketV2.SmartWebSocketV2", ...)`
+        # (the existing test seam) still intercepts the library path — tests
+        # never touch a real socket regardless of which branch runs live.
+        if _env_flag("LIVE_FEED_USE_LIBRARY_WEBSOCKET", False):
+            self._smart_ws_cls = _smart_ws_module.SmartWebSocketV2
+        else:
+            self._smart_ws_cls = RawAngelOneWebSocket
 
         logged_in = self._login()
         if logged_in is None:
@@ -509,7 +738,26 @@ class LiveTickFeed:
         # governs backoff growth and how often a fresh re-login is attempted.
         retries = 0
         gave_up_logged = False
+        closed_wait_logged = False
         while self._running:
+            # Never reconnect outside market hours. There is nothing to stream
+            # when the exchange is shut, so every attempt is pure waste — and
+            # not free: at the capped ~5-min backoff this burned ~720 handshakes
+            # across the 2026-08-08/09 weekend, after which Angel One refused
+            # the socket entirely (109 logged "max retry" failures, and the
+            # block only cleared after ~10h of genuine idleness). Waiting for
+            # the open is both correct and the thing that protects the quota.
+            if not _market_is_open_now():
+                if not closed_wait_logged:
+                    logger.info(
+                        "LiveTickFeed shard %d: market closed — pausing reconnects until open",
+                        shard.index,
+                    )
+                    closed_wait_logged = True
+                time.sleep(self._CLOSED_MARKET_POLL_SECONDS)
+                retries = 0            # start the session with a clean budget
+                continue
+            closed_wait_logged = False
             if retries > 0:
                 backoff_retries = min(retries, self._MAX_RETRIES)
                 base_backoff = min(self._BASE_BACKOFF * (2 ** (backoff_retries - 1)), self._MAX_BACKOFF)
@@ -530,8 +778,14 @@ class LiveTickFeed:
                     break
 
             try:
+                # Angel One returns jwtToken as "Bearer eyJ..." (verified
+                # 2026-08-10). SmartWebSocketV2 wants the RAW token — passing
+                # the prefixed string makes the server reject the handshake,
+                # which the library then surfaces only as the useless
+                # "max retry attempts reached". Strip defensively: harmless if
+                # a future API version drops the prefix.
                 shard.ws = self._smart_ws_cls(
-                    self._session["data"]["jwtToken"],
+                    _strip_bearer(self._session["data"]["jwtToken"]),
                     self._settings.angel_one_api_key,
                     client_code,
                     self._feed_token,
