@@ -63,6 +63,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections import deque
 import os
 import time
 from dataclasses import replace
@@ -96,6 +97,27 @@ CREW_CONSENSUS_MIN = float(os.getenv("CREW_CONSENSUS_MIN", "0.52"))
 CREW_ADVISORY = os.getenv("CREW_ADVISORY", "false").lower() in ("1", "true", "yes")
 CREW_ADVISORY_MIN_LEAN = float(os.getenv("CREW_ADVISORY_MIN_LEAN", "0.10"))
 
+# ── AI-council admission (see _council_admission / its call site) ─────────────
+# The council costs ~158s per consult and this node runs once per underlying,
+# 58 per cycle, against a 300s cycle — a ~30x overrun that silently degraded
+# every vote to a canned stub. Admission is by materiality plus a rolling
+# budget. Actionable candidates are ALWAYS admitted and never budget-capped.
+#
+# Default 6 per window: comfortably covers the 0-3 real entry candidates a
+# typical cycle produces, while bounding worst-case LLM time to ~6 x 158s.
+COUNCIL_MAX_CALLS_PER_CYCLE = int(os.getenv("COUNCIL_MAX_CALLS_PER_CYCLE", "6"))
+# Rolling window, not a per-cycle reset: self-clearing, so it needs no
+# coordination with the agent's scan loop and cannot get stuck "spent" if a
+# cycle aborts midway.
+COUNCIL_BUDGET_WINDOW_S = float(
+    os.getenv("COUNCIL_BUDGET_WINDOW_SECONDS", os.getenv("CYCLE_INTERVAL_SECONDS", "300"))
+)
+# A HOLD below this consensus is inert — far enough from actionable that a
+# council "rescue" would not survive the downstream ProfitGuard EV gate anyway.
+COUNCIL_MARGINAL_CONSENSUS_MIN = float(
+    os.getenv("COUNCIL_MARGINAL_CONSENSUS_MIN", str(max(0.0, CREW_CONSENSUS_MIN - 0.10)))
+)
+
 
 class MasterOrchestrator:
     """The central stateful orchestrator for the trading platform.
@@ -117,6 +139,8 @@ class MasterOrchestrator:
         self._reflection_engine = ReflectionEngine()
         self._specialist_crew = SpecialistCrew()
         self._cycle_count = 0
+        # Timestamps of recent council consults, for the rolling budget.
+        self._council_call_times: deque[float] = deque()
 
         # Seed the RAG on first construction
         self._market_rag.seed()
@@ -406,6 +430,71 @@ class MasterOrchestrator:
             **rag_updates,
         })
 
+    # ── Council admission (cost control for the per-underlying LLM fan-out) ───
+
+    def _council_admission(
+        self, *, crew_action: str, crew_consensus: float,
+    ) -> tuple[bool, str]:
+        """Decide whether this underlying earns a (slow) LLM council consult.
+
+        Returns (admitted, skip_reason). See the long comment at the call site
+        for the measured 30x-overrun this exists to prevent.
+
+        Ordering matters: the actionable-candidate branch is checked FIRST and
+        is exempt from the budget. A budget that could suppress the veto on a
+        real entry would turn a cost control into a safety regression — the
+        council's whole remaining job is vetting things that are about to
+        trade.
+        """
+        actionable = str(crew_action).upper() != "HOLD"
+
+        if actionable:
+            # Record the spend, but never refuse: see docstring.
+            self._note_council_call()
+            return True, ""
+
+        if crew_consensus < COUNCIL_MARGINAL_CONSENSUS_MIN:
+            return False, (
+                f"inert HOLD (consensus {crew_consensus:.2f} < "
+                f"{COUNCIL_MARGINAL_CONSENSUS_MIN}) — no candidate to veto"
+            )
+
+        if not self._council_budget_available():
+            return False, (
+                f"marginal HOLD but council budget spent "
+                f"({COUNCIL_MAX_CALLS_PER_CYCLE} calls / {COUNCIL_BUDGET_WINDOW_S:.0f}s)"
+            )
+
+        self._note_council_call()
+        return True, ""
+
+    def _prune_council_calls(self, now: float) -> None:
+        cutoff = now - COUNCIL_BUDGET_WINDOW_S
+        while self._council_call_times and self._council_call_times[0] < cutoff:
+            self._council_call_times.popleft()
+
+    def _council_budget_available(self) -> bool:
+        now = time.time()
+        self._prune_council_calls(now)
+        return len(self._council_call_times) < COUNCIL_MAX_CALLS_PER_CYCLE
+
+    def _note_council_call(self) -> None:
+        now = time.time()
+        self._prune_council_calls(now)
+        self._council_call_times.append(now)
+
+    def council_budget_status(self) -> dict:
+        """Observability: how much of the council budget this window has used."""
+        now = time.time()
+        self._prune_council_calls(now)
+        used = len(self._council_call_times)
+        return {
+            "calls_in_window": used,
+            "max_calls": COUNCIL_MAX_CALLS_PER_CYCLE,
+            "window_seconds": COUNCIL_BUDGET_WINDOW_S,
+            "exhausted": used >= COUNCIL_MAX_CALLS_PER_CYCLE,
+        }
+
     # ── Node 2: Specialist Crew (CrewAI) ──────────────────────────────────────
 
     def _node_specialist_crew(self, state: OrchestratorState) -> NodeResult:
@@ -422,8 +511,43 @@ class MasterOrchestrator:
         # so council can rescue a marginal crew decision.
         # AgentCouncilSupervisor.run(AgentInputContext) → AgentCouncilDecision
         # AgentCouncilDecision.action ∈ {"PROCEED", "REDUCE", "HALT", "NO_TRADE"}
+        #
+        # ── COUNCIL ADMISSION GATE (measured 2026-08-09) ──────────────────────
+        # This node runs once PER UNDERLYING, and the agent scans 58 of them per
+        # cycle. A full 10-agent LLM council takes ~158s, so consulting it
+        # unconditionally costs 58 x 158s ~= 2.5 HOURS against a 300s cycle — a
+        # ~30x overrun. The observable symptom was not a slow cycle but SILENT
+        # DEGRADATION: the supervisor's per-agent timeouts fired, every agent
+        # fell back to a canned stub vote, and the council reported itself
+        # healthy while contributing nothing.
+        #
+        # The waste is structural: for most underlyings the crew says HOLD and
+        # this node HALTS a few lines below regardless of what the council said.
+        # Spending 158s of inference to confirm "no trade" on a symbol that was
+        # never a candidate buys nothing.
+        #
+        # So admission is by MATERIALITY, matching REDESIGN §8's veto-only
+        # contract ("reviews each entry"; never initiates):
+        #   * actionable candidate (crew_action != HOLD) -> ALWAYS consult; this
+        #     is the safety-relevant veto and must never be budget-skipped;
+        #   * marginal HOLD (consensus near the bar)      -> consult if budget remains,
+        #     preserving today's "rescue a marginal decision" behaviour;
+        #   * inert HOLD                                  -> skip, nothing to veto.
+        # A rolling per-cycle budget then hard-bounds the worst case, so a
+        # volatile day with many candidates still cannot blow the cycle.
+        #
+        # A skipped council is recorded as NOT CONSULTED — never as a synthetic
+        # vote. Fabricating a neutral vote here would recreate exactly the
+        # "inert component presented as intelligence" failure this repo exists
+        # to avoid.
+        council_admitted, council_skip_reason = self._council_admission(
+            crew_action=crew_action, crew_consensus=crew_consensus,
+        )
+        if not council_admitted:
+            result.updates["council_consulted"] = False
+            result.updates["council_skip_reason"] = council_skip_reason
         try:
-            council = self._runtime.agent_council
+            council = self._runtime.agent_council if council_admitted else None
             if council is not None:
                 from trading_platform.agents.schemas import AgentInputContext
                 ps: dict[str, Any] = {}

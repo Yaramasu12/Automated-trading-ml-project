@@ -19,7 +19,19 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 # Statuses that mean "do not trust this as an advanced edge/safety layer".
-_WEAK_STATUSES = {"disabled", "stub", "classical_fallback", "heuristic_baseline", "mock_only", "no_data_source"}
+_WEAK_STATUSES = {
+    "disabled", "stub", "classical_fallback", "heuristic_baseline",
+    "mock_only", "no_data_source",
+    # A council configured against a real LLM but mostly answering with canned
+    # stub votes is weak regardless of what its config claims.
+    "degraded_stub_fallback",
+}
+
+# A council whose calls stub out this often is not meaningfully "real".
+_STUB_RATIO_DEGRADED = 0.25
+# Below this many observed calls the ratio is noise, so no verdict is issued
+# (matches the repo's "don't fabricate signal from insufficient data" rule).
+_MIN_CALLS_FOR_STUB_VERDICT = 5
 
 
 def ai_capabilities(runtime: Any) -> dict:
@@ -36,11 +48,54 @@ def ai_capabilities(runtime: Any) -> dict:
         llm_status = "stub"
     else:
         llm_status = "real"
+    detail = f"gateway={gateway} runtime={llm_runtime}"
+
+    # Config says what was INTENDED; the gateway's counters say what actually
+    # happened. Reporting "real" off config alone hid a council answering with
+    # 7-of-10 canned stub votes (its fast model simply wasn't loaded in LM
+    # Studio, so every micro-agent call returned server_unavailable and fell
+    # back to a stub). That is exactly the failure CLAUDE.md's honesty rule
+    # exists to prevent: a layer presenting as intelligence while degraded.
+    # A configured-real council that is mostly stubbing is NOT real.
+    if llm_status == "real":
+        try:
+            gw_obj = getattr(runtime, "_llm_gateway", None)
+            if gw_obj is None:
+                raise AttributeError("no gateway")
+            gw = gw_obj.status()
+            total = int(gw.get("calls_total") or 0)
+            ratio = float(gw.get("stub_ratio") or 0.0)
+            if total >= _MIN_CALLS_FOR_STUB_VERDICT:
+                if ratio >= _STUB_RATIO_DEGRADED:
+                    llm_status = "degraded_stub_fallback"
+                detail += (
+                    f" | {int(gw.get('calls_stubbed') or 0)}/{total} calls stubbed"
+                    f" ({ratio:.0%})"
+                )
+                modes = gw.get("failure_modes") or {}
+                if modes:
+                    top = max(modes.items(), key=lambda kv: kv[1])
+                    detail += f", top failure: {top[0]} x{top[1]}"
+            else:
+                detail += f" | {total} calls so far (too few to judge)"
+        except Exception:
+            # Never let the honesty report itself break the health endpoint.
+            detail += " | gateway counters unavailable"
+
     layers["llm_council"] = {
         "status": llm_status,
-        "detail": f"gateway={gateway} runtime={llm_runtime}",
+        "detail": detail,
         "role": "advisory",
     }
+    # Council admission budget — how much of the per-window LLM allowance the
+    # orchestrator has spent. Exposed so the UI can show WHY a council was
+    # skipped rather than leaving "not consulted" unexplained.
+    try:
+        orch = getattr(runtime, "master_orchestrator", None)
+        if orch is not None and hasattr(orch, "council_budget_status"):
+            layers["llm_council"]["budget"] = orch.council_budget_status()
+    except Exception:
+        pass
 
     # ── Neural forecaster ─────────────────────────────────────────────────────
     neural = None

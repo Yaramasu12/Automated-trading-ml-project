@@ -14,7 +14,8 @@ evidence chain is preserved in each AgentVote for traceability.
 """
 
 import logging
-from typing import TYPE_CHECKING
+import os
+from typing import TYPE_CHECKING, Any, Sequence
 
 from trading_platform.agents.schemas import (
     AgentVote,
@@ -414,3 +415,151 @@ class PortfolioManagerAgent:
             reasoning=str(resp.get("reasoning", ""))[:300],
             model_id=resp.get("model_id", self._gw.coordinator_model),
         )
+
+
+# ─── Batched multi-instrument analysis (cost control) ────────────────────────
+#
+# WHY: a specialist call costs ~6-25s, and the council runs once PER
+# UNDERLYING across 58 underlyings per 300s cycle. One call per (agent,
+# instrument) is 580 calls/cycle — measured at ~1.2h, ~15x over budget, which
+# manifested not as a slow cycle but as SILENT DEGRADATION (per-agent timeouts
+# fired and every vote fell back to a canned stub).
+#
+# Batching asks ONE call to judge N instruments, cutting calls by ~N. Measured
+# projection for the full 58-underlying universe:
+#     per-instrument calls : ~4,400s (1.2h)   <- infeasible
+#     batches of 10        :   ~108s          <- fits inside a 300s cycle
+#
+# ROBUSTNESS: the model is asked to echo each instrument's symbol, and results
+# are matched BY SYMBOL, never by array position. A model that reorders, drops,
+# or hallucinates an extra entry then degrades only the instruments it actually
+# missed — those callers get a stub, everything else keeps its real verdict.
+# Position-matching would silently attribute one instrument's verdict to
+# another, which is far worse than a stub: a wrong-but-confident vote.
+
+# NOTE: must be a JSON OBJECT wrapping the array, not a bare array.
+# LocalModelGateway._parse_json rejects anything that is not a dict
+# ("Expected JSON object") and returns a stub, so a top-level array never
+# reaches parse_batch_response — verified live: 10/10 instruments stubbed.
+_BATCH_INSTRUCTION = (
+    "You are judging MULTIPLE instruments in one response.\n"
+    'Return ONLY a JSON object of the form {"results": [...]}, with one entry '
+    "per instrument. Each entry MUST echo the instrument's exact symbol in a "
+    '"symbol" field so results can be matched.\n'
+    '{"results":[{"symbol":"<exact symbol>","action":"BUY|SELL|HOLD",'
+    '"confidence":0.0-1.0,"reasoning":"<one short sentence>"}]}\n'
+    "Do not merge instruments. Do not omit any. Keep each reasoning under 25 words."
+)
+
+
+# Instruments per batched call. 20 measured at 40.6s for 20/20 real verdicts
+# (2.03s per instrument) vs 30.9s for 10 (3.09s) — bigger batches amortise the
+# shared prompt better.
+#
+# MEASURED CEILING: batching and CONCURRENCY trade off against each other on
+# this hardware. A single batch-20 call succeeds, but 4-8 CONCURRENT batch-20
+# calls returned 100% stubs (80/80 and 160/160) while still taking 97-137s —
+# i.e. the calls were made and failed, not queued. LM Studio is served with
+# PARALLEL=4 and cannot hold that many large prompts at once. So raise batch
+# size OR gateway concurrency, not both; verify with a real run after changing
+# either.
+DEFAULT_BATCH_SIZE = int(os.getenv("COUNCIL_BATCH_SIZE", "20"))
+# Output-token budgeting for batched replies (measured: ~120 tokens per verdict
+# including its reasoning sentence, plus JSON scaffolding for the wrapper).
+_TOKENS_PER_VERDICT = int(os.getenv("COUNCIL_TOKENS_PER_VERDICT", "160"))
+_BATCH_JSON_OVERHEAD = 256
+
+
+def chunk_contexts(
+    contexts: Sequence[AgentInputContext], size: int | None = None,
+) -> list[list[AgentInputContext]]:
+    """Split contexts into batches of at most `size` for run_batch()."""
+    n = max(1, int(size or DEFAULT_BATCH_SIZE))
+    return [list(contexts[i:i + n]) for i in range(0, len(contexts), n)]
+
+
+def build_batch_prompt(contexts: Sequence[AgentInputContext], task: str) -> str:
+    """One prompt covering every context, with a per-instrument block."""
+    blocks = []
+    for ctx in contexts:
+        sym = ctx.symbols[0] if ctx.symbols else "UNKNOWN"
+        blocks.append(f"--- INSTRUMENT: {sym} ---\n{_build_market_context(ctx)}")
+    return f"{task}\n\n{_BATCH_INSTRUCTION}\n\n" + "\n\n".join(blocks)
+
+
+def parse_batch_response(response: Any, contexts: Sequence[AgentInputContext]) -> dict[str, dict]:
+    """Map a batched model reply to {symbol: verdict}.
+
+    Accepts the array under a few shapes because local models are inconsistent
+    about wrapping: a bare list, or a dict with a list under a common key.
+    Unmatched/missing symbols are simply absent from the result — the caller
+    decides what to do (stub just those), rather than this silently inventing
+    a verdict.
+    """
+    items: Any = response
+    if isinstance(response, dict):
+        for key in ("results", "instruments", "verdicts", "data", "items"):
+            if isinstance(response.get(key), list):
+                items = response[key]
+                break
+        else:
+            items = [response] if "symbol" in response else []
+    if not isinstance(items, list):
+        return {}
+
+    wanted = {(c.symbols[0] if c.symbols else "UNKNOWN") for c in contexts}
+    out: dict[str, dict] = {}
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        sym = str(item.get("symbol") or "").strip()
+        if sym in wanted and sym not in out:      # first wins; ignore duplicates
+            out[sym] = item
+    return out
+
+
+def run_batch(
+    gateway: LocalModelGateway,
+    model: str,
+    agent_name: str,
+    task: str,
+    contexts: Sequence[AgentInputContext],
+) -> list[AgentVote]:
+    """Judge every context in ONE model call; one AgentVote per context, in order.
+
+    Any instrument the model failed to return a usable verdict for falls back to
+    a stub vote for THAT instrument only.
+    """
+    if not contexts:
+        return []
+    prompt = build_batch_prompt(contexts, task)
+    try:
+        # Batched replies are {"results": [...]}, a different shape from a
+        # single verdict — pass the matching schema or structured output would
+        # reject every batch.
+        from trading_platform.agents.model_gateway import _BATCH_SCHEMA
+        # Output budget must scale with the batch: one verdict is ~120 tokens,
+        # so a batch-20 reply needs ~2400 — above the default 2048, which made
+        # the truncation guard fire on half of all concurrent batch-20 calls
+        # (measured: 40/80 real, failure_mode "ValueError: ...truncated").
+        # Floor at the gateway default so a small batch is never given less.
+        budget = max(gateway.max_tokens, _TOKENS_PER_VERDICT * len(contexts) + _BATCH_JSON_OVERHEAD)
+        raw = gateway.generate(model, _SYSTEM_BASE, prompt,
+                               response_schema=_BATCH_SCHEMA, max_tokens=budget)
+    except Exception:                                   # noqa: BLE001
+        raw = {}
+    by_symbol = parse_batch_response(raw, contexts)
+    model_id = raw.get("model_id", model) if isinstance(raw, dict) else model
+
+    votes: list[AgentVote] = []
+    for ctx in contexts:
+        sym = ctx.symbols[0] if ctx.symbols else "UNKNOWN"
+        verdict = by_symbol.get(sym)
+        if verdict is None:
+            verdict = {
+                "action": "HOLD",
+                "confidence": 0.45,
+                "reasoning": f"Stub: no batched verdict returned for {sym}.",
+            }
+        votes.append(_safe_vote(agent_name, model_id, verdict, ctx.evidence_ids))
+    return votes

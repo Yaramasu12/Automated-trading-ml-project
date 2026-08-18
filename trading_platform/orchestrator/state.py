@@ -75,6 +75,12 @@ class OrchestratorState:
     crew_confidence: float = 0.0       # weighted confidence score
     crew_debate_triggered: bool = False
     crew_debate_resolution: str = ""
+    # Was the (slow, ~158s) LLM council actually consulted for this underlying,
+    # and if not, why. Recorded explicitly so a skipped council is never
+    # mistaken for a council that ran and abstained — see
+    # MasterOrchestrator._council_admission.
+    council_consulted: bool = True
+    council_skip_reason: str = ""
 
     # ── Node 3: Neural Forecast ───────────────────────────────────────────────
     neural_direction_prob: float = 0.5  # P(up)
@@ -135,6 +141,8 @@ class OrchestratorState:
             "underlying": self.underlying,
             "regime": self.regime,
             "crew_action": self.crew_action,
+            "council_consulted": self.council_consulted,
+            "council_skip_reason": self.council_skip_reason,
             "crew_consensus": round(self.crew_consensus, 3),
             "neural_direction_prob": round(self.neural_direction_prob, 3),
             "neural_uncertainty": round(self.neural_uncertainty, 3),

@@ -92,7 +92,7 @@ class TestLmStudioRuntime(unittest.TestCase):
         gw = LocalModelGateway(runtime="lm_studio", base_url="http://x", max_concurrent_calls=5)
         calls = []
 
-        def fake(model, system, user, timeout=None, max_tokens=None):
+        def fake(model, system, user, timeout=None, max_tokens=None, response_schema=None):
             calls.append(model)
             return json.dumps({"action": "BUY", "confidence": 0.8, "reasoning": "r", "evidence_ids": []})
 
@@ -133,7 +133,17 @@ class TestOpenAiCompatPayload(unittest.TestCase):
 
     def test_lm_studio_omits_response_format(self):
         body = self._captured_body("lm_studio")
-        self.assertNotIn("response_format", body)
+        # CHANGED 2026-08-09: lm_studio now DOES get response_format, using its
+        # json_schema wire format (it 400s on "json_object", which is why this
+        # was previously omitted). Without it the model never stopped on its
+        # own — finish_reason was "length" at every max_tokens tried
+        # (128/256/512/2048), burning the whole budget on prose. With a schema
+        # the same call stops naturally at ~833 tokens.
+        self.assertEqual(body["response_format"]["type"], "json_schema")
+        self.assertEqual(
+            body["response_format"]["json_schema"]["schema"]["properties"]["action"]["enum"],
+            ["BUY", "SELL", "HOLD"],
+        )
 
     def test_vllm_includes_response_format(self):
         body = self._captured_body("vllm")
@@ -152,7 +162,7 @@ class TestMarkdownFencedJsonResponse(unittest.TestCase):
     def test_fenced_json_is_parsed(self):
         gw = LocalModelGateway(runtime="lm_studio", max_concurrent_calls=5)
         fenced = '```json\n{"action": "HOLD", "confidence": 0.3, "reasoning": "r", "evidence_ids": []}\n```'
-        gw._openai_compat = lambda model, system, user, timeout=None, max_tokens=None: fenced
+        gw._openai_compat = lambda model, system, user, timeout=None, max_tokens=None, response_schema=None: fenced
         result = gw.generate("google/gemma-4-e4b", "sys", "user")
         self.assertEqual(result["action"], "HOLD")
         self.assertIsNone(result["failure_mode"])
@@ -160,13 +170,13 @@ class TestMarkdownFencedJsonResponse(unittest.TestCase):
     def test_plain_fence_without_json_tag_is_parsed(self):
         gw = LocalModelGateway(runtime="lm_studio", max_concurrent_calls=5)
         fenced = '```\n{"action": "BUY", "confidence": 0.7, "reasoning": "r", "evidence_ids": []}\n```'
-        gw._openai_compat = lambda model, system, user, timeout=None, max_tokens=None: fenced
+        gw._openai_compat = lambda model, system, user, timeout=None, max_tokens=None, response_schema=None: fenced
         result = gw.generate("google/gemma-4-e4b", "sys", "user")
         self.assertEqual(result["action"], "BUY")
 
     def test_unfenced_json_still_parses(self):
         gw = LocalModelGateway(runtime="lm_studio", max_concurrent_calls=5)
-        gw._openai_compat = lambda model, system, user, timeout=None, max_tokens=None: '{"action": "SELL", "confidence": 0.6, "reasoning": "r", "evidence_ids": []}'
+        gw._openai_compat = lambda model, system, user, timeout=None, max_tokens=None, response_schema=None: '{"action": "SELL", "confidence": 0.6, "reasoning": "r", "evidence_ids": []}'
         result = gw.generate("google/gemma-4-e4b", "sys", "user")
         self.assertEqual(result["action"], "SELL")
 
@@ -189,7 +199,7 @@ class TestConcurrencyCap(unittest.TestCase):
         max_seen = 0
         release = threading.Event()
 
-        def fake(model, system, user, timeout=None, max_tokens=None):
+        def fake(model, system, user, timeout=None, max_tokens=None, response_schema=None):
             nonlocal in_flight, max_seen
             with lock:
                 in_flight += 1
@@ -215,7 +225,7 @@ class TestConcurrencyCap(unittest.TestCase):
         started = threading.Event()
         release = threading.Event()
 
-        def blocking(model, system, user, timeout=None, max_tokens=None):
+        def blocking(model, system, user, timeout=None, max_tokens=None, response_schema=None):
             started.set()
             release.wait(5)
             return json.dumps({"action": "HOLD", "confidence": 0.5, "reasoning": "x", "evidence_ids": []})

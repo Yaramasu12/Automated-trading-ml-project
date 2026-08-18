@@ -17,6 +17,7 @@ documents relevant to the user_prompt and:
 
 import json
 import logging
+import os
 import threading
 import time
 from typing import TYPE_CHECKING, Any
@@ -27,6 +28,52 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 # Deterministic stub responses keyed by model name + prompt hash hint
+def _concurrency_wait_cap(default: float = 45.0) -> float:
+    """Upper bound on the queue wait for an LLM concurrency slot (seconds)."""
+    try:
+        return max(0.25, float(os.getenv("LOCAL_LLM_CONCURRENCY_WAIT_MAX_S", default)))
+    except (TypeError, ValueError):
+        return default
+
+
+# Schema every specialist verdict must satisfy. Kept permissive on `reasoning`
+# length so the model is constrained in SHAPE without being pushed into
+# truncation; brevity is requested in the prompt text instead.
+_VERDICT_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "action": {"type": "string", "enum": ["BUY", "SELL", "HOLD"]},
+        "confidence": {"type": "number"},
+        "reasoning": {"type": "string"},
+    },
+    "required": ["action", "confidence", "reasoning"],
+}
+
+
+# Batched multi-instrument replies use a different SHAPE ({"results":[...]}),
+# so they must not be validated against _VERDICT_SCHEMA — doing so would reject
+# every batch. Callers pass this via generate(response_schema=...).
+_BATCH_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "results": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "symbol": {"type": "string"},
+                    "action": {"type": "string", "enum": ["BUY", "SELL", "HOLD"]},
+                    "confidence": {"type": "number"},
+                    "reasoning": {"type": "string"},
+                },
+                "required": ["symbol", "action", "confidence", "reasoning"],
+            },
+        }
+    },
+    "required": ["results"],
+}
+
+
 _STUB_RESPONSES: dict[str, dict] = {
     "gemma4-31b": {
         "action": "HOLD",
@@ -112,7 +159,39 @@ class LocalModelGateway:
         # call never eats more than a small share of its own budget waiting —
         # callers that don't get a slot in this window fail fast to the same
         # stub path as any other failure, rather than queuing indefinitely.
-        self._concurrency_wait_s = max(0.25, min(3.0, self.timeout * 0.2))
+        # How long an agent waits for a concurrency SLOT before giving up and
+        # returning a canned stub vote.
+        #
+        # This was `min(3.0, timeout * 0.2)` — hard-capped at 3s regardless of
+        # LOCAL_LLM_TIMEOUT_SECONDS. The council fans out ~10 specialist agents
+        # against `max_concurrent_calls` slots, and a single local call takes
+        # 3-5s, so agents beyond the first few need ~5s+ just to reach the front
+        # of the queue. They gave up at 3s and silently degraded to stubs:
+        # measured 7 of 10 votes stubbed, with the council still reporting
+        # status "real". Raising LOCAL_LLM_TIMEOUT_SECONDS did NOT help because
+        # the min(3.0, ...) cap bound first — a genuinely confusing failure,
+        # since the knob that looked responsible wasn't.
+        #
+        # Scale the wait with the expected queue depth instead. Safe here because
+        # the council runs on the 5-minute scan cycle, never in a tick-latency
+        # path (REDESIGN §8.1); the per-call `timeout` still bounds a hung call.
+        # Observed-behaviour counters. ai_capabilities previously derived the
+        # council's status purely from CONFIG strings (gateway=lm_studio =>
+        # "real"), so it reported a healthy council while 7 of 10 votes were
+        # canned stubs — precisely the "advisory != safety / keep the DEGRADED
+        # report truthful" rule CLAUDE.md sets. Status must reflect what the
+        # gateway ACTUALLY did, not what it was configured to do.
+        self._calls_total = 0
+        self._calls_stubbed = 0
+        self._failure_modes: dict[str, int] = {}
+        self._counter_lock = threading.Lock()
+        self._concurrency_wait_s = max(
+            0.25,
+            min(
+                _concurrency_wait_cap(),
+                self.timeout * 0.5,
+            ),
+        )
 
     # ── Public API ────────────────────────────────────────────────────────────
 
@@ -134,12 +213,21 @@ class LocalModelGateway:
                 "doc_count": self._rag.store.count(),
                 "categories": self._rag.store.all_categories(),
             }
+        with self._counter_lock:
+            total, stubbed = self._calls_total, self._calls_stubbed
+            modes = dict(self._failure_modes)
+        stub_ratio = (stubbed / total) if total else 0.0
         return {
             "runtime": self.runtime,
             "base_url": self.base_url if self.runtime != "stub" else None,
             "available": available,
             "fallback_active": self.runtime != "stub" and not available,
             "max_concurrent_calls": self.max_concurrent_calls,
+            # Measured, not configured — see the counters' comment in __init__.
+            "calls_total": total,
+            "calls_stubbed": stubbed,
+            "stub_ratio": round(stub_ratio, 3),
+            "failure_modes": modes,
             "rag": rag_status,
             "models": {
                 "primary": self.primary_model,
@@ -234,6 +322,7 @@ class LocalModelGateway:
         context: dict[str, Any] | None = None,
         timeout: int | None = None,
         max_tokens: int | None = None,
+        response_schema: dict | None = None,
     ) -> dict[str, Any]:
         """Generate a structured JSON response from the local model.
 
@@ -256,6 +345,8 @@ class LocalModelGateway:
         answer compete for the same token budget, so a complex prompt needs
         both a longer timeout AND more max_tokens, not just one.
         """
+        with self._counter_lock:
+            self._calls_total += 1
         effective_timeout = timeout if timeout is not None else self.timeout
         effective_max_tokens = max_tokens if max_tokens is not None else self.max_tokens
         # system_prompt is always specialists._SYSTEM_BASE, a static constant that
@@ -300,7 +391,7 @@ class LocalModelGateway:
                 start = time.monotonic()
                 raw = self._dispatch(
                     model, system_prompt, enriched_prompt, context or {},
-                    effective_timeout, effective_max_tokens,
+                    effective_timeout, effective_max_tokens, response_schema,
                 )
                 elapsed = time.monotonic() - start
             except Exception as exc:
@@ -327,14 +418,15 @@ class LocalModelGateway:
 
     # ── Dispatch to runtimes ──────────────────────────────────────────────────
 
-    def _dispatch(
+    def _dispatch(  # noqa: PLR0913
         self, model: str, system_prompt: str, user_prompt: str, context: dict,
-        timeout: int, max_tokens: int,
+        timeout: int, max_tokens: int, response_schema: dict | None = None,
     ) -> str:
         if self.runtime == "ollama":
             return self._ollama(model, system_prompt, user_prompt, timeout, max_tokens)
         if self.runtime in ("llama_cpp", "vllm", "lm_studio"):
-            return self._openai_compat(model, system_prompt, user_prompt, timeout, max_tokens)
+            return self._openai_compat(model, system_prompt, user_prompt, timeout,
+                                       max_tokens, response_schema)
         raise ValueError(f"Unknown runtime: {self.runtime}")
 
     def _ollama(self, model: str, system: str, user: str, timeout: int, max_tokens: int) -> str:
@@ -362,7 +454,8 @@ class LocalModelGateway:
             data = json.loads(resp.read())
         return data["message"]["content"]
 
-    def _openai_compat(self, model: str, system: str, user: str, timeout: int, max_tokens: int) -> str:
+    def _openai_compat(self, model: str, system: str, user: str, timeout: int,
+                       max_tokens: int, response_schema: dict | None = None) -> str:
         import urllib.request
         body: dict[str, Any] = {
             "model": model,
@@ -372,14 +465,33 @@ class LocalModelGateway:
             ],
             "max_tokens": max_tokens,
         }
-        # LM Studio's OpenAI-compat server only accepts response_format.type of
-        # "json_schema" or "text" — "json_object" (accepted by llama.cpp/vLLM)
-        # 400s outright (confirmed 2026-07-28: every lm_studio call failed with
-        # HTTPError until this was made conditional). _SYSTEM_BASE already
-        # instructs strict JSON output textually, and _parse_json already
-        # stub-falls-back on malformed output, so omitting the constraint for
-        # lm_studio is safe rather than chasing its json_schema wire format.
-        if self.runtime != "lm_studio":
+        # STRUCTURED OUTPUT (REDESIGN §8.1: "use LM Studio's structured-output
+        # (JSON schema) mode for every agent").
+        #
+        # This previously skipped response_format entirely for lm_studio,
+        # because its server 400s on "json_object" (which llama.cpp/vLLM accept)
+        # and the correct "json_schema" wire format had not been worked out.
+        # Relying on _SYSTEM_BASE's textual "return JSON" instruction instead
+        # had a measured cost: the model NEVER stopped on its own. At
+        # max_tokens of 128 / 256 / 512 / 2048 it returned finish_reason
+        # "length" every single time — burning the entire budget on prose and
+        # making every call as slow as its cap allowed (~25s at 2048).
+        #
+        # With a real json_schema the same call returns finish_reason "stop"
+        # after ~833 tokens. That is both faster and safer: the reply is
+        # schema-valid by construction, and `length` becomes a TRUE truncation
+        # signal we can act on (see _openai_compat's finish_reason check)
+        # rather than the constant it used to be.
+        if self.runtime == "lm_studio":
+            body["response_format"] = {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "agent_verdict",
+                    "strict": True,
+                    "schema": response_schema or _VERDICT_SCHEMA,
+                },
+            }
+        else:
             body["response_format"] = {"type": "json_object"}
         payload = json.dumps(body).encode()
         req = urllib.request.Request(
@@ -389,7 +501,18 @@ class LocalModelGateway:
         )
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             data = json.loads(resp.read())
-        return data["choices"][0]["message"]["content"]
+        choice = data["choices"][0]
+        # A truncated reply is NOT a verdict. Before structured output this
+        # fired on every call and so had to be ignored; now that the model
+        # stops naturally, `length` genuinely means the answer was cut off —
+        # surface it as a failure so the caller stubs honestly instead of
+        # parsing half a JSON object into a confident-looking vote.
+        if choice.get("finish_reason") == "length":
+            raise ValueError(
+                f"{model}: response truncated at max_tokens={max_tokens} "
+                "(finish_reason=length) — treating as failure, not a verdict"
+            )
+        return choice["message"]["content"]
 
     def _health_check(self) -> bool:
         import urllib.request
@@ -403,6 +526,10 @@ class LocalModelGateway:
     # ── Helpers ───────────────────────────────────────────────────────────────
 
     def _stub_response(self, model: str, failure_mode: str | None = None) -> dict:
+        with self._counter_lock:
+            self._calls_stubbed += 1
+            key = failure_mode or "unspecified"
+            self._failure_modes[key] = self._failure_modes.get(key, 0) + 1
         base = _STUB_RESPONSES.get(model, _STUB_RESPONSES["gemma4-e4b"]).copy()
         if failure_mode:
             base["failure_mode"] = failure_mode
