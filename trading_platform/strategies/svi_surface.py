@@ -29,6 +29,14 @@ logger = logging.getLogger(__name__)
 # ──────────────────────────────────────────────
 
 
+# Reference horizon for the SVI total-variance <-> implied-vol conversion.
+# MUST be shared by the fitter (`fit_svi`) and the evaluator
+# (`VolSurface._svi_iv`): they previously hardcoded different conventions and
+# silently disagreed by a factor of sqrt(365/30) = 3.49x. Single source of
+# truth so they cannot drift apart again.
+_SVI_REF_T = 30.0 / 365.0
+
+
 @dataclass
 class SVIParams:
     """SVI model parameters.
@@ -99,41 +107,70 @@ class VolSurface:
         return np.log(strikes / self.spot)
 
     def get_strike_iv(self, strike: float) -> float:
-        """Get implied vol for a specific strike (fitted or interpolated)."""
+        """Get implied vol for a specific strike (fitted or interpolated).
+
+        Returns 0.0 on an empty surface rather than raising. `default_surface()`
+        is a null-object placeholder callers reach for precisely when a chain
+        snapshot was UNAVAILABLE — so `np.interp(strike, [], [])` blew up on the
+        degraded path, turning a missing-data condition into a crash at the
+        worst possible moment.
+        """
+        if not self.strikes or not self.implied_vols:
+            return 0.0
         if self.svi_params and self.fitted:
             return self._svi_iv(strike)
-        
+
         strikes = np.array(self.strikes)
         vols = np.array(self.implied_vols)
-        
+
         if strike in strikes:
             idx = np.where(strikes == strike)[0][0]
             return float(vols[idx])
-        
+
         # Linear interpolation
         return float(np.interp(strike, strikes, vols))
 
     def get_moneyness_iv(self, moneyness: float) -> float:
-        """Get implied vol for a specific log-moneyness."""
-        if self.svi_params and self.fitted:
-            k = np.array([moneyness])
-            return self._svi_total_var(k) ** 0.5
-        
-        return self.atm_iv
+        """Get implied vol (in PERCENT) for a specific log-moneyness.
 
-    def _svi_total_var(self, k: np.ndarray) -> float:
-        """Compute SVI total variance."""
+        Was a third inconsistent convention: it built `np.array([moneyness])`
+        and returned `total_var ** 0.5` — an ARRAY, in decimal, with no
+        division by the reference horizon. Every caller
+        (`compute_skew` -> `skew_slope` -> `extract_surface_features`) then
+        propagated numpy arrays where floats were declared, which blew up as
+        "only 0-dimensional arrays can be converted to Python scalars" under
+        numpy 2. Now scalar and in percent, matching `_svi_iv`.
+        """
+        if self.svi_params and self.fitted:
+            total_var = float(self._svi_total_var(float(moneyness)))
+            if total_var <= 0:
+                return self.atm_iv
+            return float(np.sqrt(total_var / _SVI_REF_T) * 100)
+        return self._interp_iv(float(moneyness))
+
+    def _svi_total_var(self, k):
+        """SVI total variance. Elementwise: returns a scalar for scalar `k`,
+        an array for array `k` (callers rely on both)."""
         p = self.svi_params
         if p is None:
             return 0.0
         return p.a + p.b * (p.rho * (k - p.m) + np.sqrt((k - p.m) ** 2 + p.c))
 
     def _svi_iv(self, strike: float) -> float:
-        """Compute implied vol from SVI params for a strike."""
-        k = np.log(strike / self.spot)
-        total_var = self._svi_total_var(np.array([k]))
-        # Simplified: assume 30 days to expiry
-        t = 30 / 365.0
+        """Compute implied vol from SVI params for a strike.
+
+        Passes a 0-d scalar, not `np.array([k])`. Under numpy >= 2 (this repo
+        pins 2.4.4) `float()` on a SIZE-1 array raises
+        "only 0-dimensional arrays can be converted to Python scalars", so the
+        previous version raised TypeError on EVERY call — the whole SVI surface
+        was unusable at runtime. It went unnoticed because the module's only
+        test targeted an API that never existed and so failed at import.
+        """
+        if self.spot <= 0 or strike <= 0:
+            return self.atm_iv
+        k = float(np.log(strike / self.spot))
+        total_var = float(self._svi_total_var(k))
+        t = _SVI_REF_T
         if total_var <= 0 or t <= 0:
             return self.atm_iv
         return float(np.sqrt(total_var / t) * 100)
@@ -197,11 +234,27 @@ def fit_svi(
 
     def objective(p):
         a, b, rho, m, c = p
-        total_var = a + b * (rho * log_moneyness + np.sqrt(log_moneyness ** 2 + c))
-        # Variance must be positive
-        total_var = np.maximum(total_var, 1e-6)
-        model_vols = np.sqrt(total_var)
-        return np.sum((model_vols - vols) ** 2)
+        # TWO BUGS FIXED HERE (both silent — the fit "converged" while being
+        # wrong, which is the worst failure mode for numerical code):
+        #
+        # 1. `m` was omitted: this used `rho*k + sqrt(k**2 + c)` instead of the
+        #    documented (and evaluated) `rho*(k-m) + sqrt((k-m)**2 + c)`. `m`
+        #    was a free parameter the objective ignored but `_svi_total_var`
+        #    used — so the optimiser tuned a smile the evaluator never priced.
+        # 2. Variance convention disagreed with `VolSurface._svi_iv`: the
+        #    objective treated the SVI output as sigma**2 (`sqrt(total_var)`)
+        #    while the evaluator treats it as TOTAL variance sigma**2 * T and
+        #    divides by t=30/365. That inflated every evaluated vol by
+        #    sqrt(365/30) = 3.49x — a 14% input smile came back as 48.8%,
+        #    i.e. ~34.9 vol points of error (measured: 34.87).
+        #
+        # Fit in the same units the evaluator reports, so "fitted" means the
+        # surface actually reprices its own inputs.
+        km = log_moneyness - m
+        total_var = a + b * (rho * km + np.sqrt(km ** 2 + c))
+        total_var = np.maximum(total_var, 1e-12)
+        model_vols = np.sqrt(total_var / _SVI_REF_T)
+        return float(np.sum((model_vols - vols) ** 2))
 
     result = minimize(
         objective, x0, method='L-BFGS-B', bounds=bounds,
