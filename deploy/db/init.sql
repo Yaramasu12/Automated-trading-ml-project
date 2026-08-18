@@ -119,7 +119,7 @@ CREATE INDEX IF NOT EXISTS idx_order_events_tenant ON order_events(tenant_id);
 -- Trades (attribution)
 -- ──────────────────────────────────────────────
 
-CREATE TABLE IF NOT EXISTS trades (
+CREATE TABLE IF NOT EXISTS trades_v2 (
     trade_id        TEXT PRIMARY KEY,
     tenant_id       TEXT NOT NULL DEFAULT 'single',
     strategy_id     TEXT NOT NULL REFERENCES strategies(strategy_id),
@@ -149,9 +149,9 @@ CREATE TABLE IF NOT EXISTS trades (
     created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-CREATE INDEX IF NOT EXISTS idx_trades_tenant ON trades(tenant_id);
-CREATE INDEX IF NOT EXISTS idx_trades_strategy ON trades(strategy_id);
-CREATE INDEX IF NOT EXISTS idx_trades_entry_time ON trades(entry_time);
+CREATE INDEX IF NOT EXISTS idx_trades_tenant ON trades_v2(tenant_id);
+CREATE INDEX IF NOT EXISTS idx_trades_strategy ON trades_v2(strategy_id);
+CREATE INDEX IF NOT EXISTS idx_trades_entry_time ON trades_v2(entry_time);
 
 -- ──────────────────────────────────────────────
 -- Positions snapshot (periodic)
@@ -182,7 +182,7 @@ CREATE TABLE IF NOT EXISTS risk_limits (
     updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-CREATE TABLE IF NOT EXISTS risk_events (
+CREATE TABLE IF NOT EXISTS risk_events_v2 (
     event_id        BIGSERIAL,
     tenant_id       TEXT NOT NULL DEFAULT 'single',
     timestamp       TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -194,8 +194,8 @@ CREATE TABLE IF NOT EXISTS risk_events (
     action_taken    TEXT
 );
 
-CREATE INDEX IF NOT EXISTS idx_risk_events_tenant ON risk_events(tenant_id);
-CREATE INDEX IF NOT EXISTS idx_risk_events_severity ON risk_events(severity);
+CREATE INDEX IF NOT EXISTS idx_risk_events_tenant ON risk_events_v2(tenant_id);
+CREATE INDEX IF NOT EXISTS idx_risk_events_severity ON risk_events_v2(severity);
 
 -- ──────────────────────────────────────────────
 -- Backtests
@@ -281,7 +281,7 @@ CREATE INDEX IF NOT EXISTS idx_agent_decisions_agent ON agent_decisions(agent_na
 -- Daily P&L
 -- ──────────────────────────────────────────────
 
-CREATE TABLE IF NOT EXISTS daily_pnl (
+CREATE TABLE IF NOT EXISTS daily_pnl_v2 (
     id              BIGSERIAL,
     tenant_id       TEXT NOT NULL DEFAULT 'single',
     date            DATE NOT NULL,
@@ -327,13 +327,13 @@ CREATE POLICY tenant_isolation_orders ON orders
     USING (tenant_id = current_setting('app.current_tenant', true));
 CREATE POLICY tenant_isolation_order_events ON order_events
     USING (tenant_id = current_setting('app.current_tenant', true));
-CREATE POLICY tenant_isolation_trades ON trades
+CREATE POLICY tenant_isolation_trades ON trades_v2
     USING (tenant_id = current_setting('app.current_tenant', true));
 CREATE POLICY tenant_isolation_positions ON positions_snapshot
     USING (tenant_id = current_setting('app.current_tenant', true));
-CREATE POLICY tenant_isolation_risk ON risk_events
+CREATE POLICY tenant_isolation_risk ON risk_events_v2
     USING (tenant_id = current_setting('app.current_tenant', true));
 CREATE POLICY tenant_isolation_agents ON agent_decisions
     USING (tenant_id = current_setting('app.current_tenant', true));
-CREATE POLICY tenant_isolation_pnl ON daily_pnl
+CREATE POLICY tenant_isolation_pnl ON daily_pnl_v2
     USING (tenant_id = current_setting('app.current_tenant', true));

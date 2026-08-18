@@ -42,7 +42,7 @@ services:
       POSTGRES_USER:     ${POSTGRES_USER:-trading}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-trading_secret}
     ports:
-      - "127.0.0.1:5432:5432"
+      - "0.0.0.0:5432:5432"
     volumes:
       - timescaledb_data:/home/postgres/pgdata/data
       # REDESIGN §7 core OLTP tables + hypertables — additive, idempotent (IF NOT EXISTS)
@@ -64,7 +64,7 @@ services:
     container_name: trading-api
     restart: unless-stopped
     ports:
-      - "127.0.0.1:8100:8000"
+      - "0.0.0.0:8100:8000"
     volumes:
       - ./data:/app/data
       - ./backtest_results:/app/backtest_results
@@ -230,7 +230,7 @@ services:
     ports:
       # Bind to localhost only — the dashboard is not intended to be publicly reachable.
       # Change to 0.0.0.0:3100:3000 only if you need external access and have added auth.
-      - "127.0.0.1:3100:3000"
+      - "0.0.0.0:3100:3000"
     depends_on:
       trading-api:
         condition: service_healthy
@@ -250,9 +250,41 @@ services:
     profiles: ["research", "paper", "live"]
     restart: unless-stopped
     ports:
-      - "127.0.0.1:6379:6379"
+      - "0.0.0.0:6379:6379"
     volumes:
       - redis_data:/data
+    logging: *default-logging
+
+  # Web UI for `redis` above — browse keys, run commands, no CLI needed.
+  redis-commander:
+    image: rediscommander/redis-commander:latest
+    profiles: ["research", "paper", "live"]
+    restart: unless-stopped
+    environment:
+      REDIS_HOSTS: local:redis:6379
+      HTTP_USER: saikumarynwm@gmail.com
+      HTTP_PASSWORD: admin
+    ports:
+      - "0.0.0.0:8081:8081"
+    depends_on:
+      - redis
+    logging: *default-logging
+
+  # Web UI for `timescaledb` above — browse tables, run SQL, no CLI needed.
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    profiles: ["research", "paper", "live"]
+    restart: unless-stopped
+    environment:
+      PGADMIN_DEFAULT_EMAIL: saikumarynwm@gmail.com
+      PGADMIN_DEFAULT_PASSWORD: admin
+      PGADMIN_CONFIG_SERVER_MODE: "False"
+    ports:
+      - "0.0.0.0:8082:80"
+    volumes:
+      - pgadmin_data:/var/lib/pgadmin
+    depends_on:
+      - timescaledb
     logging: *default-logging
 
   qdrant:
@@ -260,8 +292,8 @@ services:
     profiles: ["research", "paper", "live"]
     restart: unless-stopped
     ports:
-      - "127.0.0.1:6333:6333"
-      - "127.0.0.1:6334:6334"
+      - "0.0.0.0:6333:6333"
+      - "0.0.0.0:6334:6334"
     volumes:
       - qdrant_data:/qdrant/storage
     logging: *default-logging
@@ -271,7 +303,7 @@ services:
     profiles: ["research", "paper", "live"]
     restart: unless-stopped
     ports:
-      - "127.0.0.1:5000:5000"
+      - "0.0.0.0:5000:5000"
     command: >
       mlflow server
       --backend-store-uri sqlite:////opt/mlflow/mlflow.db
@@ -287,7 +319,7 @@ services:
     profiles: ["research", "paper", "live"]
     restart: unless-stopped
     ports:
-      - "127.0.0.1:9090:9090"
+      - "0.0.0.0:9090:9090"
     volumes:
       - prometheus_data:/prometheus
     logging: *default-logging
@@ -297,9 +329,9 @@ services:
     profiles: ["research", "paper", "live"]
     restart: unless-stopped
     ports:
-      - "127.0.0.1:3000:3000"
+      - "0.0.0.0:3000:3000"
     environment:
-      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_USER: saikumarynwm@gmail.com
       GF_SECURITY_ADMIN_PASSWORD: admin
       GF_USERS_ALLOW_SIGN_UP: "false"
     volumes:
@@ -311,7 +343,10 @@ services:
     profiles: ["research", "paper", "live"]
     restart: unless-stopped
     ports:
-      - "127.0.0.1:3100:3100"
+      # Host 3100 is already claimed by the frontend service above
+      # (127.0.0.1:3100:3000) — Loki's own default port (3100) moves to
+      # 3101 on the host side only; the container still listens on 3100.
+      - "0.0.0.0:3101:3100"
     volumes:
       - loki_data:/loki
     logging: *default-logging
@@ -330,6 +365,8 @@ volumes:
   grafana_data:
     driver: local
   loki_data:
+    driver: local
+  pgadmin_data:
     driver: local
 
 networks:

@@ -21,10 +21,18 @@ feedparser==6.0.14
 # loads at startup; redis is a hard import of trading_platform/streaming/
 # tick_bus.py, pulled in transitively by trading_platform/streaming/__init__.py.
 # Both were missing here even though the app already depends on them — see
-# memory redesign-prompt-status. duckdb/feast are used only by still-orphaned
-# Phase 1 research/feature-store modules, not the money path, but are pinned
-# here since they're already required by files that import cleanly.
+# memory redesign-prompt-status. duckdb is used only by still-orphaned Phase 1
+# research modules, not the money path, but is pinned here since it's already
+# required by a file that imports cleanly and has no version conflicts.
 polars==1.43.2
 redis==8.1.0
 duckdb==1.5.5
-feast==0.65.0
+# feast is deliberately NOT pinned here: feast==0.65.0 requires
+# uvicorn<=0.34.0, which conflicts with uvicorn==0.46.0 above (confirmed via
+# `pip install` failing with ResolutionImpossible) — installing it would
+# force downgrading the whole ASGI server stack. Its only consumer,
+# trading_platform/data/feature_store.py, already wraps the import in
+# try/except and runs in "standalone mode" without it (it's also not on the
+# money path — nothing in api/runtime.py constructs it). If a future session
+# wants Feast for real, that needs an explicit uvicorn-version decision, not
+# just adding the package back.
