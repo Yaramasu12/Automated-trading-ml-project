@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import ssl
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any
@@ -77,6 +77,29 @@ class AngelOneInstrumentMasterProvider:
             instrument = self._parse_row(row)
             if instrument is not None:
                 instruments[instrument.symbol] = instrument
+
+        # Angel One ships TWO scrip-master rows per index, and only one of them
+        # works for historical candles:
+        #   token=99926000  symbol="Nifty 50"   instrumenttype="AMXIDX"  <- real
+        #   token=26000     symbol="NIFTY"      instrumenttype=""        <- 0 bars
+        # The bare row wins the "NIFTY" key above (empty instrumenttype is
+        # classified EQUITY), and the authoritative AMXIDX row is filed under
+        # its display name "Nifty 50", which nothing looks up. Net effect:
+        # getCandleData for any index returned status=SUCCESS with rows=0, so
+        # index history looked unavailable when it simply had the wrong token.
+        # Re-key AMXIDX rows under their canonical `name` (NIFTY/BANKNIFTY/...)
+        # so index lookups resolve to the token that actually serves data.
+        # Verified 2026-08-08: 99926000/99926009 return real daily candles.
+        for row in rows:
+            if str(row.get("instrumenttype") or "").strip().upper() not in {"AMXIDX", "IDX"}:
+                continue
+            canonical = str(row.get("name") or "").strip().upper()
+            if canonical not in INDEX_NAMES:
+                continue
+            instrument = self._parse_row(row)
+            if instrument is None:
+                continue
+            instruments[canonical] = replace(instrument, symbol=canonical)
         return InstrumentMaster(instruments)
 
     def _parse_row(self, row: dict[str, Any]) -> Instrument | None:

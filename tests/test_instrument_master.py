@@ -78,3 +78,55 @@ class InstrumentMasterTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class AngelOneIndexTokenTests(unittest.TestCase):
+    """Regression: Angel One ships two scrip-master rows per index and only the
+    AMXIDX one serves historical candles. The other (empty instrumenttype) row
+    used to win the symbol key, so getCandleData returned status=SUCCESS with
+    ZERO rows for every index — index history looked unavailable when the token
+    was simply wrong. Verified live 2026-08-08: 99926000 returns real candles,
+    26000 returns none.
+    """
+
+    # Both rows, exactly as they appear in OpenAPIScripMaster.json.
+    ROWS = [
+        {"token": "26000", "symbol": "NIFTY", "name": "NIFTY", "expiry": "",
+         "strike": "-1.000000", "lotsize": "1", "instrumenttype": "",
+         "exch_seg": "NSE", "tick_size": "0.000000"},
+        {"token": "99926000", "symbol": "Nifty 50", "name": "NIFTY", "expiry": "",
+         "strike": "-1.000000", "lotsize": "1", "instrumenttype": "AMXIDX",
+         "exch_seg": "NSE", "tick_size": "0.000000"},
+        {"token": "26009", "symbol": "BANKNIFTY", "name": "BANKNIFTY", "expiry": "",
+         "strike": "-1.000000", "lotsize": "1", "instrumenttype": "",
+         "exch_seg": "NSE", "tick_size": "0.000000"},
+        {"token": "99926009", "symbol": "Nifty Bank", "name": "BANKNIFTY", "expiry": "",
+         "strike": "-1.000000", "lotsize": "1", "instrumenttype": "AMXIDX",
+         "exch_seg": "NSE", "tick_size": "0.000000"},
+    ]
+
+    @staticmethod
+    def _parse(rows) -> InstrumentMaster:
+        from trading_platform.config import load_settings
+        from trading_platform.data.angel_one_instruments import (
+            AngelOneInstrumentMasterProvider,
+        )
+        return AngelOneInstrumentMasterProvider(load_settings()).parse_rows(list(rows))
+
+    def _master(self) -> InstrumentMaster:
+        return self._parse(self.ROWS)
+
+    def test_index_symbol_resolves_to_the_amxidx_token(self):
+        master = self._master()
+        self.assertEqual(master.get("NIFTY").token, "99926000")
+        self.assertEqual(master.get("BANKNIFTY").token, "99926009")
+
+    def test_index_is_typed_as_index_not_equity(self):
+        master = self._master()
+        self.assertEqual(master.get("NIFTY").instrument_type, InstrumentType.INDEX)
+        self.assertEqual(master.get("NIFTY").exchange, Exchange.NSE)
+
+    def test_amxidx_row_order_does_not_matter(self):
+        """The bare row must never win, whichever order the file lists them in."""
+        master = self._parse(list(reversed(self.ROWS)))
+        self.assertEqual(master.get("NIFTY").token, "99926000")
