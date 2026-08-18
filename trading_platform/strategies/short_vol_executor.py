@@ -42,6 +42,14 @@ def _env_flag(name: str, default: bool) -> bool:
     return os.getenv(name, str(default)).strip().lower() in {"1", "true", "yes", "on"}
 
 
+# REDESIGN §5 promotion ladder. This id is what short-vol's gate results and
+# promotion record are keyed under — keep it stable, it's a DB key.
+SHORT_VOL_STRATEGY_ID = "short_vol"
+# Rungs on which auto-entry is permitted. "paper" is included because paper
+# trading IS the point of the rung; research/shadow/disabled are not.
+_SHORTVOL_TRADING_STATUSES = {"paper", "live_canary", "live_approved"}
+
+
 class ShortVolExecutor:
     def __init__(self, runtime: Any, strategy: ShortVolStrategy | None = None) -> None:
         self._rt = runtime
@@ -419,14 +427,44 @@ class ShortVolExecutor:
                 out["reason"] = f"could not resolve {leg.option_type.value} {leg.strike:.0f} @ {expiry}"
                 out["legs"] = []
                 return out
-            # price the leg at the actual days-to-expiry (multi-expiry aware)
+            # REAL QUOTE FIRST, theoretical only as a labelled fallback.
+            #
+            # This used to price EVERY leg with Black-Scholes unconditionally,
+            # so entries were decided — and paper fills recorded — at
+            # theoretical premiums that never existed in the market. The
+            # giveaway was fill prices like 12.73664836769972 on an instrument
+            # whose tick size is 0.05. P&L computed from those is model-vs-model
+            # and tells you nothing about real edge or execution.
+            #
+            # `_option_last_price` resolves a genuine price (live tick, else the
+            # Angel One candle close). If none is available we do NOT silently
+            # substitute a model number: SHORTVOL_REQUIRE_REAL_QUOTES (default
+            # on) refuses the entry instead. Trading on fabricated prices is
+            # exactly the "fake edge" this codebase exists to prevent — and a
+            # refusal is recoverable, a fabricated fill is not.
             T = dte / 252.0
-            premium = self.strategy._bs(spot, float(inst.strike), T, vix / 100.0,
-                                        call=(leg.option_type.value == "CE"))
+            theo = self.strategy._bs(spot, float(inst.strike), T, vix / 100.0,
+                                     call=(leg.option_type.value == "CE"))
+            market = self._option_last_price(inst)
+            if market and market > 0:
+                premium = market
+                priced_from = "market"
+            elif _env_flag("SHORTVOL_REQUIRE_REAL_QUOTES", True):
+                out["enter"] = False
+                out["reason"] = (
+                    f"no real quote for {inst.symbol} — refusing to enter on a "
+                    f"theoretical price (set SHORTVOL_REQUIRE_REAL_QUOTES=false to override)"
+                )
+                out["legs"] = []
+                return out
+            else:
+                premium = theo
+                priced_from = "theoretical"
             out["legs"].append({
                 "symbol": inst.symbol, "strike": float(inst.strike),
                 "option_type": leg.option_type.value, "side": leg.side.value,
                 "is_wing": leg.is_wing, "price": round(float(premium), 2), "quantity": qty,
+                "priced_from": priced_from, "theoretical": round(float(theo), 2),
             })
         out["expiry"] = expiry.isoformat()
 
@@ -560,12 +598,48 @@ class ShortVolExecutor:
         hour = int(os.getenv("SHORTVOL_ENTRY_HOUR", "10"))
         return now_ist.weekday() == weekday and now_ist.hour >= hour
 
+    def promotion_block_reason(self) -> str | None:
+        """REDESIGN §5: auto-entry requires this strategy to have been promoted
+        to a trading rung (paper/live_canary/live_approved) through the
+        validation-gate ladder — which itself requires its backtest gates
+        (CPCV/DSR/PBO/Monte-Carlo-DD/cost model) to have passed.
+
+        Returns a human-readable block reason, or None when clear to trade.
+        Set SHORTVOL_REQUIRE_PROMOTION=false to bypass (escape hatch for
+        operating the strategy while its gate history is being built up).
+        Fails OPEN on a lookup error: a promotion-service outage must not
+        silently halt a running strategy — that's an availability decision,
+        not a safety one, since RiskEngine/kill-switch still gate every order.
+        """
+        if not _env_flag("SHORTVOL_REQUIRE_PROMOTION", True):
+            return None
+        service = getattr(self._rt, "_strategy_promotion_service", None)
+        if service is None:
+            return None
+        try:
+            record = service.get_record(SHORT_VOL_STRATEGY_ID)
+        except Exception as exc:
+            logger.warning("short-vol promotion lookup failed (allowing): %s", exc)
+            return None
+        if record.status in _SHORTVOL_TRADING_STATUSES:
+            return None
+        return (
+            f"strategy '{SHORT_VOL_STRATEGY_ID}' is at promotion status "
+            f"'{record.status}' — needs one of {sorted(_SHORTVOL_TRADING_STATUSES)}. "
+            f"Run backtest gates (POST /strategies/evaluate with evaluate_gates=true), "
+            f"then POST /strategies/promote. Bypass with SHORTVOL_REQUIRE_PROMOTION=false."
+        )
+
     async def auto_enter(self, now_ist: datetime) -> dict:
         """Attempt a condor entry on each configured underlying if we don't
-        already hold one. Honours SHORTVOL_AUTO_ENABLED (default off). VRP and
-        chain-width gates live in build(); this only decides *when* to look."""
+        already hold one. Honours SHORTVOL_AUTO_ENABLED (default off) and the
+        §5 promotion ladder. VRP and chain-width gates live in build(); this
+        only decides *when* to look."""
         if not _env_flag("SHORTVOL_AUTO_ENABLED", False):
             return {"ran": False, "reason": "SHORTVOL_AUTO_ENABLED=false"}
+        blocked = self.promotion_block_reason()
+        if blocked:
+            return {"ran": False, "reason": blocked, "promotion_blocked": True}
         results: list[dict] = []
         structures = self.structures
         # STAGGER entries across scans: only attempt a few NEW slots per call so
