@@ -26,6 +26,8 @@ import type {
 } from './types'
 
 export type NavView =
+  | 'command-center'
+  | 'research'
   | 'dashboard'
   | 'engine'
   | 'signals'
@@ -54,6 +56,8 @@ interface LoadingState {
   highEndScan: boolean
 }
 
+export type WsStatus = 'connecting' | 'connected' | 'disconnected' | 'error' | 'reconnecting'
+
 interface Store {
   // ── Navigation ────────────────────────────────────────────────────────────
   activeView: NavView
@@ -62,6 +66,10 @@ interface Store {
   // ── WebSocket connection ──────────────────────────────────────────────────
   wsConnected: boolean
   setWsConnected: (v: boolean) => void
+  // Finer-grained than the boolean: the header badge distinguishes a first
+  // connect from a drop-and-retry, which `wsConnected` alone cannot express.
+  wsStatus: WsStatus
+  setWsStatus: (v: WsStatus) => void
 
   // ── Live dashboard state (from WS) ────────────────────────────────────────
   runtimeState: RuntimeState | null
@@ -142,11 +150,13 @@ interface Store {
 }
 
 export const useStore = create<Store>((set) => ({
-  activeView: 'dashboard',
+  activeView: 'command-center',
   setActiveView: (v) => set({ activeView: v }),
 
   wsConnected: false,
   setWsConnected: (v) => set({ wsConnected: v }),
+  wsStatus: 'connecting',
+  setWsStatus: (v) => set({ wsStatus: v }),
 
   runtimeState: null,
   monitoring: null,

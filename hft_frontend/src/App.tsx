@@ -1,5 +1,7 @@
 import { useStore } from './store'
 import { Layout } from './components/Layout'
+import { CommandCenter } from './views/CommandCenter'
+import { Research } from './views/Research'
 import { Dashboard } from './views/Dashboard'
 import { Engine } from './views/Engine'
 import { Signals } from './views/Signals'
@@ -25,6 +27,8 @@ export function App() {
 
   function renderView() {
     switch (activeView) {
+      case 'command-center': return <CommandCenter />
+      case 'research':     return <Research />
       case 'dashboard':    return <Dashboard />
       case 'engine':       return <Engine />
       case 'signals':      return <Signals />

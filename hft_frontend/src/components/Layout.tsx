@@ -8,6 +8,8 @@ import {
   CircleDot,
   Cpu,
   GitBranch,
+  Gauge,
+  FlaskConical,
   LayoutDashboard,
   Newspaper,
   Power,
@@ -30,7 +32,7 @@ import { useStore } from '../store'
 import type { NavView } from '../store'
 import { execModeBadge } from './shared/Badge'
 import { FreshnessBadge, StaleBanner } from './shared/Freshness'
-import { useDashboardWs } from '../ws'
+import { useSharedWs } from '../ws'
 
 interface NavItem {
   id: NavView
@@ -42,6 +44,8 @@ interface NavItem {
 
 const NAV: NavItem[] = [
   // ── Core ──────────────────────────────────────────────────────────────────
+  { id: 'command-center', label: 'Command Center', shortLabel: 'Home', icon: <Gauge size={16} />, group: 'Core' },
+  { id: 'research',     label: 'Research',     shortLabel: 'Rsch', icon: <FlaskConical size={16} />, group: 'Core' },
   { id: 'dashboard',    label: 'Dashboard',    shortLabel: 'Home',     icon: <LayoutDashboard size={16} />, group: 'Core' },
   { id: 'engine',       label: 'Engine',       shortLabel: 'Agent',    icon: <Bot size={16} />,             group: 'Core' },
   { id: 'execution',    label: 'Execution',    shortLabel: 'Orders',   icon: <GitBranch size={16} />,       group: 'Core' },
@@ -68,6 +72,8 @@ const findNav = (id: NavView) => NAV.find(n => n.id === id)!
 
 // Bottom tab bar: AI labs are first-class on mobile, with the rest in More.
 const BOTTOM_TABS: NavItem[] = [
+  findNav('command-center'),
+  findNav('research'),
   findNav('dashboard'),
   findNav('ai-lab'),
   findNav('neural'),
@@ -106,7 +112,7 @@ function SidebarNavGroup({ group, items, activeView, navigate }: {
 }
 
 export function Layout({ children }: { children: ReactNode }) {
-  const { send } = useDashboardWs()
+  const wsManager = useSharedWs()
   const [drawerOpen, setDrawerOpen] = useState(false)
 
   const activeView    = useStore((s) => s.activeView)
@@ -121,7 +127,7 @@ export function Layout({ children }: { children: ReactNode }) {
   const marketStatus = liveFeed?.freshness?.market_status ?? null
 
   function toggleKillSwitch() {
-    send({ action: 'kill_switch', active: !killActive })
+    wsManager?.send({ action: 'kill_switch', active: !killActive })
   }
 
   function navigate(id: NavView) {

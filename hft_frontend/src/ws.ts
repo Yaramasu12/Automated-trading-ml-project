@@ -12,6 +12,9 @@
 
 import { useEffect, useRef, useState } from 'react';
 
+import { useStore } from './store';
+import type { WsStatus } from './store';
+
 // ─── Message types ───────────────────────────────────────────────────────────
 
 export interface WsMessage {
@@ -57,11 +60,65 @@ declare global {
   }
 }
 
+/**
+ * Install the real, store-backed bridge.
+ *
+ * This used to be missing entirely: `AppStoreBridge` was declared and read
+ * (getBridge / useWsStatus) but NOTHING ever assigned `window.__wsBridge`, so
+ * getBridge() always fell through to its silent no-op stub. Net effect — the
+ * socket connected fine, then every status transition and every snapshot went
+ * into a black hole: the UI sat on "CONNECTING" and showed "—" for all values.
+ *
+ * store.ts imports nothing from this module, so importing it here is safe;
+ * the `window` indirection is kept only because getBridge()/useWsStatus()
+ * already read through it. Zustand's getState()/setState work fine outside
+ * React, which is what lets a plain class reach the store.
+ */
+export function installWsBridge(): void {
+  if (window.__wsBridge) return;
+  window.__wsBridge = {
+    setWsStatus: (status) => {
+      const s = useStore.getState();
+      s.setWsConnected(status === 'connected');
+      s.setWsStatus(status);
+    },
+    applySnapshot: (data) => {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      useStore.getState().applyWsSnapshot(data as any);
+    },
+    applyMessageBatch: () => {
+      // Topic-stream batches (tick.*, order.*, ...) are not consumed by the
+      // current store shape — the dashboard renders off the periodic snapshot.
+      // Left as an intentional no-op rather than a fake write, so nothing
+      // claims to be wired that isn't. Wire this when a real per-topic
+      // consumer exists.
+    },
+  };
+}
+
+// Install on module load so the bridge exists before any manager connects.
+installWsBridge();
+
 // ─── Connection class ────────────────────────────────────────────────────────
 
+/** Same-origin WS URL, so the browser goes through nginx's `/ws` proxy block.
+ *
+ * This previously hardcoded `ws://localhost:8000` — the backend's
+ * CONTAINER-INTERNAL port, which is not what the browser can reach. Served
+ * from any real origin (e.g. http://10.0.0.47:3100, or localhost:3100), the
+ * socket pointed at a port with nothing on it and never opened, leaving the
+ * dashboard on "CONNECTING". Deriving from window.location keeps it correct
+ * for localhost, LAN IP, and any future https/domain setup alike, and matches
+ * the nginx `location /ws` proxy that already exists for exactly this.
+ */
+const wsUrl = (path: string): string => {
+  const proto = window.location.protocol === 'https:' ? 'wss' : 'ws';
+  return `${proto}://${window.location.host}${path}`;
+};
+
 const WS_URLS: Record<string, string> = {
-  paper: import.meta.env.VITE_WS_URL || 'ws://localhost:8000/ws/dashboard',
-  live: import.meta.env.VITE_WS_LIVE_URL || 'ws://localhost:8001/ws/dashboard',
+  paper: import.meta.env.VITE_WS_URL || wsUrl('/ws/dashboard'),
+  live: import.meta.env.VITE_WS_LIVE_URL || wsUrl('/ws/dashboard'),
 };
 
 export class SharedWsManager {
@@ -98,6 +155,16 @@ export class SharedWsManager {
   /** Unsubscribe from a named filter. */
   unsubscribe(id: string): void {
     this.filters.delete(id);
+  }
+
+  /** Register a message handler under `id` (paired with subscribe()'s filter). */
+  addHandler(id: string, handler: (msg: WsMessage) => void): void {
+    this.handlers.set(id, handler);
+  }
+
+  /** Remove a previously registered handler. */
+  removeHandler(id: string): void {
+    this.handlers.delete(id);
   }
 
   /** Get connection status. */
@@ -199,9 +266,14 @@ export class SharedWsManager {
   }
 
   private handleMessage(msg: WsEvent): void {
-    if (msg.type === 'snapshot' && 'data' in msg) {
-      // Snapshots replace entire store sections — apply directly
-      this.getBridge().applySnapshot(msg.data);
+    if (msg.type === 'snapshot') {
+      // The backend's /ws/dashboard snapshot carries its sections at the TOP
+      // level (state, monitoring, live_feed, db, portfolio, ...) — there is no
+      // `data` wrapper. This used to test `'data' in msg`, which is never true
+      // for the real payload, so every snapshot was silently discarded and the
+      // dashboard rendered "—" forever. Pass the whole message through; the
+      // store's applyWsSnapshot() reads the sections it needs off it.
+      this.getBridge().applySnapshot(msg as unknown as Record<string, unknown>);
       return;
     }
 
@@ -268,13 +340,18 @@ export class SharedWsManager {
 let manager: SharedWsManager | null = null;
 
 export const useSharedWs = (profile: 'paper' | 'live' = 'paper'): SharedWsManager | null => {
-  const [_connected, setConnected] = useState(false);
+  // Re-render when the connection state actually changes, so consumers of this
+  // hook see a fresh manager reference after a reconnect. Real status comes
+  // from the store (written by the manager's own open/close/error handlers) —
+  // this used to be a local useState flipped to `true` immediately after
+  // connect() was CALLED, i.e. before the socket had opened, which reported
+  // "connected" even when the connection subsequently failed.
+  useStore((s) => s.wsStatus);
 
   useEffect(() => {
     if (!manager || manager.getProfile() !== profile) {
       manager = new SharedWsManager(profile);
       manager.connect();
-      setConnected(true);
     }
 
     return () => {
@@ -295,33 +372,27 @@ export const useWsSubscribe = (
   useEffect(() => {
     if (manager) {
       manager.subscribe(id, filter);
-      manager.handlers.set(id, handler);
+      manager.addHandler(id, handler);
     }
     return () => {
       if (manager) {
         manager.unsubscribe(id);
-        manager.handlers.delete(id);
+        manager.removeHandler(id);
       }
     };
   }, [manager, id, filter, handler]);
 };
 
-/** Get connection status for UI. */
-export const useWsStatus = (): 'connecting' | 'connected' | 'disconnected' | 'error' | 'reconnecting' => {
-  const [status, setStatus] = useState<'connecting' | 'connected' | 'disconnected' | 'error' | 'reconnecting'>('connecting');
-
-  useEffect(() => {
-    const bridge = window.__wsBridge;
-    if (!bridge) return;
-    // Simple polling bridge — in production, wire to Zustand store
-    const interval = setInterval(() => {
-      setStatus('connected');
-    }, 1000);
-    return () => clearInterval(interval);
-  }, []);
-
-  return status;
-};
+/** Get connection status for UI.
+ *
+ * Reads the real status the manager writes through the bridge on
+ * open/close/error. The previous version bailed out when `window.__wsBridge`
+ * was undefined (which it always was, since nothing installed it), so this
+ * hook returned a hardcoded 'connecting' forever — that is what pinned the
+ * dashboard badge to "CONNECTING". Its fallback path was no better: a 1s timer
+ * that asserted 'connected' regardless of the socket's actual state.
+ */
+export const useWsStatus = (): WsStatus => useStore((s) => s.wsStatus);
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 

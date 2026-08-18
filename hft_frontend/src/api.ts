@@ -252,3 +252,26 @@ export const getDBReflectionsHistory = (limit = 30) =>
   get<{ reflections: Record<string, unknown>[] }>(`/db/reflections-history?limit=${limit}`)
 export const searchSimilarPatterns = (feature_vector: number[], limit = 8) =>
   post<{ patterns: Record<string, unknown>[]; count: number; backend: string }>('/db/similar-patterns', { feature_vector, limit })
+
+// ── Research data (REDESIGN §10) ────────────────────────────────────────────
+// Cached deep daily history (~44 symbols x ~7yrs) + validation-gate results.
+// These back the Research screen; before them the UI could only chart live
+// portfolio snapshots, which are a flat line while paper trading has 0 fills.
+export interface ResearchCandle {
+  t: string; open: number; high: number; low: number; close: number; volume: number
+}
+export const getResearchSymbols = () =>
+  get<{ count: number; symbols: string[] }>('/research/symbols')
+export const getResearchCandles = (symbol: string, limit = 500) =>
+  get<{ symbol: string; count: number; total_available?: number; candles: ResearchCandle[] }>(
+    `/research/candles/${encodeURIComponent(symbol)}?limit=${limit}`)
+
+export interface GateRow {
+  id: number; run_at: string; backtest_id: string; strategy_id: string
+  gate_name: string; result: string; metric_value: number | null
+  threshold_value: number | null; message?: string
+}
+export const getBacktestGates = (limit = 60) =>
+  get<{ count: number; results: GateRow[] }>(`/backtests/gates?limit=${limit}`)
+export const getStrategyPromotions = () =>
+  get<{ count: number; promotions: Record<string, unknown>[] }>('/strategies/promotions')

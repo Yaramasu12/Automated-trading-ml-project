@@ -100,11 +100,25 @@ function tickAgeSeconds(t: DashboardTick | undefined): number | null {
   return Math.max(0, Math.round((Date.now() - time) / 1000))
 }
 
-function tickStatus(t: DashboardTick | undefined): { label: string; className: string } {
+function tickStatus(
+  t: DashboardTick | undefined,
+  subscribed?: boolean,
+  marketOpen?: boolean,
+): { label: string; className: string } {
+  // `available: false` means "no tick cached for this symbol YET" — it does
+  // NOT mean the symbol is unsubscribed. Rendering it as "NOT SUBSCRIBED" told
+  // the operator the opposite of the truth: 58 symbols were subscribed and the
+  // feed was live, but pre-open Angel One streams nothing, so every row read
+  // as a subscription failure. Distinguish the three real cases.
   if (!t || t.available === false) {
-    return { label: 'NOT SUBSCRIBED', className: 'text-ink-faint border-gray-700 bg-surface' }
+    if (subscribed === false) {
+      return { label: 'NOT SUBSCRIBED', className: 'text-ink-faint border-gray-700 bg-surface' }
+    }
+    if (marketOpen === false) {
+      return { label: 'MARKET CLOSED', className: 'text-ink-faint border-surface-border bg-surface' }
+    }
+    return { label: 'AWAITING TICK', className: 'text-brand-yellow border-brand-yellow/40 bg-brand-yellow/10' }
   }
-
   const age = tickAgeSeconds(t)
   if (age !== null && age > 60) {
     return { label: 'STALE', className: 'text-brand-red border-brand-red/40 bg-brand-red/10' }
