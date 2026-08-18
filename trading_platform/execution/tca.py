@@ -142,8 +142,17 @@ class TransactionCostAnalyzer:
         timing_bps = daily_vol * (time_hours ** 0.5) * 10000 if time_hours > 0 else 0
 
         # 5. Total cost
+        #
+        # `total_bps` is a DIAGNOSTIC decomposition only — its three components
+        # use different sign conventions (is_bps is positive-means-cost, while
+        # impact_bps is positive-means-favourable), so their sum is not a
+        # meaningful economic quantity and must never be used as "the cost".
         total_bps = spread_bps + impact_bps + timing_bps
-        total_inr = fill.fill_price * fill.quantity * total_bps / 10000
+        # The actual money lost to execution is the implementation shortfall
+        # against the arrival price. This previously derived total_inr from
+        # total_bps, which produced nonsense: a BUY of 50 filled 5 points above
+        # a 100 arrival (a real cost of 5*50 = Rs250) was reported as Rs13.
+        total_inr = abs(is_bps) / 10_000 * fill.arrival_price * fill.quantity
 
         # 6. Quality rating
         quality = self._rate_quality(abs(is_bps), fill.fill_ratio, fill.time_to_fill_ms)
@@ -320,8 +329,19 @@ class TransactionCostAnalyzer:
         """Rate execution quality."""
         score = 100
 
-        # Penalize high cost
-        if abs_is_bps > 20:
+        # Penalize high cost.
+        #
+        # The bands used to top out at ">20bps -> -40", which left a
+        # catastrophic fill scoring 60 and reporting "GOOD" — a 500bps miss
+        # (filling 5 points through a 100 arrival) was rated the same as a
+        # 21bps one. Execution cost has no upper bound, so the scale must not
+        # either: anything past ~50bps is a failure regardless of the other
+        # terms, and is scored so it cannot be rescued by a fast full fill.
+        if abs_is_bps > 100:
+            score -= 100
+        elif abs_is_bps > 50:
+            score -= 70
+        elif abs_is_bps > 20:
             score -= 40
         elif abs_is_bps > 10:
             score -= 25

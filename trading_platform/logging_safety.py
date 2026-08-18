@@ -116,6 +116,12 @@ def install_secret_redaction() -> None:
 import logging as _logging
 
 _SWALLOWED = {"count": 0}
+# Per-component tallies. The bare count told an operator that SOMETHING was
+# swallowing exceptions but never what — during the 2026-08-10 session /health
+# reported "4 swallowed errors" with no way to identify the source, and the
+# WARNING logs alone did not narrow it either. A signal that fires without
+# saying where is barely more actionable than no signal at all.
+_SWALLOWED_BY_COMPONENT: dict[str, int] = {}
 _swallow_logger = _logging.getLogger("trading_platform.swallowed")
 
 
@@ -141,11 +147,21 @@ def note_swallowed(component: str, exc: BaseException) -> None:
     """
     _SWALLOWED["count"] += 1
     try:
+        _SWALLOWED_BY_COMPONENT[component] = _SWALLOWED_BY_COMPONENT.get(component, 0) + 1
+    except Exception:
+        pass
+    try:
         _swallow_logger.warning(
             "swallowed[%s]: %s: %s", component, type(exc).__name__, redact_secret_text(str(exc))
         )
     except Exception:
         pass
+
+
+def swallowed_errors_by_component() -> dict[str, int]:
+    """Which components swallowed exceptions, and how many each — so the
+    /health counter points somewhere instead of just alarming."""
+    return dict(_SWALLOWED_BY_COMPONENT)
 
 
 def swallowed_error_count() -> int:
