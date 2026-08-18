@@ -23,6 +23,7 @@ from trading_platform.domain.enums import (
     OptionType,
     OrderPriority,
     Segment,
+    Side,
 )
 from trading_platform.domain.models import Instrument
 
@@ -110,3 +111,103 @@ class SubmitMultiLegPriorityTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class HedgeFirstSequencingTests(unittest.TestCase):
+    """MultiLegManager fills legs SEQUENTIALLY, awaiting each broker fill.
+
+    ShortVolStrategy builds a condor as (SELL call, BUY call wing, SELL put,
+    BUY put wing). Submitting in construction order therefore sold a short
+    option and only THEN bought its protection — leaving a genuinely NAKED
+    short option open for the duration of that round trip, which is exactly
+    what `block_naked_option_selling` forbids. Rollback covers a leg *failing*,
+    not the open window during normal operation.
+
+    REDESIGN_PROMPT.md §6.3: "hedge-first leg sequencing (buy protective legs
+    before selling)".
+    """
+
+    def _runtime_with_legs(self):
+        rt = TradingRuntime()
+        exp = date(2100, 1, 7)
+        for inst in [
+            _option("NIFTY24000CE", 24000.0, OptionType.CE, exp),
+            _option("NIFTY24300CE", 24300.0, OptionType.CE, exp),
+            _option("NIFTY23000PE", 23000.0, OptionType.PE, exp),
+            _option("NIFTY22700PE", 22700.0, OptionType.PE, exp),
+        ]:
+            rt.instrument_master.instruments[inst.symbol] = inst
+        return rt
+
+    def _submit(self, rt, legs):
+        captured = {}
+
+        async def fake_submit(intents, strategy_name=""):
+            captured["intents"] = intents
+            return SimpleNamespace(rolled_back=False, order_id="t", to_dict=lambda: {})
+
+        rt.multi_leg_manager.submit = fake_submit
+        asyncio.run(rt.submit_multi_leg({"strategy_name": "short_vol_condor", "legs": legs}))
+        return captured["intents"]
+
+    def test_all_buys_precede_all_sells(self):
+        rt = self._runtime_with_legs()
+        intents = self._submit(rt, [
+            {"symbol": "NIFTY24000CE", "side": "SELL", "price": 100.0, "quantity": 1},
+            {"symbol": "NIFTY24300CE", "side": "BUY", "price": 40.0, "quantity": 1},
+            {"symbol": "NIFTY23000PE", "side": "SELL", "price": 90.0, "quantity": 1},
+            {"symbol": "NIFTY22700PE", "side": "BUY", "price": 35.0, "quantity": 1},
+        ])
+        sides = [i.signal.side for i in intents]
+        self.assertEqual(len(sides), 4)
+        first_sell = next(idx for idx, s in enumerate(sides) if s == Side.SELL)
+        self.assertTrue(
+            all(s == Side.BUY for s in sides[:first_sell]),
+            f"protection must be bought before anything is sold, got {sides}",
+        )
+        self.assertTrue(all(s == Side.SELL for s in sides[first_sell:]))
+
+    def test_never_naked_at_any_point_in_the_sequence(self):
+        """Walk the fill sequence and assert short options are always covered."""
+        rt = self._runtime_with_legs()
+        intents = self._submit(rt, [
+            {"symbol": "NIFTY24000CE", "side": "SELL", "price": 100.0, "quantity": 1},
+            {"symbol": "NIFTY24300CE", "side": "BUY", "price": 40.0, "quantity": 1},
+            {"symbol": "NIFTY23000PE", "side": "SELL", "price": 90.0, "quantity": 1},
+            {"symbol": "NIFTY22700PE", "side": "BUY", "price": 35.0, "quantity": 1},
+        ])
+        longs = shorts = 0
+        for i in intents:
+            if i.signal.side == Side.BUY:
+                longs += 1
+            else:
+                shorts += 1
+            self.assertLessEqual(
+                shorts, longs,
+                "short legs outnumbered long legs mid-sequence -> naked exposure",
+            )
+
+    def test_relative_order_within_each_side_is_preserved(self):
+        """Stable sort: don't silently reshuffle legs beyond the buy/sell split."""
+        rt = self._runtime_with_legs()
+        intents = self._submit(rt, [
+            {"symbol": "NIFTY24300CE", "side": "BUY", "price": 40.0, "quantity": 1},
+            {"symbol": "NIFTY22700PE", "side": "BUY", "price": 35.0, "quantity": 1},
+            {"symbol": "NIFTY24000CE", "side": "SELL", "price": 100.0, "quantity": 1},
+            {"symbol": "NIFTY23000PE", "side": "SELL", "price": 90.0, "quantity": 1},
+        ])
+        self.assertEqual(
+            [i.instrument.symbol for i in intents],
+            ["NIFTY24300CE", "NIFTY22700PE", "NIFTY24000CE", "NIFTY23000PE"],
+        )
+
+    def test_closing_order_also_buys_back_shorts_first(self):
+        """Closing a condor: buying back the short strikes removes the risk, so
+        it must precede selling the wings — the same rule, both directions."""
+        rt = self._runtime_with_legs()
+        intents = self._submit(rt, [
+            {"symbol": "NIFTY24300CE", "side": "SELL", "price": 40.0, "quantity": 1},
+            {"symbol": "NIFTY24000CE", "side": "BUY", "price": 100.0, "quantity": 1},
+        ])
+        self.assertEqual(intents[0].signal.side, Side.BUY)
+        self.assertEqual(intents[0].instrument.symbol, "NIFTY24000CE")

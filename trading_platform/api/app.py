@@ -1190,6 +1190,81 @@ def rollback_policy(payload: dict):
     return result
 
 
+# ── Validation gates + strategy promotion ladder (REDESIGN §5) ────────────────
+
+@app.get("/execution/tca", dependencies=[_AuthDep])
+def execution_tca(limit: int = 100):
+    """Transaction Cost Analysis over recent fills (REDESIGN §6.4)."""
+    return runtime.transaction_cost_analysis(limit=limit)
+
+
+@app.get("/backtests/gates", dependencies=[_AuthDep])
+def backtest_gates(
+    strategy_id: str | None = None,
+    backtest_id: str | None = None,
+    limit: int = 50,
+):
+    return runtime.backtest_gate_results(
+        strategy_id=strategy_id, backtest_id=backtest_id, limit=limit,
+    )
+
+
+@app.get("/research/symbols", dependencies=[_AuthDep])
+def research_symbols():
+    """Symbols with cached deep daily history available for charting.
+
+    The repo holds ~14 MB of real Angel One daily history (44 symbols x ~7yrs)
+    in data/historical/*__ONE_DAY_deep.csv, fetched for the backtests. It had
+    NO read endpoint, so the UI could not plot any of it — the dashboard was
+    charting only live portfolio snapshots (a flat line, since paper trading
+    has 0 fills) while the genuinely rich dataset sat unreachable on disk.
+    """
+    return runtime.research_symbols()
+
+
+@app.get("/research/candles/{symbol}", dependencies=[_AuthDep])
+def research_candles(symbol: str, limit: int = 500):
+    """Daily OHLC for one cached symbol, oldest-first, capped at `limit`."""
+    return runtime.research_candles(symbol, limit=limit)
+
+
+@app.get("/strategies/promotions", dependencies=[_AuthDep])
+def strategy_promotions():
+    return runtime.strategy_promotions()
+
+
+@app.post("/strategies/promote", dependencies=[_AuthDep])
+def promote_strategy(payload: dict):
+    result = runtime.promote_strategy(payload)
+    if not result.get("promoted"):
+        raise HTTPException(status_code=400, detail=result)
+    return result
+
+
+@app.post("/strategies/gate-waiver", dependencies=[_AuthDep])
+def grant_strategy_gate_waiver(payload: dict):
+    """Record an explicit, audited waiver letting a strategy onto the PAPER
+    rung without backtest-gate evidence. Requires a reason; live rungs can
+    never be waived. See StrategyPromotionService.grant_gate_waiver."""
+    try:
+        return runtime.grant_strategy_gate_waiver(payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.delete("/strategies/gate-waiver/{strategy_id}", dependencies=[_AuthDep])
+def revoke_strategy_gate_waiver(strategy_id: str):
+    return runtime.revoke_strategy_gate_waiver(strategy_id)
+
+
+@app.post("/strategies/rollback", dependencies=[_AuthDep])
+def rollback_strategy(payload: dict):
+    result = runtime.rollback_strategy(payload)
+    if not result.get("rolled_back"):
+        raise HTTPException(status_code=400, detail=result)
+    return result
+
+
 # ── MARL lab endpoints ─────────────────────────────────────────────────────────
 
 @app.get("/marl/status")

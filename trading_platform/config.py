@@ -239,6 +239,32 @@ class Settings:
     ))
     enable_gamma_exposure_gate: bool = field(default_factory=lambda: _bool_env("ENABLE_GAMMA_EXPOSURE_GATE", False))
 
+    # Market-hours option-chain snapshots -> per-underlying ATM IV history
+    # (REDESIGN §3/§4.2). OptionsChainCollector.capture() already persisted this
+    # to CSV and exposed atm_iv_history(), but nothing ever ran it on a schedule
+    # — only 7 ad-hoc capture dates existed as of 2026-08-08. This history is
+    # the ONLY way to get per-index implied vol: India VIX is NIFTY-based, so
+    # using it for BANKNIFTY/FINNIFTY (which realize ~24% vs NIFTY's ~18%)
+    # prices those structures at a vol they never trade at. It cannot be
+    # back-filled from any free source, so it exists only if recorded from now
+    # on. Default 300s ~= 78 snapshots/day, comfortably inside Angel One's
+    # candle throttle given the collector serialises its fetches.
+    # Transaction Cost Analysis (REDESIGN §6.4) — scores every fill against the
+    # mark at submission. Execution quality is routinely 10-20bps/trade, which
+    # on a 4-leg condor (8 spread crossings per round trip) rivals the whole
+    # strategy's annual edge — and unlike a prediction signal, a basis point
+    # saved cannot fail to generalise. Read-only measurement; it does not alter
+    # routing. Default ON: it only observes.
+    enable_tca: bool = field(default_factory=lambda: _bool_env("ENABLE_TCA", True))
+
+    enable_chain_capture: bool = field(default_factory=lambda: _bool_env("ENABLE_CHAIN_CAPTURE", True))
+    chain_capture_interval_seconds: int = field(default_factory=lambda: max(
+        60, _env_int("CHAIN_CAPTURE_INTERVAL_SECONDS", 300)
+    ))
+    chain_capture_underlyings: tuple[str, ...] = field(default_factory=lambda: _parse_csv_tuple(
+        os.getenv("CHAIN_CAPTURE_UNDERLYINGS", "NIFTY,BANKNIFTY,FINNIFTY")
+    ))
+
     # Goal governor — see GoalGovernance (goal/governance.py); annual_target_pct
     # is the one that actually scales live short-vol position sizing.
     yearly_profit_target: float = field(default_factory=lambda: _env_float("YEARLY_PROFIT_TARGET", 50_000_000.0))
@@ -417,6 +443,14 @@ class Settings:
     PBO_MAX: float = field(default_factory=lambda: _env_float("PBO_MAX", 0.4))
     MC_SHUFFLE_RUNS: int = field(default_factory=lambda: _env_int("MC_SHUFFLE_RUNS", 1000))
     PROMOTION_PAPER_DAYS: int = field(default_factory=lambda: _env_int("PROMOTION_PAPER_DAYS", 30))
+    MIN_WALKFORWARD_SHARPE: float = field(default_factory=lambda: _env_float("MIN_WALKFORWARD_SHARPE", 0.3))
+    GATE_MAX_DRAWDOWN: float = field(default_factory=lambda: _env_float("GATE_MAX_DRAWDOWN", 0.15))
+    MIN_NET_COST_RATIO: float = field(default_factory=lambda: _env_float("MIN_NET_COST_RATIO", 0.6))
+    CPCV_N_TEST_GROUPS: int = field(default_factory=lambda: _env_int("CPCV_N_TEST_GROUPS", 2))
+    CSCV_N_GROUPS: int = field(default_factory=lambda: _env_int("CSCV_N_GROUPS", 8))
+    # CPCV ships correct+tested but is NOT yet wired into neural/return_forecaster.py's
+    # live accept/reject gate — enabling that is a deliberate follow-up decision.
+    CPCV_ENABLED: bool = field(default_factory=lambda: _env_bool("CPCV_ENABLED", False))
 
     # ── Existing: ML / model paths ───────────────────────────
     MODEL_REGISTRY_PATH: str = field(default_factory=lambda: _env("MODEL_REGISTRY_PATH", "models/registry"))
@@ -657,17 +691,31 @@ class Settings:
 
     @property
     def is_configured(self) -> bool:
-        """Check if essential broker config is populated."""
-        has_angel = bool(
+        """Is ANY broker credential set complete enough to trade?
+
+        This used to check only the UPPER_SNAKE_CASE fields
+        (`ANGEL_ONE_FEED_API_KEY` / `ACCESS_TOKEN` / `CLIENT_LOG_ID`), which
+        belong to the not-yet-wired sharded-feed adapters and are normally
+        unset. The live app authenticates with the lower_snake_case set
+        (`angel_one_configured` below) — so on a perfectly well-configured
+        install this returned False and `__post_init__` logged
+        "No broker credentials configured. Platform will run in simulation
+        mode." on every single startup and script run.
+
+        That warning was FALSE and actively harmful: the credentials work
+        (verified 2026-08-08 by pulling real candles and a real NIFTY spot),
+        and a trading system that cries wolf on its credential check teaches
+        operators to ignore the message that matters. Accept either credential
+        set, since either genuinely enables trading.
+        """
+        has_angel_feed = bool(
             self.ANGEL_ONE_API_KEY
             and self.ANGEL_ONE_FEED_API_KEY
             and self.ANGEL_ONE_ACCESS_TOKEN
             and self.ANGEL_ONE_CLIENT_LOG_ID
         )
-        has_dhan = bool(
-            self.DHAN_ACCESS_TOKEN
-        )
-        return has_angel or has_dhan
+        has_dhan = bool(self.DHAN_ACCESS_TOKEN)
+        return has_angel_feed or has_dhan or self.angel_one_configured
 
     @property
     def angel_one_configured(self) -> bool:
@@ -791,5 +839,17 @@ def load_settings() -> Settings:
 # Singleton
 # ──────────────────────────────────────────────
 
+# Load .env BEFORE constructing the import-time singleton.
+#
+# Every field reads its env var via default_factory, so a Settings() built
+# before .env has been read sees an empty environment — it then logs
+# "No broker credentials configured. Platform will run in simulation mode."
+# on EVERY import, even on a fully-configured install, because this line runs
+# at import time while `load_local_env_files()` only ran inside
+# `load_settings()`. The warning was pure noise (the real runtime calls
+# load_settings() and gets correct values), but it trained operators to ignore
+# a message that should mean something. Loading the env files first makes this
+# singleton agree with load_settings().
+load_local_env_files()
 
 settings = Settings()

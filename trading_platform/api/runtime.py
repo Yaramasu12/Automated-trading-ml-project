@@ -5,6 +5,7 @@ import json
 import logging
 import math
 import os
+import uuid
 from dataclasses import asdict, dataclass
 from datetime import date, datetime, timedelta, timezone
 
@@ -33,6 +34,8 @@ from trading_platform.decision.pipeline import DecisionPipeline
 from trading_platform.derivatives.engine import ContractSelector, ExpiryCalendar, GreeksCalculator, IVSurfaceBuilder, OptionChainBuilder, RolloverPlanner
 from trading_platform.risk.historical_var import HistoricalVarCalculator
 from trading_platform.risk.portfolio_greeks import PortfolioGreeksCalculator
+from pathlib import Path
+
 from trading_platform.domain.enums import ExecutionMode, OptionType, OrderPriority, OrderType, ProductType, Segment, Side
 from trading_platform.domain.models import OrderIntent, Signal
 from trading_platform.event_bus import InMemoryEventBus
@@ -80,12 +83,13 @@ from trading_platform.api.model_research_service import ModelResearchService
 from trading_platform.api.db_query_service import DbQueryService
 from trading_platform.api.news_service import NewsService
 from trading_platform.api.policy_service import PolicyService
+from trading_platform.api.strategy_promotion_service import StrategyPromotionService
 from trading_platform.api.options_service import OptionsService
 from trading_platform.api.regime_meta_service import RegimeMetaService
 from trading_platform.api.live_feed_service import LiveFeedService
 from trading_platform.api.price_service import PriceResolution, PriceResolutionService
 from trading_platform.api.ai_capabilities import ai_capabilities, log_capabilities_at_startup
-from trading_platform.logging_safety import note_swallowed, swallowed_error_count
+from trading_platform.logging_safety import note_swallowed, swallowed_errors_by_component, swallowed_error_count
 from trading_platform.ai.meta_labeler import MetaLabeler
 from trading_platform.agents.model_gateway import LocalModelGateway
 from trading_platform.agents.supervisor import AgentCouncilSupervisor
@@ -210,6 +214,18 @@ class TradingRuntime:
         # (both are REPLACED on instrument refresh) — constructed once, never
         # needs rebuilding in _rebuild_market_engines.
         self.options_chain_collector = OptionsChainCollector(self)
+        # TCA (REDESIGN §6.4). `_tca_arrivals` holds the pre-trade mark per
+        # in-flight intent, keyed symbol|side|strategy — the arrival price is
+        # only observable at submission and is gone by fill time.
+        self._tca_arrivals: dict[str, tuple[float, datetime]] = {}
+        self.tca = None
+        if self.settings.enable_tca:
+            try:
+                from trading_platform.execution.tca import TransactionCostAnalyzer
+
+                self.tca = TransactionCostAnalyzer()
+            except Exception as exc:
+                note_swallowed("tca_init", exc)
         self.event_bus = InMemoryEventBus()
         self.news_intelligence = NewsIntelligence()
         # Constructed once (not per-tick) so its seen-link dedup state
@@ -487,6 +503,12 @@ class TradingRuntime:
             trace_replay=self.trace_replay,
             float_or_none=self._float_or_none,
         )
+        # REDESIGN §5: rule-based strategies get their own promotion ladder,
+        # gated on the backtest validation gates (CPCV/DSR/PBO/MC-DD/costs).
+        self._strategy_promotion_service = StrategyPromotionService(
+            db=self.db,
+            min_paper_days=getattr(self.settings, "PROMOTION_PAPER_DAYS", 30),
+        )
         self._options_service = self._build_options_service()
         self._live_feed_service = self._build_live_feed_service()
         # live_feed and exit_manager are both constructed once and never
@@ -715,6 +737,8 @@ class TradingRuntime:
             self.live_feed.add_subscriptions([symbol])
         except Exception as exc:
             note_swallowed("live_feed_subscribe_on_fill", exc)
+        # Score this fill against the mark captured at submission (§6.4).
+        self._record_tca_fill(trade, intent, float(fill_price or 0.0))
         self._append_trace_event_for_intent(
             intent,
             "broker_filled",
@@ -1366,6 +1390,14 @@ class TradingRuntime:
             _aio.create_task(self._periodic_reconciliation_loop())
             if self.settings.enable_reconciliation else None
         )
+        # Market-hours-gated option-chain snapshots, so per-underlying ATM IV
+        # history accumulates for the VRP signal (see the loop's docstring —
+        # this history cannot be back-filled, so it only exists if recorded).
+        self._chain_capture_skip_passes = 0
+        self._chain_capture_task = (
+            _aio.create_task(self._periodic_chain_capture_loop())
+            if self.settings.enable_chain_capture else None
+        )
         self.monitor.record_event(
             "async_services_started",
             (
@@ -1697,6 +1729,12 @@ class TradingRuntime:
     async def _enqueue_intent_with_controls(self, intent: OrderIntent, payload: dict | None = None) -> dict:
         payload = payload or {}
         trace_id = self._ensure_trace_for_intent(intent, source="runtime_enqueue")
+        # TCA arrival price (REDESIGN §6.4): the mark AT SUBMISSION is the
+        # benchmark implementation shortfall is measured against, and it is
+        # only observable here — by fill time the market has moved and the
+        # original reference is gone forever. Captured before any gate can
+        # reject, so a rejected order simply never produces a TCA record.
+        self._record_tca_arrival(intent)
         gate_payload = {**payload}
         gate_payload.setdefault("_gate_phase", "enqueue_preflight")
         final_decision = self._evaluate_final_execution_gate(intent, payload=gate_payload)
@@ -1911,6 +1949,27 @@ class TradingRuntime:
             metadata.update({"multi_leg_group": group_id, "leg_index": index})
             leg_payload["metadata"] = metadata
             intents.append(self._intent_from_payload(leg_payload))
+
+        # HEDGE-FIRST SEQUENCING (REDESIGN_PROMPT.md §6.3).
+        #
+        # MultiLegManager.submit() fills legs SEQUENTIALLY, awaiting each broker
+        # fill before sending the next. ShortVolStrategy builds a condor as
+        # (SELL call, BUY call wing, SELL put, BUY put wing) — so submitting in
+        # construction order sold a short option and only THEN bought its
+        # protection, leaving the account holding a genuinely naked short option
+        # for the duration of that round trip. That is exactly the exposure
+        # `block_naked_option_selling` exists to forbid; the manager's rollback
+        # covers a leg *failing*, not the open window during normal operation.
+        #
+        # Ordering BUY legs before SELL legs is correct for BOTH directions,
+        # which is why it can be applied unconditionally:
+        #   opening — buy the protective wings, then sell the short strikes;
+        #   closing — buy back the short strikes (removing the risk), then
+        #             sell the wings.
+        # Buying can only reduce short exposure or add protection; selling can
+        # only create or increase it. Stable sort, so relative order within the
+        # buy group and within the sell group is untouched.
+        intents.sort(key=lambda i: 0 if i.signal.side == Side.BUY else 1)
 
         combined_notional = sum(intent.notional_value for intent in intents)
         if self.execution_mode.value.startswith("LIVE") and not bool(payload.get("manual_approved", False)):
@@ -2633,6 +2692,91 @@ class TradingRuntime:
         except Exception as exc:
             note_swallowed("final_gate_rejection.save_risk_event", exc)
 
+    def _record_tca_arrival(self, intent: OrderIntent) -> None:
+        """Stash the pre-trade mark so the fill can be scored against it."""
+        if not self.settings.enable_tca:
+            return
+        try:
+            symbol = intent.instrument.symbol
+            mark = self._best_mark_for_symbol(symbol) or float(intent.signal.price or 0.0)
+            if mark > 0:
+                self._tca_arrivals[self._tca_key(intent)] = (mark, datetime.now(timezone.utc))
+                # Bound the map: an intent that never fills (rejected, expired,
+                # cancelled) would otherwise leak an entry per attempt for the
+                # life of the process.
+                if len(self._tca_arrivals) > 2000:
+                    for stale in list(self._tca_arrivals)[:500]:
+                        self._tca_arrivals.pop(stale, None)
+        except Exception as exc:
+            note_swallowed("tca_arrival", exc)
+
+    @staticmethod
+    def _tca_key(intent: OrderIntent) -> str:
+        sig = intent.signal
+        return f"{intent.instrument.symbol}|{sig.side.value}|{sig.strategy_name}"
+
+    def _record_tca_fill(self, trade, intent: OrderIntent, fill_price: float) -> None:
+        """Score a fill against its arrival price (REDESIGN §6.4).
+
+        Execution quality is a measurable, controllable edge — routinely
+        10-20bps per trade, which on a 4-leg condor (8 spread crossings per
+        round trip) is comparable to the strategy's entire annual edge. Unlike
+        a prediction signal it cannot 'fail to generalise': a basis point saved
+        is banked. Measuring it is the prerequisite to improving it.
+        """
+        if not self.settings.enable_tca or self.tca is None:
+            return
+        try:
+            from trading_platform.execution.tca import FillRecord
+
+            key = self._tca_key(intent)
+            arrival = self._tca_arrivals.pop(key, None)
+            if arrival is None:
+                return  # no pre-trade reference -> a TCA number here would be fiction
+            arrival_price, arrival_at = arrival
+            now = datetime.now(timezone.utc)
+            record = FillRecord(
+                correlation_id=str(getattr(trade, "trade_id", "") or key),
+                symbol=intent.instrument.symbol,
+                exchange=getattr(intent.instrument.exchange, "value", ""),
+                side=intent.signal.side.value,
+                quantity=int(intent.quantity),
+                fill_price=float(fill_price),
+                fill_time=now,
+                arrival_price=float(arrival_price),
+                # No intraday VWAP series is recorded yet, so arrival doubles as
+                # the benchmark. That makes `implementation_shortfall` the
+                # meaningful field and the VWAP-relative one degenerate — stated
+                # rather than silently reported as if both were real.
+                benchmark_price=float(arrival_price),
+                order_type=getattr(intent.order_type, "value", "MARKET"),
+                urgency="NORMAL",
+                strategy=intent.signal.strategy_name,
+                time_to_fill_ms=max(0.0, (now - arrival_at).total_seconds() * 1000.0),
+            )
+            self.tca.analyze_fill(record)
+        except Exception as exc:
+            note_swallowed("tca_fill", exc)
+
+    def transaction_cost_analysis(self, limit: int = 100) -> dict:
+        """TCA summary for the Ops screen / API."""
+        if self.tca is None:
+            return {"enabled": False, "reason": "TCA disabled (ENABLE_TCA=false)"}
+        try:
+            results = self.tca.get_recent_results(limit)
+            # compute_summary() filters by (start, end, symbols, strategies) —
+            # it does NOT take a results list.
+            summary = self.tca.compute_summary() if results else None
+            return {
+                "enabled": True,
+                "fills_analyzed": len(results),
+                "summary": summary.__dict__ if summary is not None else None,
+                "recent": [r.__dict__ for r in results[-20:]],
+            }
+        except Exception as exc:
+            note_swallowed("tca_summary", exc)
+            return {"enabled": True, "error": str(exc)}
+
     def _best_mark_for_symbol(self, symbol: str) -> float | None:
         """Best available market price: live tick → exit-manager sticky mark.
 
@@ -2813,6 +2957,9 @@ class TradingRuntime:
     def _run_monitor_tick(self) -> None:
         metrics: dict[str, Any] = {
             "swallowed_errors": swallowed_error_count(),
+            # Which components, not just how many — a bare count alarms without
+            # pointing anywhere (see logging_safety._SWALLOWED_BY_COMPONENT).
+            "swallowed_by_component": swallowed_errors_by_component(),
             "ai_capabilities": ai_capabilities(self),
             "scheduler": self.scheduler.stats,
         }
@@ -3023,6 +3170,95 @@ class TradingRuntime:
             logger.critical("PORTFOLIO GUARDIAN: %s — setting kill switch", breach_reason)
             self.set_kill_switch(True, reason=f"portfolio_guardian: {breach_reason}")
 
+    async def _periodic_chain_capture_loop(self) -> None:
+        """Periodically snapshot the option chain so per-underlying ATM IV
+        history actually accumulates (REDESIGN_PROMPT.md §3, §4.2).
+
+        `OptionsChainCollector.capture()` already computed and CSV-persisted
+        per-strike IV/delta and exposed `atm_iv_history()` — but NOTHING ever
+        called it on a schedule. Confirmed 2026-08-08: only 7 distinct capture
+        dates existed on disk (2026-07-29..08-06), from ad-hoc manual runs.
+
+        Why this matters beyond tidiness: VRP is implied minus realized, and
+        the ONLY free long history of implied vol is India VIX — which is a
+        NIFTY-based measure. Backtesting BANKNIFTY/FINNIFTY against it means
+        selling ~17% vol on indices that realize ~24%, which is a guaranteed
+        loser by construction and makes any multi-underlying result
+        meaningless (measured: -8% to -18% CAGR, an artifact, not a finding).
+        Per-underlying ATM IV cannot be back-filled from anywhere free, so the
+        only way to ever answer "does short-vol work on BANKNIFTY?" is to
+        start recording it now and wait.
+
+        Market-hours gated: a chain snapshot outside trading hours is stale
+        data that would pollute the IV-rank window it feeds.
+        """
+        import asyncio as _aio
+
+        from trading_platform.agent.market_hours import is_market_open, now_ist
+
+        interval = float(self.settings.chain_capture_interval_seconds)
+        underlyings = list(self.settings.chain_capture_underlyings)
+        while True:
+            try:
+                await _aio.sleep(interval)
+                if not underlyings or not is_market_open(now_ist()):
+                    continue
+                await _aio.to_thread(self._run_chain_capture_tick, underlyings)
+            except _aio.CancelledError:
+                break
+            except Exception as exc:
+                note_swallowed("periodic_chain_capture", exc)
+
+    # Passes to skip after a rate-limited/failed chain-capture sweep.
+    _CHAIN_CAPTURE_COOLDOWN_PASSES = 3
+    # Class-level default so the breaker is safe even if the capture task is
+    # never started (tests, BACKTEST mode) — an instance attr set only during
+    # async startup would AttributeError on any other path.
+    _chain_capture_skip_passes = 0
+
+    def _run_chain_capture_tick(self, underlyings: list[str]) -> None:
+        """One capture pass. Per-underlying failures are isolated: Angel One
+        throttling one index must not stop the others from recording.
+
+        CIRCUIT BREAKER (added 2026-08-10): this loop generated 299 of the
+        session's 305 swallowed errors. With the tick feed down, EVERYTHING
+        (spot, VIX, option prices, scans) falls back to the same rate-limited
+        candle API, and an unthrottled chain sweep across several underlyings
+        x many strikes exhausts it — which in turn pushed decision/pipeline.py
+        onto SYNTHETIC bars. Capturing IV history is worth doing, but not at
+        the cost of starving the decision path of real data.
+
+        On a pass that fails outright, skip the next few passes instead of
+        re-hammering. Self-clearing: one clean pass resets the breaker.
+        """
+        if self._chain_capture_skip_passes > 0:
+            self._chain_capture_skip_passes -= 1
+            return
+
+        failures = 0
+        for underlying in underlyings:
+            try:
+                self.options_chain_collector.capture(underlying)
+            except Exception as exc:
+                failures += 1
+                note_swallowed(f"chain_capture.{underlying}", exc)
+                # A rate-limit is global to the API key, not per-symbol, so
+                # continuing through the remaining underlyings only deepens it.
+                if "rate" in str(exc).lower() or "access" in str(exc).lower():
+                    self._chain_capture_skip_passes = self._CHAIN_CAPTURE_COOLDOWN_PASSES
+                    logger.warning(
+                        "chain capture hit an Angel One rate-limit on %s — pausing "
+                        "capture for %d passes to protect the decision path",
+                        underlying, self._chain_capture_skip_passes,
+                    )
+                    return
+        if failures and failures == len(underlyings):
+            self._chain_capture_skip_passes = self._CHAIN_CAPTURE_COOLDOWN_PASSES
+            logger.warning(
+                "chain capture failed for every underlying — pausing %d passes",
+                self._chain_capture_skip_passes,
+            )
+
     async def _periodic_reconciliation_loop(self) -> None:
         """24/7-while-LIVE broker position reconciliation — same always-on
         shape as _periodic_portfolio_guardian_loop, but for "does the broker
@@ -3124,12 +3360,27 @@ class TradingRuntime:
             max_drawdown=float(payload.get("max_drawdown", self.settings.max_drawdown)),
             strategy_names=names,
         )
-        payload = result.to_dict()
-        payload["selection_policy"] = {
+        response = result.to_dict()
+        response["selection_policy"] = {
             "ranking_inputs": ["return_pct", "profit_factor", "sharpe_like", "max_drawdown"],
             "live_rule": "Only candidates with stable paper/live shadow metrics may progress to controlled live.",
         }
-        return payload
+        # REDESIGN §5 gates — opt-in (CSCV over the leaderboard is not free, and
+        # every existing caller expects the unchanged response shape by default).
+        if payload.get("evaluate_gates"):
+            from trading_platform.backtesting.evaluator import evaluate_sweep_gates
+
+            gate_results = evaluate_sweep_gates(result, self.settings)
+            backtest_id = str(payload.get("backtest_id") or f"sweep-{uuid.uuid4().hex[:12]}")
+            gate_results.backtest_id = backtest_id
+            try:
+                self.db.save_gate_results_batch(
+                    backtest_id, gate_results.strategy_id, gate_results,
+                )
+            except Exception as exc:  # persistence must never break the API response
+                note_swallowed("runtime.save_gate_results_sweep", exc)
+            response["gates"] = gate_results.summary()
+        return response
 
     def signal_scan(self, payload: dict | None = None) -> dict:
         return self._decision_orchestrator.run_signal_scan(payload).baseline_payload
@@ -3378,7 +3629,129 @@ class TradingRuntime:
         )
         wf_dict = result.to_dict()
         wf_dict["retraining_recommended"] = result.degradation_detected
+        # REDESIGN §5 walk-forward gate — opt-in, wraps the REAL evaluator result.
+        if payload.get("evaluate_gates"):
+            from trading_platform.validation.gates import GateEvaluator
+
+            evaluator = GateEvaluator(settings=self.settings)
+            evaluator.evaluate_walk_forward(result)
+            gate_results = evaluator.finalize(
+                str(payload.get("backtest_id") or f"wf-{uuid.uuid4().hex[:12]}"), strategy_name,
+            )
+            evaluator.evaluate_promotion_ladder(gate_results.all_passed)
+            try:
+                self.db.save_gate_results_batch(
+                    gate_results.backtest_id, strategy_name, gate_results,
+                )
+            except Exception as exc:  # persistence must never break the API response
+                note_swallowed("runtime.save_gate_results_walk_forward", exc)
+            wf_dict["gates"] = gate_results.summary()
         return wf_dict
+
+    # ------------------------------------------------------------------
+    # REDESIGN §5: validation gate results + strategy promotion ladder
+    # ------------------------------------------------------------------
+
+    def backtest_gate_results(
+        self,
+        strategy_id: str | None = None,
+        backtest_id: str | None = None,
+        limit: int = 50,
+    ) -> dict:
+        rows = self.db.recent_gate_results(
+            backtest_id=backtest_id, strategy_id=strategy_id, limit=limit,
+        )
+        return {"count": len(rows), "results": rows}
+
+    def strategy_promotions(self) -> dict:
+        items = self._strategy_promotion_service.list_promotions()
+        return {"count": len(items), "promotions": items}
+
+    # ── Research data (cached deep history) ──────────────────────────────────
+    # ~14 MB of real Angel One daily bars (44 symbols x ~7yrs) live in
+    # data/historical/*__ONE_DAY_deep.csv, fetched for the backtests. Nothing
+    # exposed them, so the UI charted only live portfolio snapshots — a flat
+    # line, since paper trading has 0 fills — while the actually-interesting
+    # dataset was unreachable. Read-only, filesystem-backed: no DB round trip.
+
+    _RESEARCH_DIR = Path("data/historical")
+    _RESEARCH_SUFFIX = "__ONE_DAY_deep.csv"
+
+    def research_symbols(self) -> dict:
+        try:
+            paths = sorted(self._RESEARCH_DIR.glob(f"*{self._RESEARCH_SUFFIX}"))
+        except OSError as exc:
+            note_swallowed("research_symbols.glob", exc)
+            return {"count": 0, "symbols": []}
+        symbols = [p.name[: -len(self._RESEARCH_SUFFIX)] for p in paths]
+        return {"count": len(symbols), "symbols": symbols}
+
+    def research_candles(self, symbol: str, limit: int = 500) -> dict:
+        import csv as _csv
+
+        # Reject path separators/traversal — `symbol` lands in a filesystem path.
+        safe = "".join(ch for ch in str(symbol) if ch.isalnum() or ch in {"-", "_", "&"})
+        if not safe:
+            return {"symbol": symbol, "count": 0, "candles": []}
+        path = self._RESEARCH_DIR / f"{safe}{self._RESEARCH_SUFFIX}"
+        if not path.exists():
+            return {"symbol": safe, "count": 0, "candles": [], "reason": "no cached history"}
+        rows: list[dict] = []
+        try:
+            with open(path, encoding="utf-8") as fh:
+                for r in _csv.DictReader(fh):
+                    try:
+                        rows.append({
+                            "t": r["timestamp"][:10],
+                            "open": float(r["open"]), "high": float(r["high"]),
+                            "low": float(r["low"]), "close": float(r["close"]),
+                            "volume": float(r.get("volume") or 0.0),
+                        })
+                    except (KeyError, ValueError):
+                        continue        # skip malformed rows, don't fail the request
+        except OSError as exc:
+            note_swallowed(f"research_candles.{safe}", exc)
+            return {"symbol": safe, "count": 0, "candles": []}
+        tail = rows[-max(1, int(limit)):]
+        return {"symbol": safe, "count": len(tail), "total_available": len(rows), "candles": tail}
+
+    def grant_strategy_gate_waiver(self, payload: dict | None = None) -> dict:
+        payload = payload or {}
+        strategy_id = str(payload.get("strategy_id") or "")
+        if not strategy_id:
+            raise ValueError("strategy_id is required")
+        return self._strategy_promotion_service.grant_gate_waiver(
+            strategy_id,
+            str(payload.get("rung") or "paper"),
+            str(payload.get("reason") or ""),
+        )
+
+    def revoke_strategy_gate_waiver(self, strategy_id: str) -> dict:
+        return self._strategy_promotion_service.revoke_gate_waiver(str(strategy_id))
+
+    def promote_strategy(self, payload: dict | None = None) -> dict:
+        payload = payload or {}
+        strategy_id = str(payload.get("strategy_id") or "")
+        if not strategy_id:
+            return {"promoted": False, "reason": "strategy_id_required"}
+        record = self._strategy_promotion_service.get_record(strategy_id)
+        target = str(
+            payload.get("target_status")
+            or self._strategy_promotion_service._next_status(record.status)
+            or ""
+        )
+        if not target:
+            return {"promoted": False, "reason": "no_next_status", "status": record.status}
+        return self._strategy_promotion_service.promote(strategy_id, target, payload)
+
+    def rollback_strategy(self, payload: dict | None = None) -> dict:
+        payload = payload or {}
+        strategy_id = str(payload.get("strategy_id") or "")
+        if not strategy_id:
+            return {"rolled_back": False, "reason": "strategy_id_required"}
+        return self._strategy_promotion_service.rollback(
+            strategy_id, payload.get("target_status"),
+        )
 
     # ------------------------------------------------------------------
     # ML regime classification
@@ -3511,6 +3884,10 @@ class TradingRuntime:
             # Count of deliberately-swallowed exceptions — a rising number means
             # hot-path failures are being silently absorbed; investigate.
             "swallowed_errors": swallowed_error_count(),
+            # WHICH components, not just how many — a bare count alarms without
+            # pointing anywhere. (Added to the metrics dict first by mistake;
+            # /health builds this separate payload.)
+            "swallowed_by_component": swallowed_errors_by_component(),
             "runtime_monitor": self.latest_monitor_digest(),
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }
