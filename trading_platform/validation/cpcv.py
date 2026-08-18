@@ -18,10 +18,12 @@ import time
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import numpy as np
 from numpy.typing import NDArray
+
+from trading_platform.validation.gates import deflated_sharpe_ratio
 
 logger = logging.getLogger(__name__)
 
@@ -155,7 +157,7 @@ class CombinatorialPurgedCrossValidator:
             embargo_lower = test_end
             embargo_upper = min(n_samples, test_end + self.embargo_size)
             train_indices = train_indices[
-                train_indices < embargo_lower | train_indices >= embargo_upper
+                (train_indices < embargo_lower) | (train_indices >= embargo_upper)
             ]
 
             # Validate sizes
@@ -186,137 +188,138 @@ class CombinatorialPurgedCrossValidator:
         """Get generated folds."""
         return self._folds
 
-    def get_combinatorial_paths(self) -> List[List[int]]:
+    def get_combinatorial_paths(self, n_test_groups: int = 2) -> List[Tuple[int, ...]]:
         """
-        Get combinatorial paths (subsets of folds).
-
-        Returns all 2^n_folds - 1 combinations of folds for comprehensive coverage.
+        Get CPCV combinatorial paths per López de Prado, AFML Ch. 12: every
+        combination of `n_test_groups` base folds used TOGETHER as one combined
+        test set. Returns C(n_folds, n_test_groups) paths — e.g. C(10,2)=45 —
+        not the full 2**n_folds-1 power set (that's not what a "CPCV path" is).
         """
         from itertools import combinations
 
-        paths = []
-        for k in range(1, self.n_folds + 1):
-            for combo in combinations(range(len(self._folds)), k):
-                paths.append(list(combo))
-        return paths
+        return list(combinations(range(self.n_folds), n_test_groups))
 
-
-class DeflatedSharpeProcessor:
-    """
-    Deflated Sharpe Ratio (DSR) test per López de Deluxe.
-
-    Adjusts the Sharpe ratio for multiple testing and selection bias.
-    DSR < 1.0 → Sharpe is not statistically significant.
-    """
-
-    @staticmethod
-    def calculate(
-        sharpe_ratio: float,
-        n_backtests: int,
-        n_obs: int,
-        skew: float = 0.0,
-        kurtosis: float = 3.0,
-        confidence: float = 0.95,
-    ) -> float:
+    def build_path(self, path: Tuple[int, ...], n_samples: int) -> Fold:
         """
-        Calculate Deflated Sharpe Ratio.
-
-        Args:
-            sharpe_ratio: Observed Sharpe ratio
-            n_backtests: Number of backtests run (multiple testing correction)
-            n_obs: Number of observations in return series
-            skew: Skewness of return distribution
-            kurtosis: Kurtosis of return distribution
-            confidence: Confidence level
-
-        Returns:
-            DSR value ( < 1.0 means not significant)
+        Assemble one combinatorial train/test split for `path` — a tuple of base-fold
+        indices whose test windows are combined into ONE test set. Train indices are
+        every OTHER base fold's range, purged + embargoed around EACH path fold's own
+        test boundary (generalizes generate_folds()'s single-test-block purge/embargo
+        math to N combined test blocks).
         """
-        if n_obs < 30:
-            return 0.0
+        fold_size = n_samples // self.n_folds
+        path_set = set(path)
 
-        # Standard Sharpe expectation under null
-        expected_sharpe = DSRProcessor._expected_sharpe(sharpe_ratio, skew, kurtosis)
+        def fold_range(k: int) -> Tuple[int, int]:
+            start = k * fold_size
+            end = min((k + 1) * fold_size, n_samples)
+            return start, end
 
-        # Multiple testing correction
-        pi_star = DSRProcessor._prior_probabilities(sharpe_ratio, n_backtests, confidence)
+        test_indices = (
+            np.concatenate([np.arange(*fold_range(i)) for i in sorted(path_set)])
+            if path_set else np.array([], dtype=np.int64)
+        )
 
-        # DSR formula
-        dsr = DSRProcessor._sharpe_to_normal(sharpe_ratio)
-        dsr -= DSRProcessor._sharpe_to_normal(0) + pi_star
+        train_indices_list: List[int] = []
+        for j in range(self.n_folds):
+            if j not in path_set:
+                start, end = fold_range(j)
+                train_indices_list.extend(range(start, end))
+        train_indices = np.array(train_indices_list, dtype=np.int64)
 
-        return float(dsr)
+        for i in sorted(path_set):
+            test_start, test_end = fold_range(i)
+            purge_lower = max(0, test_start - self.purge_depth)
+            purge_upper = min(n_samples, test_end + self.purge_depth)
+            train_indices = train_indices[
+                (train_indices < purge_lower) | (train_indices >= purge_upper)
+            ]
+            embargo_lower = test_end
+            embargo_upper = min(n_samples, test_end + self.embargo_size)
+            train_indices = train_indices[
+                (train_indices < embargo_lower) | (train_indices >= embargo_upper)
+            ]
 
-    @staticmethod
-    def _expected_sharpe(sharpe: float, skew: float, kurtosis: float) -> float:
-        """Expected Sharpe under null hypothesis."""
-        # Approximation using Cornish-Fisher expansion
-        n = 252  # annualization
-        z = (skew / 6.0) * (sharpe / np.sqrt(n)) + \
-            (kurtosis - 3) / 24.0 * (sharpe**2 / n) - 1.0 / 6.0 * (skew**2 / 36.0) * (sharpe**3 / n**1.5)
-        return sharpe - z
+        return Fold(
+            fold_id=-1,  # combinatorial path, not a single base fold
+            train_indices=train_indices,
+            test_indices=test_indices,
+            purge_depth=self.purge_depth,
+            embargo_size=self.embargo_size,
+        )
 
-    @staticmethod
-    def _prior_probabilities(sharpe: float, n_backtests: int, confidence: float) -> float:
-        """Prior probability of selection."""
-        from scipy import stats
 
-        alpha = 1.0 - confidence
-        z = stats.norm.ppf(1.0 - alpha / (2.0 * n_backtests))
-        return float(z * sharpe)
+@dataclass
+class PathVariantResult:
+    """One (combinatorial path, param-grid variant) trial outcome — the unit
+    real CPCV/PBO operates on. Produced by CPCVValidator.run_validation()."""
+    path: Tuple[int, ...]
+    params: Dict[str, Any]
+    is_metric: float
+    oos_metric: float
+    oos_auc: float
+    returns: NDArray[np.float64]
+    n_trades: int = 0
+    max_drawdown: float = 0.0
 
-    @staticmethod
-    def _sharpe_to_normal(sharpe: float) -> float:
-        """Transform Sharpe to normal score."""
-        from scipy import stats
-        return float(stats.norm.ppf(0.5 + 0.5 * stats.erf(sharpe / np.sqrt(2.0))))
+
+@dataclass
+class PathPBOResult:
+    pbo: float
+    n_paths: int
+    n_variants: int
+    logits: List[float] = field(default_factory=list)
+    insufficient_trials: bool = False
 
 
 class ProbabilityOfOverfittingProcessor:
     """
-    Probability of Backtest Overfitting (PBO) per López de Prado.
+    Probability of Backtest Overfitting (PBO) per Bailey, Borwein, López de
+    Prado & Zhu (2015), "The Probability of Backtest Overfitting" — the real
+    CSCV algorithm, applied here to CPCVValidator's (path x variant) grid.
 
-    PBO > 0.4 → Backtest is overfit, reject.
+    PBO > 0.4 → backtest is overfit, reject.
     """
 
     @staticmethod
-    def calculate(
-        backtest_returns: List[NDArray[np.float64]],
-        best_sharpe: float,
-        n_permutations: int = 1000,
-        random_state: Optional[int] = None,
-    ) -> float:
+    def calculate_from_path_variants(results: List[PathVariantResult]) -> PathPBOResult:
         """
-        Calculate probability of backtest overfitting.
+        For each combinatorial path: find the IS-best variant (max is_metric),
+        then find that variant's rank among all variants' oos_metric FOR THAT
+        SAME PATH. w_c = relative rank in (0,1); lambda_c = ln(w_c/(1-w_c)).
+        PBO = fraction of paths where lambda_c <= 0 (the IS-winner performs at
+        or below the OOS median — i.e. overfit on that path).
 
-        Args:
-            backtest_returns: List of return arrays from each backtest
-            best_sharpe: Best Sharpe ratio observed
-            n_permutations: Number of permutations for estimation
-            random_state: Random seed
-
-        Returns:
-            PBO value (0.0 = not overfit, 1.0 = fully overfit)
+        Requires >=2 distinct param-grid variants (else there's nothing to
+        rank) — a single-model run (param_grid=[{}]) reports
+        insufficient_trials=True rather than a fabricated PBO value.
         """
-        if not backtest_returns or len(backtest_returns) < 2:
-            return 0.0
+        by_path: Dict[Tuple[int, ...], List[PathVariantResult]] = {}
+        variant_keys = set()
+        for r in results:
+            by_path.setdefault(r.path, []).append(r)
+            variant_keys.add(tuple(sorted(r.params.items())))
 
-        rng = np.random.default_rng(random_state)
+        n_variants = len(variant_keys)
+        if n_variants < 2 or not by_path:
+            return PathPBOResult(pbo=0.0, n_paths=0, n_variants=n_variants, insufficient_trials=True)
 
-        # Calculate Sharpe for permuted backtests
-        permuted_sharpes = []
-        for _ in range(n_permutations):
-            permuted_best = 0.0
-            for returns in backtest_returns:
-                # Permuted Sharpe
-                perm_returns = returns[rng.permutation(len(returns))]
-                sharpe = np.mean(perm_returns) / np.std(perm_returns) * np.sqrt(252)
-                permuted_best = max(permuted_best, abs(sharpe))
-            permuted_sharpes.append(permuted_best)
+        logits: List[float] = []
+        for variants in by_path.values():
+            if len(variants) < 2:
+                continue
+            is_best = max(variants, key=lambda v: v.is_metric)
+            oos_sorted = sorted(variants, key=lambda v: v.oos_metric)
+            rank = oos_sorted.index(is_best) + 1  # 1-based, 1 = worst OOS performer
+            n = len(variants)
+            w = min(max(rank / (n + 1), 1e-6), 1 - 1e-6)  # avoid exact 0/1 logit blowup
+            logits.append(float(np.log(w / (1 - w))))
 
-        # PBO = proportion of permuted sharpes > observed best
-        pbo = float(np.mean(np.array(permuted_sharpes) > best_sharpe))
-        return pbo
+        if not logits:
+            return PathPBOResult(pbo=0.0, n_paths=0, n_variants=n_variants, insufficient_trials=True)
+
+        pbo = sum(1 for lam in logits if lam <= 0) / len(logits)
+        return PathPBOResult(pbo=pbo, n_paths=len(logits), n_variants=n_variants, logits=logits)
 
 
 class ValidationGateKeeper:
@@ -349,9 +352,18 @@ class ValidationGateKeeper:
         """Add a validation gate."""
         self._gates.append(gate)
 
-    def evaluate_gate(self, name: str, value: float, threshold: float, message: str) -> Gate:
-        """Evaluate and record a gate."""
-        result = GateResult.PASS if value >= threshold else GateResult.FAIL
+    def evaluate_gate(
+        self, name: str, value: float, threshold: float, message: str, direction: str = "gte",
+    ) -> Gate:
+        """Evaluate and record a gate.
+
+        direction="gte" (default): PASS if value >= threshold (higher-is-better,
+        e.g. AUC/DSR/Sharpe/trade-count). direction="lte": PASS if value <=
+        threshold (lower-is-better, e.g. PBO/max_drawdown) — passing "gte" for
+        these previously made PBO=0.5 vs threshold=0.4 PASS when it must FAIL.
+        """
+        passed = value <= threshold if direction == "lte" else value >= threshold
+        result = GateResult.PASS if passed else GateResult.FAIL
         gate = Gate(name=name, result=result, value=value, threshold=threshold, message=message)
         self._gates.append(gate)
         status = "✅ PASS" if result == GateResult.PASS else "❌ FAIL"
@@ -411,135 +423,138 @@ class CPCVValidator:
         self,
         X_train: NDArray[np.float64],
         y_train: NDArray[np.int64],
-        backtest_func,  # callable(fold_indices) -> backtest_result
-        n_backtests: int = 50,  # for DSR correction
+        variant_fn: Callable[[Dict[str, Any], NDArray, NDArray, NDArray, NDArray], Dict[str, Any]],
+        param_grid: Optional[List[Dict[str, Any]]] = None,
+        n_test_groups: int = 2,
     ) -> CPCVResult:
         """
-        Run full CPCV validation pipeline.
+        Run full CPCV validation pipeline over real combinatorial paths.
 
         Args:
             X_train: Feature matrix
             y_train: Labels
-            backtest_func: Function that takes fold indices and returns backtest metrics
-            n_backtests: Number of backtests for DSR correction
+            variant_fn: (params, X_tr, y_tr, X_te, y_te) -> {"is_metric", "oos_metric",
+                "oos_auc" (optional), "returns": np.ndarray, "n_trades" (optional),
+                "max_drawdown" (optional)}. Called once per (path, param combo) — trials
+                are evaluated INSIDE each combinatorial fold, never on the full sample
+                (§4.4b "Optuna tuning only inside folds").
+            param_grid: trial configurations to compare. Defaults to [{}] (a single
+                model/strategy, no sweep) — PBO then reports insufficient_trials=True
+                since overfitting-probability needs >=2 variants to rank against
+                each other.
+            n_test_groups: base folds combined per CPCV path (C(n_folds, n_test_groups)
+                total paths).
 
         Returns:
             CPCVResult with all gates evaluated
         """
+        param_grid = param_grid or [{}]
         logger.info(f"CPCV: Starting validation for model {self.model_version}")
 
-        # 1. Generate folds
         n_samples = len(X_train)
-        folds = self._cpcv.generate_folds(n_samples)
-
-        if not folds:
+        base_folds = self._cpcv.generate_folds(n_samples)
+        if not base_folds:
             raise ValueError("No valid folds generated — increase min_train_size or reduce n_folds")
 
-        # 2. Run backtests on each fold
-        fold_results = []
-        all_backtest_returns = []
-        for fold in folds:
-            logger.info(
-                f"CPCV: Fold {fold.fold_id} — train: {len(fold.train_indices)}, "
-                f"test: {len(fold.test_indices)}"
+        paths = self._cpcv.get_combinatorial_paths(n_test_groups=n_test_groups)
+        if not paths:
+            raise ValueError("No combinatorial paths generated — check n_folds/n_test_groups")
+
+        path_variant_results: List[PathVariantResult] = []
+        fold_results: List[Dict[str, Any]] = []
+        for path in paths:
+            built = self._cpcv.build_path(path, n_samples)
+            if (
+                len(built.train_indices) < self._cpcv.min_train_size
+                or len(built.test_indices) < self._cpcv.min_test_size
+            ):
+                continue
+            X_tr, y_tr = X_train[built.train_indices], y_train[built.train_indices]
+            X_te, y_te = X_train[built.test_indices], y_train[built.test_indices]
+            for params in param_grid:
+                outcome = variant_fn(params, X_tr, y_tr, X_te, y_te)
+                returns = np.asarray(outcome.get("returns", np.array([])), dtype=np.float64)
+                pvr = PathVariantResult(
+                    path=path,
+                    params=params,
+                    is_metric=float(outcome.get("is_metric", 0.0)),
+                    oos_metric=float(outcome.get("oos_metric", 0.0)),
+                    oos_auc=float(outcome.get("oos_auc", outcome.get("oos_metric", 0.0))),
+                    returns=returns,
+                    n_trades=int(outcome.get("n_trades", 0)),
+                    max_drawdown=float(outcome.get("max_drawdown", 0.0)),
+                )
+                path_variant_results.append(pvr)
+                fold_results.append({
+                    "path": path,
+                    "params": params,
+                    "train_size": len(built.train_indices),
+                    "test_size": len(built.test_indices),
+                    "auc": pvr.oos_auc,
+                    "sharpe": pvr.oos_metric,
+                    "max_drawdown": pvr.max_drawdown,
+                    "n_trades": pvr.n_trades,
+                })
+
+        if not path_variant_results:
+            raise ValueError(
+                "No (path, variant) results produced — check min_train_size/"
+                "min_test_size vs n_test_groups for this n_samples"
             )
 
-            # Train on fold's train set
-            X_tr, y_tr = X_train[fold.train_indices], y_train[fold.train_indices]
-            X_te, y_te = X_train[fold.test_indices], y_train[fold.test_indices]
-
-            # Backtest on fold's test set
-            result = backtest_func(fold, X_tr, y_tr, X_te, y_te)
-            fold_results.append({
-                "fold_id": fold.fold_id,
-                "train_size": len(fold.train_indices),
-                "test_size": len(fold.test_indices),
-                **result,
-            })
-            all_backtest_returns.append(result.get("returns", np.array([])))
-
-        # 3. Aggregate OOS metrics
-        oos_aucs = [r.get("auc", 0.0) for r in fold_results]
-        oos_sharpes = [r.get("sharpe", 0.0) for r in fold_results]
-        oos_drawdowns = [r.get("max_drawdown", 0.0) for r in fold_results]
-
+        oos_aucs = [r.oos_auc for r in path_variant_results]
+        oos_sharpes = [r.oos_metric for r in path_variant_results]
+        oos_drawdowns = [r.max_drawdown for r in path_variant_results]
         out_of_sample_metrics = {
             "mean_oos_auc": float(np.mean(oos_aucs)),
             "std_oos_auc": float(np.std(oos_aucs)),
             "mean_oos_sharpe": float(np.mean(oos_sharpes)),
             "std_oos_sharpe": float(np.std(oos_sharpes)),
-            "max_oos_drawdown": float(np.max(oos_drawdowns)),
+            "max_oos_drawdown": float(np.max(oos_drawdowns)) if oos_drawdowns else 0.0,
             "min_oos_sharpe": float(np.min(oos_sharpes)),
-            "n_folds": len(fold_results),
+            "n_paths": len(paths),
+            "n_variants": len(param_grid),
+            "n_path_variant_results": len(path_variant_results),
         }
 
-        # 4. Calculate DSR
-        best_sharpe = float(np.max(oos_sharpes))
-        skew = float(np.mean([r.get("return_skew", 0.0) for r in fold_results]))
-        kurt = float(np.mean([r.get("return_kurtosis", 3.0) for r in fold_results]))
+        # DSR — delegates to the single canonical implementation (gates.py); no
+        # duplicate/self-permutation math here.
+        best = max(path_variant_results, key=lambda r: r.oos_metric)
+        trial_sharpes = [r.oos_metric for r in path_variant_results]
+        returns_with_data = [r.returns for r in path_variant_results if len(r.returns) > 0]
+        all_returns = np.concatenate(returns_with_data) if returns_with_data else best.returns
+        dsr_result = deflated_sharpe_ratio(best.oos_metric, trial_sharpes, all_returns)
+        dsr = dsr_result.dsr
 
-        # Find total returns series for n_obs
-        all_returns = np.concatenate([r.get("returns", np.array([])) for r in fold_results if len(r.get("returns", np.array([]))) > 0])
-        n_obs = len(all_returns) if len(all_returns) > 0 else 252
-
-        dsr = DeflatedSharpeProcessor.calculate(
-            sharpe_ratio=best_sharpe,
-            n_backtests=n_backtests,
-            n_obs=n_obs,
-            skew=skew,
-            kurtosis=kurt,
-        )
-
-        # 5. Calculate PBO
-        pbo = ProbabilityOfOverfittingProcessor.calculate(
-            backtest_returns=all_backtest_returns,
-            best_sharpe=best_sharpe,
-        )
-
-        # 6. Evaluate gates
-        self.gatekeeper.evaluate_gate(
-            name="min_oos_auc",
-            value=out_of_sample_metrics["mean_oos_auc"],
-            threshold=self.gatekeeper.min_auc,
-            message=f"OOS AUC must be ≥ {self.gatekeeper.min_auc}",
-        )
+        # PBO — real combinatorial-path CSCV over the (path x variant) grid.
+        pbo_result = ProbabilityOfOverfittingProcessor.calculate_from_path_variants(path_variant_results)
+        pbo = pbo_result.pbo
 
         self.gatekeeper.evaluate_gate(
-            name="dsr",
-            value=dsr,
-            threshold=self.gatekeeper.min_dsr,
-            message=f"Deflated Sharpe ≥ {self.gatekeeper.min_dsr}",
+            "min_oos_auc", out_of_sample_metrics["mean_oos_auc"], self.gatekeeper.min_auc,
+            f"OOS AUC must be >= {self.gatekeeper.min_auc}",
         )
-
         self.gatekeeper.evaluate_gate(
-            name="pbo",
-            value=pbo,
-            threshold=self.gatekeeper.max_pbo,
-            message=f"PBO ≤ {self.gatekeeper.max_pbo}",
+            "dsr", dsr, self.gatekeeper.min_dsr, f"Deflated Sharpe >= {self.gatekeeper.min_dsr}",
         )
-
         self.gatekeeper.evaluate_gate(
-            name="min_walkforward_sharpe",
-            value=out_of_sample_metrics["mean_oos_sharpe"],
-            threshold=self.gatekeeper.min_walkforward_sharpe,
-            message=f"Walk-forward Sharpe ≥ {self.gatekeeper.min_walkforward_sharpe}",
+            "pbo", pbo, self.gatekeeper.max_pbo, f"PBO <= {self.gatekeeper.max_pbo}", direction="lte",
         )
-
         self.gatekeeper.evaluate_gate(
-            name="max_drawdown",
-            value=out_of_sample_metrics["max_oos_drawdown"],
-            threshold=self.gatekeeper.max_drawdown_threshold,
-            message=f"Max DD ≤ {self.gatekeeper.max_drawdown_threshold}",
+            "min_walkforward_sharpe", out_of_sample_metrics["mean_oos_sharpe"],
+            self.gatekeeper.min_walkforward_sharpe,
+            f"Walk-forward Sharpe >= {self.gatekeeper.min_walkforward_sharpe}",
         )
-
         self.gatekeeper.evaluate_gate(
-            name="min_trades",
-            value=float(sum(r.get("n_trades", 0) for r in fold_results)),
-            threshold=float(self.gatekeeper.min_trades),
-            message=f"Total trades ≥ {self.gatekeeper.min_trades}",
+            "max_drawdown", out_of_sample_metrics["max_oos_drawdown"],
+            self.gatekeeper.max_drawdown_threshold,
+            f"Max DD <= {self.gatekeeper.max_drawdown_threshold}", direction="lte",
+        )
+        self.gatekeeper.evaluate_gate(
+            "min_trades", float(sum(r.n_trades for r in path_variant_results)),
+            float(self.gatekeeper.min_trades), f"Total trades >= {self.gatekeeper.min_trades}",
         )
 
-        # 7. Build result
         result = CPCVResult(
             model_version=self.model_version,
             folds=fold_results,
@@ -554,7 +569,7 @@ class CPCVValidator:
         )
 
         logger.info(
-            f"CPCV: Validation {'✅ PASSED' if result.all_passed else '❌ FAILED'} for "
+            f"CPCV: Validation {'PASSED' if result.all_passed else 'FAILED'} for "
             f"model {self.model_version}"
         )
         logger.info(f"CPCV: OOS AUC={out_of_sample_metrics['mean_oos_auc']:.4f}, "

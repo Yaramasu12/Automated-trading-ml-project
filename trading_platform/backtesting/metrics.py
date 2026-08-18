@@ -21,7 +21,7 @@ class PerformanceMetrics:
     sharpe_like: float
 
 
-def _round_trip_pnls(trades: list[Trade]) -> list[float]:
+def round_trip_pnls(trades: list[Trade]) -> list[float]:
     """Compute realised per-round-trip PnL with FIFO matching, per symbol.
 
     Supports both long (BUY then SELL) and short (SELL then BUY) round trips,
@@ -79,7 +79,7 @@ def calculate_metrics(starting_capital: float, equity_values: list[float], trade
         if peak > 0:
             max_drawdown = max(max_drawdown, (peak - value) / peak)
 
-    round_trips = _round_trip_pnls(trades)
+    round_trips = round_trip_pnls(trades)
     wins = [pnl for pnl in round_trips if pnl > 0]
     losses = [abs(pnl) for pnl in round_trips if pnl < 0]
     if losses:

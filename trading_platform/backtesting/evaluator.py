@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import datetime as _dt
-from dataclasses import asdict, dataclass
-from datetime import date
+from dataclasses import asdict, dataclass, field
+from datetime import date, datetime
+from typing import Any
+
+import numpy as np
 
 from trading_platform.backtesting.engine import BacktestConfig, BacktestEngine
 from trading_platform.backtesting.metrics import PerformanceMetrics
@@ -19,6 +22,12 @@ class StrategyScore:
     trade_count: int
     approved_orders: int
     rejected_orders: int
+    # REDESIGN §5 validation gates need these — deliberately NOT in to_dict(),
+    # consumed only by backtesting.evaluator.evaluate_sweep_gates(). Keeping
+    # them off the API response avoids bloating every /strategies/evaluate call.
+    equity_curve: list[tuple[datetime, float]] = field(default_factory=list)
+    trade_pnls: list[float] = field(default_factory=list)
+    total_charges: float = 0.0
 
     def to_dict(self) -> dict:
         return {
@@ -90,6 +99,9 @@ class StrategyEvaluator:
                     trade_count=result.metrics.trade_count,
                     approved_orders=approved,
                     rejected_orders=rejected,
+                    equity_curve=result.equity_curve,
+                    trade_pnls=result.trade_pnls,
+                    total_charges=result.total_charges,
                 )
             )
         ranked = sorted(scores, key=lambda item: item.score, reverse=True)
@@ -103,6 +115,9 @@ class StrategyEvaluator:
                 trade_count=item.trade_count,
                 approved_orders=item.approved_orders,
                 rejected_orders=item.rejected_orders,
+                equity_curve=item.equity_curve,
+                trade_pnls=item.trade_pnls,
+                total_charges=item.total_charges,
             )
             for index, item in enumerate(ranked)
         ]
@@ -116,8 +131,108 @@ class StrategyEvaluator:
 
 
 # ---------------------------------------------------------------------------
-# Walk-forward validation
+# REDESIGN §5 validation gates over a strategy sweep
 # ---------------------------------------------------------------------------
+
+
+def _aligned_returns_matrix(leaderboard: list) -> tuple:
+    """Build a (T periods x N variants) per-period return matrix from each
+    StrategyScore's equity curve, aligned on the timestamps common to ALL
+    variants (so every column covers the same periods — required for CSCV).
+
+    Returns (matrix, timestamps). Empty matrix if fewer than 2 variants have
+    usable (>=2-point) curves.
+    """
+    usable = [s for s in leaderboard if len(s.equity_curve) >= 2]
+    if len(usable) < 2:
+        return np.empty((0, 0)), []
+
+    common: set | None = None
+    for score in usable:
+        stamps = {ts for ts, _ in score.equity_curve}
+        common = stamps if common is None else (common & stamps)
+    timestamps = sorted(common or set())
+    if len(timestamps) < 3:
+        return np.empty((0, 0)), []
+
+    columns = []
+    for score in usable:
+        by_ts = dict(score.equity_curve)
+        equity = np.array([float(by_ts[ts]) for ts in timestamps], dtype=np.float64)
+        prev = equity[:-1]
+        # Period-over-period simple return; guard div-by-zero on a wiped-out curve.
+        rets = np.divide(
+            np.diff(equity), prev, out=np.zeros_like(prev), where=prev != 0,
+        )
+        columns.append(rets)
+    # `usable` is returned so callers can map matrix columns back to the
+    # StrategyScore they came from — column i is usable[i], which is NOT
+    # necessarily leaderboard[i] once thin curves are filtered out.
+    return np.column_stack(columns), usable
+
+
+def evaluate_sweep_gates(evaluation: "StrategyEvaluationResult", settings: Any = None):
+    """REDESIGN §5: DSR / PBO / Monte-Carlo-DD / cost-model gates over a
+    StrategyEvaluationResult's leaderboard — the N strategy variants evaluated
+    over the same window are the "sweep" (the N trials) these statistics need.
+
+    Gates that need >=2 comparable variants (DSR, PBO) are recorded as SKIP
+    rather than crashing or fabricating a value when the leaderboard is too
+    thin. Monte-Carlo-DD and the cost model apply to the winning variant.
+    """
+    from trading_platform.validation.gates import GateEvaluator, GateOutcome, GateResult
+
+    evaluator = GateEvaluator(settings=settings)
+    leaderboard = list(evaluation.leaderboard)
+    if not leaderboard:
+        return evaluator.finalize("", "")
+
+    best = leaderboard[0]  # already rank-sorted by StrategyEvaluator.evaluate()
+    matrix, usable = _aligned_returns_matrix(leaderboard)
+
+    if matrix.size and matrix.shape[1] >= 2:
+        # Per-period Sharpe (NOT annualised) — DSR's T is the number of periods
+        # in this same series, so both must be on the same footing.
+        trial_sharpes = []
+        for col in range(matrix.shape[1]):
+            series = matrix[:, col]
+            sd = float(np.std(series, ddof=1)) if len(series) > 1 else 0.0
+            trial_sharpes.append(float(np.mean(series) / sd) if sd > 0 else 0.0)
+        # The DSR subject is the leaderboard winner IF it survived the
+        # usable-curve filter; otherwise fall back to the best-Sharpe column.
+        try:
+            best_col = usable.index(best)
+        except ValueError:
+            best_col = int(np.argmax(trial_sharpes))
+        evaluator.evaluate_dsr(trial_sharpes[best_col], trial_sharpes, matrix[:, best_col])
+        evaluator.evaluate_pbo(matrix)
+    else:
+        reason = "need >=2 leaderboard variants with overlapping equity curves"
+        evaluator.results.dsr = GateOutcome(
+            gate_name="deflated_sharpe", result=GateResult.SKIP, metric=0.0, threshold=0.0,
+            message=f"SKIPPED: {reason}",
+        )
+        evaluator.results.pbo = GateOutcome(
+            gate_name="pbo", result=GateResult.SKIP, metric=0.0, threshold=0.0,
+            message=f"SKIPPED: {reason}",
+        )
+
+    if best.trade_pnls:
+        evaluator.evaluate_monte_carlo(
+            [{"pnl": p} for p in best.trade_pnls],
+            starting_capital=best.metrics.starting_capital,
+        )
+    else:
+        evaluator.results.monte_carlo = GateOutcome(
+            gate_name="monte_carlo_dd", result=GateResult.SKIP, metric=0.0, threshold=0.0,
+            message="SKIPPED: winning variant has no closed round-trip trades",
+        )
+
+    evaluator.evaluate_cost_model(best.metrics.total_pnl, best.total_charges)
+    evaluator.results.promotion_ladder = None  # set by finalize_ladder below
+    results = evaluator.finalize("", best.strategy_name)
+    evaluator.evaluate_promotion_ladder(results.all_passed)
+    return results
 
 
 @dataclass(frozen=True)

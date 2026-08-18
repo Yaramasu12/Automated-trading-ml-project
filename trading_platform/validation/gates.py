@@ -15,13 +15,11 @@ All gates stored in DB. No model deploys without passing all.
 
 from __future__ import annotations
 
-import hashlib
 import logging
 import math
 from dataclasses import dataclass, field
-from decimal import Decimal
 from enum import Enum
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional
 
 import numpy as np
 
@@ -114,63 +112,84 @@ class BacktestGateResults:
 # ──────────────────────────────────────────────
 
 
+@dataclass
+class DSRResult:
+    dsr: float                  # Phi(z) in [0,1] — probability true Sharpe > 0 net of selection bias
+    observed_sharpe: float
+    expected_max_sharpe: float  # SR_0 — expected max Sharpe under N iid null trials
+    sharpe_variance: float      # V[SR_n] across trials
+    n_trials: int
+    skew: float
+    kurtosis: float
+    n_obs: int
+    # True when the inputs were too thin to deflate at all (T<30 or n_trials<2).
+    # Distinguishes "we could not evaluate this" from "this scored badly" —
+    # the gate reports the former as SKIP, not FAIL.
+    insufficient_data: bool = False
+
+
 def deflated_sharpe_ratio(
+    sharpe_hat: float,
+    trial_sharpes: Any,  # Sequence[float] — every trial's Sharpe, including the selected one
     returns: np.ndarray,
-    num_simulations: int = 500,
-    seed: int = 42,
+    *,
     annualization_factor: float = 252.0,
-    rejection_rate: float = 0.05,
-) -> Tuple[float, float]:
+) -> DSRResult:
     """
-    Compute Deflated Sharpe Ratio (Lo, 2002).
+    Deflated Sharpe Ratio per Bailey & Lopez de Prado (2014), "The Deflated
+    Sharpe Ratio: Correcting for Selection Bias, Backtest Overfitting, and
+    Non-Normality".
 
-    DSR = (SR_obs - mu_ST) / sigma_ST
+    DSR = Phi( (SR_hat - SR_0) * sqrt(T-1) / sqrt(1 - g3*SR_hat + (g4-1)/4*SR_hat^2) )
 
-    where mu_ST, sigma_ST are the expected min/max Sharpe ratios
-    from num_simulations of random strategies.
+    SR_0 = sqrt(V[SR_n]) * ( (1-gamma_EM)*Phi^-1(1-1/N) + gamma_EM*Phi^-1(1-1/(N*e)) )
+    is the expected maximum Sharpe of N iid N(0, V[SR_n]) trials (Euler-Mascheroni
+    approximation of the expected max of N Gaussians) — this is what "deflates"
+    a Sharpe that was the best of many trials, unlike naively testing SR_hat
+    against zero.
 
-    Returns:
-        (dsr, p_value) — p_value = proportion of simulated Sharpes >= SR_obs
+    trial_sharpes supplies N and V[SR_n] (the trial-selection variance).
+    returns is the OOS return series of the SELECTED strategy — supplies T
+    (sample size) and skew/kurtosis (g3/g4, non-excess convention: normal
+    data -> kurtosis=3) for the non-normality correction.
+
+    T<30 or n_trials<2 -> DSR reported as 0.0 (insufficient data to deflate),
+    not silently skipped — callers must not treat 0.0 as "passed".
     """
-    if len(returns) < 30:
-        return 0.0, 1.0
+    returns = np.asarray(returns, dtype=np.float64)
+    t_obs = len(returns)
+    n_trials = len(trial_sharpes)
 
-    # Observed Sharpe ratio (annualized)
-    mu = np.mean(returns)
-    sigma = np.std(returns, ddof=1)
-    if sigma == 0:
-        return 0.0, 1.0
-    sr_obs = (mu / sigma) * math.sqrt(annualization_factor)
+    if t_obs < 30 or n_trials < 2:
+        return DSRResult(
+            dsr=0.0, observed_sharpe=sharpe_hat, expected_max_sharpe=0.0,
+            sharpe_variance=0.0, n_trials=n_trials, skew=0.0, kurtosis=3.0, n_obs=t_obs,
+            insufficient_data=True,
+        )
 
-    # Simulate random strategies
-    rng = np.random.RandomState(seed)
-    n = len(returns)
-    simulated_srs = []
-    for _ in range(num_simulations):
-        # Shuffle returns
-        shuffled = rng.permutation(returns)
-        m = np.mean(shuffled)
-        s = np.std(shuffled, ddof=1)
-        if s > 0:
-            simulated_srs.append((m / s) * math.sqrt(annualization_factor))
+    from scipy import stats as _stats
 
-    if not simulated_srs:
-        return sr_obs, 0.5
-
-    simulated_srs = np.array(simulated_srs)
-
-    # P-value: proportion of simulated Sharpes >= observed
-    p_value = float(np.mean(simulated_srs >= sr_obs))
-
-    # DSR
-    mu_st = float(np.min(simulated_srs))
-    sigma_st = float(np.std(simulated_srs))
-    if sigma_st == 0:
-        dsr = sr_obs
+    sr_var = float(np.var(np.asarray(trial_sharpes, dtype=np.float64), ddof=1))
+    euler_mascheroni = 0.5772156649015329
+    if sr_var <= 0 or n_trials < 2:
+        sr0 = 0.0
     else:
-        dsr = (sr_obs - mu_st) / sigma_st
+        sr0 = math.sqrt(sr_var) * (
+            (1 - euler_mascheroni) * _stats.norm.ppf(1 - 1.0 / n_trials)
+            + euler_mascheroni * _stats.norm.ppf(1 - 1.0 / (n_trials * math.e))
+        )
 
-    return dsr, p_value
+    skew = float(_stats.skew(returns))
+    kurt = float(_stats.kurtosis(returns, fisher=False))  # non-excess: normal data -> 3.0
+    denom_sq = 1 - skew * sharpe_hat + ((kurt - 1) / 4.0) * sharpe_hat ** 2
+    denom = math.sqrt(max(1e-12, denom_sq))
+    z = (sharpe_hat - sr0) * math.sqrt(t_obs - 1) / denom
+    dsr = float(_stats.norm.cdf(z))
+
+    return DSRResult(
+        dsr=dsr, observed_sharpe=sharpe_hat, expected_max_sharpe=sr0,
+        sharpe_variance=sr_var, n_trials=n_trials, skew=skew, kurtosis=kurt, n_obs=t_obs,
+    )
 
 
 # ──────────────────────────────────────────────
@@ -178,39 +197,75 @@ def deflated_sharpe_ratio(
 # ──────────────────────────────────────────────
 
 
-def probability_of_overfitting(
-    out_of_sample_srs: List[float],
-    in_sample_srs: List[List[float]],
-    num_simulations: int = 10000,
-    seed: int = 42,
-) -> float:
+@dataclass
+class PBOResult:
+    pbo: float               # fraction of CSCV splits where the IS-winner is OOS-median-or-worse
+    n_splits: int
+    n_variants: int
+    logits: List[float] = field(default_factory=list)
+
+
+def probability_of_backtest_overfitting(
+    returns_matrix: np.ndarray,   # shape (T periods, N variants)
+    n_groups: int = 8,            # S — must be even; C(S, S/2) splits generated
+) -> PBOResult:
     """
-    Compute Probability of Backtest Overfitting (Romano, Paloalto, Tapia, 2015).
+    CSCV / PBO per Bailey, Borwein, Lopez de Prado & Zhu (2015), "The
+    Probability of Backtest Overfitting".
 
-    PBO = Pr( max(in-sample SR) > out-of-sample SR )
+    Splits the T periods into n_groups contiguous blocks. For every
+    combination of n_groups/2 blocks used as the in-sample (IS) set (complement
+    = out-of-sample, OOS): find the IS-best variant (by mean IS return), locate
+    its OOS rank among all N variants' OOS performance, w_c = relative rank in
+    (0,1), lambda_c = ln(w_c / (1-w_c)). PBO = fraction of splits with
+    lambda_c <= 0 (the IS-winner performs at/below the OOS median on that split
+    — evidence of overfitting rather than genuine skill).
 
-    Returns value in [0, 1]. PBO > 0.4 means overfitted.
+    This is the strategy-parameter-sweep counterpart of
+    validation.cpcv.ProbabilityOfOverfittingProcessor.calculate_from_path_variants
+    — same CSCV algorithm, different combinatorial unit (time-blocks x
+    strategy variants here, vs purge/embargo folds of one series there).
     """
-    if not out_of_sample_srs or not in_sample_srs:
-        return 1.0
+    from itertools import combinations
 
-    rng = np.random.RandomState(seed)
-    oos_max = max(out_of_sample_srs)
-    n_in = len(in_sample_srs[0]) if in_sample_srs else 1
+    returns_matrix = np.asarray(returns_matrix, dtype=np.float64)
+    if returns_matrix.ndim != 2:
+        raise ValueError("returns_matrix must be 2D: (T periods, N variants)")
+    t_obs, n_variants = returns_matrix.shape
+    if n_variants < 2:
+        return PBOResult(pbo=0.0, n_splits=0, n_variants=n_variants)
+    if n_groups % 2 != 0:
+        n_groups -= 1
+    n_groups = max(2, min(n_groups, t_obs))
 
-    overfit_count = 0
-    for _ in range(num_simulations):
-        # Sample random in-sample sets
-        sampled = []
-        for _ in range(len(in_sample_srs)):
-            idx = rng.randint(0, len(in_sample_srs))
-            sampled.append(in_sample_srs[idx][:n_in])
+    block_size = t_obs // n_groups
+    if block_size < 1:
+        return PBOResult(pbo=0.0, n_splits=0, n_variants=n_variants)
+    blocks = [
+        returns_matrix[i * block_size: (i + 1) * block_size if i < n_groups - 1 else t_obs]
+        for i in range(n_groups)
+    ]
 
-        in_max = max(max(s) for s in sampled)
-        if in_max > oos_max:
-            overfit_count += 1
+    half = n_groups // 2
+    logits: List[float] = []
+    for is_block_ids in combinations(range(n_groups), half):
+        oos_block_ids = [b for b in range(n_groups) if b not in is_block_ids]
+        is_returns = np.concatenate([blocks[b] for b in is_block_ids], axis=0)
+        oos_returns = np.concatenate([blocks[b] for b in oos_block_ids], axis=0)
 
-    return overfit_count / num_simulations
+        is_perf = is_returns.mean(axis=0)   # (N,) — mean IS return per variant
+        oos_perf = oos_returns.mean(axis=0)  # (N,) — mean OOS return per variant
+
+        best_variant = int(np.argmax(is_perf))
+        oos_rank = int(np.sum(oos_perf <= oos_perf[best_variant]))  # 1..N, 1=worst
+        w = min(max(oos_rank / (n_variants + 1), 1e-6), 1 - 1e-6)
+        logits.append(float(np.log(w / (1 - w))))
+
+    if not logits:
+        return PBOResult(pbo=0.0, n_splits=0, n_variants=n_variants)
+
+    pbo = sum(1 for lam in logits if lam <= 0) / len(logits)
+    return PBOResult(pbo=pbo, n_splits=len(logits), n_variants=n_variants, logits=logits)
 
 
 # ──────────────────────────────────────────────
@@ -223,278 +278,63 @@ def monte_carlo_dd_estimate(
     confidence: float = 0.95,
     num_simulations: int = 1000,
     seed: int = 42,
+    starting_capital: float = 1_000_000.0,
 ) -> float:
     """
-    Monte Carlo trade reshuffle → 95% max drawdown estimate.
+    Monte Carlo trade reshuffle → 95% max drawdown estimate, as a FRACTION of
+    starting capital (0.0-1.0), comparable against GATE_MAX_DRAWDOWN.
 
     Parameters:
         trade_list: list of {pnl, ...} dicts
         confidence: confidence level (default 0.95)
         num_simulations: number of reshuffles
         seed: random seed
+        starting_capital: equity base. Required — drawdown must be measured
+            against real equity, not against cumulative PnL starting at ~0
+            (dividing by a near-zero running peak produced absurd values like
+            138.0 instead of a fraction).
 
     Returns:
-        95th percentile max drawdown from reshuffles
+        95th percentile max drawdown fraction from reshuffles
     """
     if len(trade_list) < 3:
         return 0.0
 
     rng = np.random.RandomState(seed)
     pnls = np.array([t.get("pnl", 0) for t in trade_list], dtype=float)
+    base = float(starting_capital) if starting_capital and starting_capital > 0 else 1.0
 
-    # Normalize to equity curve
-    equity = np.cumsum(pnls)
-    peak = np.maximum.accumulate(equity)
-    dd = (peak - equity) / (np.abs(peak) + 1e-10)
-    max_dd = float(np.max(dd))
+    def _max_dd(sequence: np.ndarray) -> float:
+        equity = base + np.cumsum(sequence)
+        peak = np.maximum.accumulate(np.concatenate(([base], equity)))[1:]
+        safe_peak = np.where(peak > 0, peak, np.nan)
+        dd = (peak - equity) / safe_peak
+        dd = np.nan_to_num(dd, nan=1.0, posinf=1.0, neginf=0.0)
+        return float(np.clip(np.max(dd), 0.0, 1.0))
+
+    max_dd = _max_dd(pnls)
 
     # Reshuffle trades
     simulated_maxdds = [max_dd]
     for _ in range(num_simulations):
         shuffled = rng.permutation(pnls)
-        eq = np.cumsum(shuffled)
-        pk = np.maximum.accumulate(eq)
-        drawdowns = (pk - eq) / (np.abs(pk) + 1e-10)
-        simulated_maxdds.append(float(np.max(drawdowns)))
+        simulated_maxdds.append(_max_dd(shuffled))
 
     return float(np.percentile(simulated_maxdds, confidence * 100))
 
 
-# ──────────────────────────────────────────────
-# CPCV (Combinatorial Purged Cross-Validation)
-# ──────────────────────────────────────────────
-
-
-def combinatorial_purged_cv(
-    returns: np.ndarray,
-    labels: np.ndarray,
-    n_folds: int = 8,
-    embargo_periods: int = 5,
-) -> List[Dict[str, Any]]:
-    """
-    Combinatorial Purged Cross-Validation (López de Prado, 2018).
-
-    Returns list of fold results with purged train/test splits.
-    """
-    if len(returns) < n_folds * 10:
-        return []
-
-    n = len(returns)
-    step = n // n_folds
-    fold_results = []
-
-    for fold in range(n_folds):
-        # Define test window
-        test_start = fold * step
-        test_end = min(test_start + step, n)
-
-        # Purge overlapping labels from train
-        purge_start = max(0, test_start - embargo_periods)
-        purge_end = test_end + embargo_periods
-
-        # Train: everything outside test + purge
-        train_idx = list(range(0, purge_start)) + list(range(purge_end, n))
-        test_idx = list(range(test_start, test_end))
-
-        if not train_idx or not test_idx:
-            continue
-
-        train_returns = returns[train_idx]
-        train_labels = labels[train_idx]
-        test_returns = returns[test_idx]
-        test_labels = labels[test_idx]
-
-        # Simple accuracy as metric (would use actual model in real usage)
-        train_mean = float(np.mean(train_labels)) if len(train_labels) > 0 else 0.5
-        test_mean = float(np.mean(test_labels)) if len(test_labels) > 0 else 0.5
-
-        fold_results.append({
-            "fold": fold,
-            "train_size": len(train_idx),
-            "test_size": len(test_idx),
-            "train_mean": train_mean,
-            "test_mean": test_mean,
-            "test_accuracy": test_mean,
-            "purge_range": (purge_start, purge_end),
-        })
-
-    return fold_results
-
-
-# ──────────────────────────────────────────────
-# India cost model
-# ──────────────────────────────────────────────
-
-
-def calculate_india_costs(
-    turnover: Decimal,
-    side: str,
-    product_type: str = "CNC",  # CNC, MIS, NRML
-) -> Dict[str, Decimal]:
-    """
-    Full India cost model (SEBI/NSE compliant).
-
-    Parameters:
-        turnover: price × quantity
-        side: BUY or SELL
-        product_type: CNC (delivery), MIS (intraday), NRML (margin)
-
-    Returns:
-        Dict with brokerage, STT, exchange_txn, gst, sebi, stamp_duty, total
-    """
-    # Brokerage: lower of ₹20 or 0.01% per side
-    brokerage = max(Decimal("20"), turnover * Decimal("0.0001"))
-
-    # STT (Securities Transaction Tax)
-    stt = Decimal("0")
-    if product_type == "CNC":
-        if side == "SELL":
-            stt = turnover * Decimal("0.025") / Decimal("100")  # 0.025%
-    elif product_type == "MIS":
-        if side == "SELL":
-            stt = turnover * Decimal("0.025") / Decimal("100")
-
-    # Exchange transaction charge
-    exchange_txn = turnover * Decimal("0.00325") / Decimal("10000")  # 0.00325%
-
-    # GST (18% on brokerage + exchange txn)
-    gst = (brokerage + exchange_txn) * Decimal("18") / Decimal("100")
-
-    # SEBI turnover fee
-    sebi = turnover * Decimal("0.00001") / Decimal("10000")  # ₹10 per crore
-
-    # Stamp duty (varies by state, approximate)
-    stamp_duty = turnover * Decimal("0.015") / Decimal("100") if side == "BUY" else Decimal("0")
-
-    total = brokerage + stt + exchange_txn + gst + sebi + stamp_duty
-
-    return {
-        "turnover": turnover,
-        "brokerage": brokerage,
-        "stt": stt,
-        "exchange_txn": exchange_txn,
-        "gst": gst,
-        "sebi": sebi,
-        "stamp_duty": stamp_duty,
-        "total_cost": total,
-        "net_pnl_multiplier": Decimal("1") - total / turnover if turnover > 0 else Decimal("1"),
-    }
-
-
-# ──────────────────────────────────────────────
-# Walk-forward evaluation
-# ──────────────────────────────────────────────
-
-
-def walk_forward_evaluation(
-    returns: np.ndarray,
-    labels: np.ndarray,
-    window_size: int = 252,
-    step_size: int = 50,
-) -> Dict[str, Any]:
-    """
-    Walk-forward evaluation: train on rolling window, test on next step.
-
-    Returns OOS (out-of-sample) results per fold.
-    """
-    if len(returns) < window_size + step_size:
-        return {"folds": [], "oos_accuracy": 0.5}
-
-    oos_accuracies = []
-    n = len(returns)
-
-    for start in range(0, n - window_size, step_size):
-        train_end = start + window_size
-        test_end = min(train_end + step_size, n)
-
-        train_labels = labels[start:train_end]
-        test_labels = labels[train_end:test_end]
-
-        if len(test_labels) < 5:
-            continue
-
-        # Simple metric: mean of test labels as accuracy proxy
-        oos_acc = float(np.mean(test_labels))
-        oos_accuracies.append(oos_acc)
-
-    oos_accuracy = float(np.mean(oos_accuracies)) if oos_accuracies else 0.5
-
-    return {
-        "window_size": window_size,
-        "step_size": step_size,
-        "num_folds": len(oos_accuracies),
-        "oos_accuracy": oos_accuracy,
-        "oos_accuracies_per_fold": oos_accuracies,
-    }
-
-
-# ──────────────────────────────────────────────
-# Paper trading days tracker
-# ──────────────────────────────────────────────
-
-
-@dataclass
-class PaperTradingRecord:
-    """Track paper trading days for a strategy."""
-    strategy_id: str
-    tenant_id: str
-    paper_days: int = 0
-    paper_pnl: Decimal = Decimal("0")
-    paper_sharpe: float = 0.0
-    live_deployed: bool = False
-    live_deployed_at: Optional[str] = None
-
-    def add_day(self, daily_pnl: Decimal) -> None:
-        self.paper_days += 1
-        self.paper_pnl += daily_pnl
-
-    def meets_minimum_days(self, min_days: int = 30) -> bool:
-        return self.paper_days >= min_days
-
-
-# ──────────────────────────────────────────────
-# Promotion ladder
-# ──────────────────────────────────────────────
-
-
-class PromotionStage(str, Enum):
-    BACKTEST = "backtest"
-    PAPER = "paper"
-    LIVE_MIN = "live_min"
-    LIVE_FULL = "live_full"
-
-
-@dataclass
-class PromotionRecord:
-    """Promotion status for a strategy."""
-    strategy_id: str
-    current_stage: PromotionStage = PromotionStage.BACKTEST
-    backtest_passed: bool = False
-    paper_days: int = 0
-    paper_pnl: Decimal = Decimal("0")
-    paper_sharpe: float = 0.0
-    live_min_days: int = 0
-    live_min_pnl: Decimal = Decimal("0")
-    promoted_at: Optional[str] = None
-    gate_results: Dict[str, Any] = field(default_factory=dict)
-
-    def can_promote(self) -> bool:
-        """Check if strategy can advance to next stage."""
-        if self.current_stage == PromotionStage.BACKTEST:
-            return self.backtest_passed and self.paper_days >= 30
-        elif self.current_stage == PromotionStage.PAPER:
-            return self.paper_sharpe > 0 and abs(self.paper_pnl) > 1000  # Min ₹1k profit
-        elif self.current_stage == PromotionStage.LIVE_MIN:
-            return self.live_min_days >= 15 and self.live_min_pnl > 0
-        return False
-
-    def promote(self) -> None:
-        """Advance to next stage."""
-        stages = list(PromotionStage)
-        idx = stages.index(self.current_stage)
-        if idx < len(stages) - 1:
-            self.current_stage = stages[idx + 1]
-            self.promoted_at = str(int(__import__("time").time()))
+# Note: the fake CPCV/walk-forward placeholders that used to live here
+# (mean(labels) as a stand-in "accuracy") were deleted — GateEvaluator now
+# wraps REAL results from validation.cpcv.CPCVValidator and
+# backtesting.evaluator.WalkForwardEvaluator instead (see evaluate_cpcv /
+# evaluate_walk_forward below). The India cost model that used to live here
+# (calculate_india_costs) had the brokerage formula backwards (max instead of
+# min, wrong rate) — deleted in favor of delegating to the real
+# backtesting.charges.ChargesModel via BacktestResult.total_charges (see
+# evaluate_cost_model below). PromotionStage/PromotionRecord/PaperTradingRecord
+# were a THIRD, unused promotion-ladder concept (parallel to but not the same
+# as rl/policies.py's live one and validation/promotion.py's dead one) —
+# deleted; promotion is enforced by api/strategy_promotion_service.py instead.
 
 
 # ──────────────────────────────────────────────
@@ -505,191 +345,214 @@ class PromotionRecord:
 class GateEvaluator:
     """
     Evaluate all promotion gates for a backtest/strategy.
+
+    Wraps REAL results — the real WalkForwardEvaluator
+    (backtesting.evaluator.WalkForwardResult), the real (fixed) CPCVValidator
+    (validation.cpcv.CPCVResult), and BacktestResult.total_charges (which
+    already comes from the real backtesting.charges.ChargesModel at fill
+    time). No metric is recomputed here from a fake proxy.
     """
 
-    def __init__(self):
-        self.results = BacktestGateResults(
-            backtest_id="",
-            strategy_id="",
-        )
+    def __init__(self, settings: Optional[Any] = None) -> None:
+        """settings: trading_platform.config.Settings. When provided, gate
+        thresholds default to its fields (DEFLECTED_SHARPE_MIN, PBO_MAX,
+        MC_SHUFFLE_RUNS, PROMOTION_PAPER_DAYS, MIN_WALKFORWARD_SHARPE,
+        GATE_MAX_DRAWDOWN, MIN_NET_COST_RATIO, CSCV_N_GROUPS) instead of the
+        hardcoded literals below; explicit method arguments always win."""
+        self.results = BacktestGateResults(backtest_id="", strategy_id="")
+        self._settings = settings
+
+    def _cfg(self, name: str, default: float) -> float:
+        return getattr(self._settings, name, default) if self._settings is not None else default
 
     def evaluate_walk_forward(
         self,
-        returns: np.ndarray,
-        labels: np.ndarray,
-        window_size: int = 252,
-        step_size: int = 50,
+        wf_result: Any,  # backtesting.evaluator.WalkForwardResult
+        min_sharpe: Optional[float] = None,
     ) -> None:
-        """Evaluate walk-forward gate."""
-        wf = walk_forward_evaluation(returns, labels, window_size, step_size)
-        oos_acc = wf.get("oos_accuracy", 0.5)
-
-        # Gate: OOS accuracy must beat 0.5 + margin
-        margin = max(0.02, 2 * math.sqrt(0.25 * 0.75 / max(1, wf.get("test_size", 1))))
-        passed = oos_acc > 0.5 + margin
-
+        """Wraps the REAL WalkForwardEvaluator output — no recomputation."""
+        threshold = min_sharpe if min_sharpe is not None else self._cfg("MIN_WALKFORWARD_SHARPE", 0.3)
+        mean_sharpe = float(getattr(wf_result, "mean_test_sharpe", 0.0))
+        degraded = bool(getattr(wf_result, "degradation_detected", False))
+        passed = mean_sharpe >= threshold and not degraded
         self.results.walk_forward = GateOutcome(
             gate_name="walk_forward",
             result=GateResult.PASS if passed else GateResult.FAIL,
-            metric=oos_acc,
-            threshold=0.5 + margin,
-            message=f"OOS accuracy {oos_acc:.4f} vs threshold {0.5 + margin:.4f}",
-            details=wf,
+            metric=mean_sharpe,
+            threshold=threshold,
+            message=f"mean OOS Sharpe={mean_sharpe:.4f} vs threshold {threshold:.4f}"
+                    + (" (degradation detected)" if degraded else ""),
+            details=wf_result.to_dict() if hasattr(wf_result, "to_dict") else {},
         )
 
     def evaluate_cpcv(
         self,
-        returns: np.ndarray,
-        labels: np.ndarray,
-        n_folds: int = 8,
+        cpcv_result: Any,  # validation.cpcv.CPCVResult
+        min_auc: Optional[float] = None,
+        min_sharpe: Optional[float] = None,
     ) -> None:
-        """Evaluate CPCV gate."""
-        folds = combinatorial_purged_cv(returns, labels, n_folds)
-        if not folds:
-            self.results.cpcv = GateOutcome(
-                gate_name="cpcv",
-                result=GateResult.WARN,
-                metric=0.0,
-                threshold=0.0,
-                message="Insufficient data for CPCV",
-            )
-            return
-
-        avg_test_acc = float(np.mean([f["test_accuracy"] for f in folds]))
-
-        # Gate: avg test accuracy > 0.5 + margin
-        margin = 0.02
-        passed = avg_test_acc > 0.5 + margin
-
+        """Wraps the REAL (fixed) CPCVValidator.run_validation() output."""
+        auc_threshold = min_auc if min_auc is not None else 0.52
+        sharpe_threshold = min_sharpe if min_sharpe is not None else self._cfg("MIN_WALKFORWARD_SHARPE", 0.3)
+        metrics = getattr(cpcv_result, "out_of_sample_metrics", {}) or {}
+        mean_auc = float(metrics.get("mean_oos_auc", 0.0))
+        mean_sharpe = float(metrics.get("mean_oos_sharpe", 0.0))
+        passed = mean_auc >= auc_threshold and mean_sharpe >= sharpe_threshold
         self.results.cpcv = GateOutcome(
             gate_name="cpcv",
             result=GateResult.PASS if passed else GateResult.FAIL,
-            metric=avg_test_acc,
-            threshold=0.5 + margin,
-            message=f"CPCV avg accuracy {avg_test_acc:.4f} vs threshold {0.5 + margin:.4f}",
-            details={"num_folds": len(folds), "fold_results": folds[:3]},  # Sample
+            metric=mean_auc,
+            threshold=auc_threshold,
+            message=f"CPCV mean OOS AUC={mean_auc:.4f} (>= {auc_threshold}), "
+                    f"mean OOS Sharpe={mean_sharpe:.4f} (>= {sharpe_threshold})",
+            details=metrics,
         )
 
     def evaluate_dsr(
         self,
+        sharpe_hat: float,
+        trial_sharpes: Any,
         returns: np.ndarray,
-        num_simulations: int = 500,
+        min_dsr: Optional[float] = None,
     ) -> None:
-        """Evaluate Deflated Sharpe Ratio gate."""
-        dsr, p_value = deflated_sharpe_ratio(returns, num_simulations)
-
-        # Gate: DSR > 0.5 and p-value < 0.1
-        dsr_threshold = 0.5
-        p_threshold = 0.1
-        passed = dsr > dsr_threshold and p_value < p_threshold
-
+        """Evaluate Deflated Sharpe Ratio gate (real Bailey/Lopez de Prado formula)."""
+        threshold = min_dsr if min_dsr is not None else self._cfg("DEFLECTED_SHARPE_MIN", 0.5)
+        dsr_result = deflated_sharpe_ratio(sharpe_hat, trial_sharpes, returns)
+        if dsr_result.insufficient_data:
+            # Not enough data to deflate — report honestly as SKIP rather than
+            # FAIL, so "couldn't evaluate" is never mistaken for "overfit".
+            self.results.dsr = GateOutcome(
+                gate_name="deflated_sharpe",
+                result=GateResult.SKIP,
+                metric=0.0,
+                threshold=threshold,
+                message=f"SKIPPED: insufficient data to deflate "
+                        f"(n_obs={dsr_result.n_obs}, need >=30; n_trials={dsr_result.n_trials}, need >=2)",
+                details={"n_obs": dsr_result.n_obs, "n_trials": dsr_result.n_trials},
+            )
+            return
+        passed = dsr_result.dsr >= threshold
         self.results.dsr = GateOutcome(
             gate_name="deflated_sharpe",
             result=GateResult.PASS if passed else GateResult.FAIL,
-            metric=dsr,
-            threshold=dsr_threshold,
-            message=f"DSR={dsr:.4f}, p={p_value:.4f} (threshold > {dsr_threshold}, p < {p_threshold})",
-            details={"dsr": dsr, "p_value": p_value},
+            metric=dsr_result.dsr,
+            threshold=threshold,
+            message=f"DSR={dsr_result.dsr:.4f} (threshold >= {threshold}), "
+                    f"n_trials={dsr_result.n_trials}, SR_hat={sharpe_hat:.4f}, SR_0={dsr_result.expected_max_sharpe:.4f}",
+            details={
+                "observed_sharpe": dsr_result.observed_sharpe,
+                "expected_max_sharpe": dsr_result.expected_max_sharpe,
+                "sharpe_variance": dsr_result.sharpe_variance,
+                "n_trials": dsr_result.n_trials,
+                "skew": dsr_result.skew,
+                "kurtosis": dsr_result.kurtosis,
+                "n_obs": dsr_result.n_obs,
+            },
         )
 
     def evaluate_pbo(
         self,
-        oos_srs: List[float],
-        is_srs: List[List[float]],
+        returns_matrix: np.ndarray,
+        max_pbo: Optional[float] = None,
+        n_groups: Optional[int] = None,
     ) -> None:
-        """Evaluate PBO gate."""
-        pbo = probability_of_overfitting(oos_srs, is_srs)
-
-        # Gate: PBO < 0.4
-        threshold = 0.4
-        passed = pbo < threshold
-
+        """Evaluate PBO gate (real CSCV over a T x N returns matrix)."""
+        threshold = max_pbo if max_pbo is not None else self._cfg("PBO_MAX", 0.4)
+        groups = int(n_groups if n_groups is not None else self._cfg("CSCV_N_GROUPS", 8))
+        pbo_result = probability_of_backtest_overfitting(returns_matrix, n_groups=groups)
+        passed = pbo_result.pbo <= threshold
         self.results.pbo = GateOutcome(
             gate_name="pbo",
             result=GateResult.PASS if passed else GateResult.FAIL,
-            metric=pbo,
+            metric=pbo_result.pbo,
             threshold=threshold,
-            message=f"PBO={pbo:.4f} (threshold < {threshold})",
-            details={"pbo": pbo, "num_oos": len(oos_srs), "num_is": len(is_srs)},
+            message=f"PBO={pbo_result.pbo:.4f} (threshold <= {threshold}), "
+                    f"n_splits={pbo_result.n_splits}, n_variants={pbo_result.n_variants}",
+            details={"n_splits": pbo_result.n_splits, "n_variants": pbo_result.n_variants},
         )
 
     def evaluate_monte_carlo(
         self,
         trade_list: List[Dict[str, Any]],
-        max_dd_limit: float = 0.15,
+        max_dd_limit: Optional[float] = None,
+        starting_capital: float = 1_000_000.0,
     ) -> None:
-        """Evaluate Monte Carlo DD gate."""
-        mc_dd = monte_carlo_dd_estimate(trade_list)
-
-        passed = mc_dd < max_dd_limit
-
+        """Evaluate Monte Carlo DD gate (drawdown as a fraction of starting capital)."""
+        threshold = max_dd_limit if max_dd_limit is not None else self._cfg("GATE_MAX_DRAWDOWN", 0.15)
+        mc_dd = monte_carlo_dd_estimate(trade_list, starting_capital=starting_capital)
+        passed = mc_dd <= threshold
         self.results.monte_carlo = GateOutcome(
             gate_name="monte_carlo_dd",
             result=GateResult.PASS if passed else GateResult.FAIL,
             metric=mc_dd,
-            threshold=max_dd_limit,
-            message=f"95% max DD={mc_dd:.4f} (limit < {max_dd_limit})",
+            threshold=threshold,
+            message=f"95% max DD={mc_dd:.4f} (limit <= {threshold})",
             details={"mc_95_dd": mc_dd},
         )
 
     def evaluate_cost_model(
         self,
-        gross_pnl: Decimal,
-        costs: Decimal,
-        min_net_ratio: float = 0.6,
+        total_pnl: float,
+        total_charges: float,
+        min_net_ratio: Optional[float] = None,
     ) -> None:
-        """Evaluate cost model gate: net must be >= min_net_ratio of gross."""
+        """Evaluate cost model gate: net must be >= min_net_ratio of gross.
+
+        total_pnl is already net (charges deducted); total_charges comes from
+        the REAL backtesting.charges.ChargesModel via Trade.charges — no cost
+        recomputation here (the deleted calculate_india_costs() had the
+        brokerage formula backwards: max() instead of min(), 0.01% instead of
+        the real 0.03%)."""
+        threshold = min_net_ratio if min_net_ratio is not None else self._cfg("MIN_NET_COST_RATIO", 0.6)
+        gross_pnl = total_pnl + total_charges
         if gross_pnl <= 0:
             self.results.cost_model = GateOutcome(
                 gate_name="cost_model",
                 result=GateResult.WARN,
                 metric=0.0,
-                threshold=min_net_ratio,
-                message="Gross P&L ≤ 0, cannot evaluate cost drag",
+                threshold=threshold,
+                message="Gross P&L <= 0, cannot evaluate cost drag",
             )
             return
-
-        net_pnl = gross_pnl - costs
-        net_ratio = float(net_pnl / gross_pnl) if gross_pnl > 0 else 0.0
-        passed = net_ratio >= min_net_ratio
-
+        net_ratio = total_pnl / gross_pnl
+        passed = net_ratio >= threshold
         self.results.cost_model = GateOutcome(
             gate_name="cost_model",
             result=GateResult.PASS if passed else GateResult.FAIL,
             metric=net_ratio,
-            threshold=min_net_ratio,
-            message=f"Net/Gross ratio={net_ratio:.4f} (threshold ≥ {min_net_ratio})",
-            details={"gross_pnl": str(gross_pnl), "costs": str(costs), "net_pnl": str(net_pnl)},
+            threshold=threshold,
+            message=f"Net/Gross ratio={net_ratio:.4f} (threshold >= {threshold})",
+            details={"gross_pnl": gross_pnl, "total_charges": total_charges, "net_pnl": total_pnl},
         )
 
     def evaluate_paper_days(
         self,
         paper_days: int,
-        min_days: int = 30,
+        min_days: Optional[int] = None,
     ) -> None:
         """Evaluate paper trading days gate."""
-        passed = paper_days >= min_days
+        threshold = min_days if min_days is not None else int(self._cfg("PROMOTION_PAPER_DAYS", 30))
+        passed = paper_days >= threshold
         self.results.paper_days = GateOutcome(
             gate_name="paper_days",
             result=GateResult.PASS if passed else GateResult.FAIL,
             metric=float(paper_days),
-            threshold=float(min_days),
-            message=f"Paper days={paper_days} (threshold ≥ {min_days})",
+            threshold=float(threshold),
+            message=f"Paper days={paper_days} (threshold >= {threshold})",
         )
 
-    def evaluate_promotion_ladder(
-        self,
-        current_stage: PromotionStage,
-        backtest_passed: bool,
-    ) -> None:
-        """Evaluate promotion ladder gate."""
-        passed = current_stage != PromotionStage.BACKTEST or backtest_passed
+    def evaluate_promotion_ladder(self, gates_all_passed: bool) -> None:
+        """Pass-through summary gate — real promotion enforcement lives in
+        api/strategy_promotion_service.py (StrategyPromotionService), which
+        reads BacktestGateResults.all_passed via persistence's
+        latest_gate_summary(). This slot just records whether everything
+        evaluated so far passed."""
         self.results.promotion_ladder = GateOutcome(
             gate_name="promotion_ladder",
-            result=GateResult.PASS if passed else GateResult.FAIL,
-            metric=float(current_stage.value),
-            threshold=0,
-            message=f"Current stage={current_stage.value}",
+            result=GateResult.PASS if gates_all_passed else GateResult.FAIL,
+            metric=1.0 if gates_all_passed else 0.0,
+            threshold=1.0,
+            message="backtest gates passed" if gates_all_passed else "backtest gates failed",
         )
 
     def finalize(self, backtest_id: str, strategy_id: str) -> BacktestGateResults:
@@ -697,37 +560,3 @@ class GateEvaluator:
         self.results.backtest_id = backtest_id
         self.results.strategy_id = strategy_id
         return self.results
-
-
-# ──────────────────────────────────────────────
-# Convenience: evaluate all gates
-# ──────────────────────────────────────────────
-
-
-async def evaluate_all_gates(
-    backtest_id: str,
-    strategy_id: str,
-    returns: np.ndarray,
-    labels: np.ndarray,
-    trade_list: List[Dict[str, Any]],
-    oos_srs: List[float],
-    is_srs: List[List[float]],
-    gross_pnl: Decimal,
-    costs: Decimal,
-    paper_days: int = 0,
-    current_stage: PromotionStage = PromotionStage.BACKTEST,
-    backtest_passed: bool = False,
-) -> BacktestGateResults:
-    """Run all gates and return results."""
-    evaluator = GateEvaluator()
-
-    evaluator.evaluate_walk_forward(returns, labels)
-    evaluator.evaluate_cpcv(returns, labels)
-    evaluator.evaluate_dsr(returns)
-    evaluator.evaluate_pbo(oos_srs, is_srs)
-    evaluator.evaluate_monte_carlo(trade_list)
-    evaluator.evaluate_cost_model(gross_pnl, costs)
-    evaluator.evaluate_paper_days(paper_days)
-    evaluator.evaluate_promotion_ladder(current_stage, backtest_passed)
-
-    return evaluator.finalize(backtest_id, strategy_id)

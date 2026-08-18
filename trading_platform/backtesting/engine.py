@@ -9,7 +9,7 @@ logger = logging.getLogger(__name__)
 from trading_platform.ai.agents import MarketRegimeAgent, StrategySelectionAgent
 from trading_platform.ai.features import FeatureEngine
 from trading_platform.backtesting.charges import ChargesModel
-from trading_platform.backtesting.metrics import PerformanceMetrics, calculate_metrics
+from trading_platform.backtesting.metrics import PerformanceMetrics, calculate_metrics, round_trip_pnls
 from trading_platform.broker.simulated import SimulatedBrokerClient
 from trading_platform.data.instrument_master import INDEX_UNDERLYINGS, InstrumentMaster, build_default_universe
 from trading_platform.data.market_data import SyntheticDataProvider
@@ -41,6 +41,11 @@ class BacktestResult:
     metrics: PerformanceMetrics
     reports: list[ExecutionReport]
     selected_strategies: dict[str, list[str]]
+    # REDESIGN §5 validation gates (DSR/PBO/MC-DD/cost model) need the raw series,
+    # not just aggregate scalars from `metrics` — see validation/gates.py.
+    equity_curve: list[tuple[datetime, float]] = field(default_factory=list)
+    trade_pnls: list[float] = field(default_factory=list)
+    total_charges: float = 0.0
 
     def to_dict(self) -> dict:
         return {
@@ -437,8 +442,12 @@ class BacktestEngine:
         metrics = calculate_metrics(
             config.starting_capital, equity_values, list(portfolio.trades)
         )
+        trades = list(portfolio.trades)
         return BacktestResult(
-            config=config, metrics=metrics, reports=reports, selected_strategies=selected
+            config=config, metrics=metrics, reports=reports, selected_strategies=selected,
+            equity_curve=list(portfolio.equity_curve),
+            trade_pnls=round_trip_pnls(trades),
+            total_charges=sum(t.charges for t in trades),
         )
 
     def _select_instrument(self, strategy_name: str, underlying: str, bar: MarketBar, as_of: date):

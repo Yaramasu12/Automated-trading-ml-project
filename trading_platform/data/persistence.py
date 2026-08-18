@@ -197,6 +197,30 @@ CREATE TABLE IF NOT EXISTS strategy_hypotheses (
     validation_run_id   TEXT,
     validation_verdict  TEXT
 );
+
+CREATE TABLE IF NOT EXISTS backtest_gate_results (
+    id              BIGSERIAL   PRIMARY KEY,
+    run_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
+    backtest_id     TEXT        NOT NULL,
+    strategy_id     TEXT        NOT NULL,
+    subject_type    TEXT        NOT NULL DEFAULT 'strategy',
+    gate_name       TEXT        NOT NULL,
+    result          TEXT        NOT NULL,
+    metric_value    DOUBLE PRECISION,
+    threshold_value DOUBLE PRECISION,
+    message         TEXT,
+    details         TEXT,
+    git_sha         TEXT,
+    config_snapshot TEXT
+);
+
+CREATE TABLE IF NOT EXISTS strategy_promotions (
+    strategy_id     TEXT        PRIMARY KEY,
+    status          TEXT        NOT NULL DEFAULT 'research',
+    version         INTEGER     NOT NULL DEFAULT 1,
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    metadata        TEXT
+);
 """
 
 _PG_INDEXES = """
@@ -214,6 +238,8 @@ CREATE INDEX IF NOT EXISTS idx_reflections_sym     ON reflections (underlying, t
 CREATE INDEX IF NOT EXISTS idx_monitor_log_ts      ON runtime_monitor_log (ts DESC);
 CREATE INDEX IF NOT EXISTS idx_tuning_status       ON tuning_suggestions (status, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_hypotheses_status   ON strategy_hypotheses (status, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_gate_results_backtest ON backtest_gate_results (backtest_id);
+CREATE INDEX IF NOT EXISTS idx_gate_results_strategy ON backtest_gate_results (strategy_id, run_at DESC);
 """
 
 _PG_HYPERTABLES = """
@@ -381,9 +407,33 @@ CREATE TABLE IF NOT EXISTS strategy_hypotheses (
     validation_run_id  TEXT,
     validation_verdict TEXT
 );
+CREATE TABLE IF NOT EXISTS backtest_gate_results (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_at          TEXT NOT NULL,
+    backtest_id     TEXT NOT NULL,
+    strategy_id     TEXT NOT NULL,
+    subject_type    TEXT NOT NULL DEFAULT 'strategy',
+    gate_name       TEXT NOT NULL,
+    result          TEXT NOT NULL,
+    metric_value    REAL,
+    threshold_value REAL,
+    message         TEXT,
+    details         TEXT,
+    git_sha         TEXT,
+    config_snapshot TEXT
+);
+CREATE TABLE IF NOT EXISTS strategy_promotions (
+    strategy_id     TEXT PRIMARY KEY,
+    status          TEXT NOT NULL DEFAULT 'research',
+    version         INTEGER NOT NULL DEFAULT 1,
+    updated_at      TEXT NOT NULL,
+    metadata        TEXT
+);
 CREATE INDEX IF NOT EXISTS idx_trades_ts        ON trades (timestamp);
 CREATE INDEX IF NOT EXISTS idx_trades_mode      ON trades (execution_mode);
 CREATE INDEX IF NOT EXISTS idx_trades_is_test   ON trades (is_test);
+CREATE INDEX IF NOT EXISTS idx_gate_results_backtest ON backtest_gate_results (backtest_id);
+CREATE INDEX IF NOT EXISTS idx_gate_results_strategy ON backtest_gate_results (strategy_id, run_at DESC);
 CREATE INDEX IF NOT EXISTS idx_snapshots_mode   ON portfolio_snapshots (execution_mode);
 CREATE INDEX IF NOT EXISTS idx_outcomes_sym     ON profit_guard_outcomes (underlying, ts DESC);
 CREATE INDEX IF NOT EXISTS idx_reflections_sym  ON reflections (underlying, ts DESC);
@@ -827,6 +877,165 @@ class TradingDatabase:
         sql = self._p("SELECT * FROM risk_events ORDER BY id DESC LIMIT ?")
         with self._cursor() as cur:
             cur.execute(sql, (limit,))
+            return self._rows(cur, cur.fetchall())
+
+    # ------------------------------------------------------------------
+    # Backtest validation gates (REDESIGN §5)
+    # ------------------------------------------------------------------
+
+    def save_gate_result(
+        self,
+        *,
+        backtest_id: str,
+        strategy_id: str,
+        gate_name: str,
+        result: str,
+        metric_value: float | None,
+        threshold_value: float | None,
+        message: str,
+        details: dict | None = None,
+        subject_type: str = "strategy",
+        git_sha: str | None = None,
+        config_snapshot: dict | None = None,
+    ) -> None:
+        now = datetime.now(timezone.utc).isoformat()
+        sql = self._p(
+            """INSERT INTO backtest_gate_results
+               (run_at, backtest_id, strategy_id, subject_type, gate_name, result,
+                metric_value, threshold_value, message, details, git_sha, config_snapshot)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?)"""
+        )
+        params = (
+            now, backtest_id, strategy_id, subject_type, gate_name, result,
+            metric_value, threshold_value, message,
+            json.dumps(details or {}, default=str),
+            git_sha,
+            json.dumps(config_snapshot or {}, default=str),
+        )
+        with self._cursor() as cur:
+            cur.execute(sql, params)
+
+    def save_gate_results_batch(
+        self,
+        backtest_id: str,
+        strategy_id: str,
+        gate_results: Any,  # validation.gates.BacktestGateResults
+        subject_type: str = "strategy",
+        git_sha: str | None = None,
+        config_snapshot: dict | None = None,
+    ) -> None:
+        """Persist every evaluated GateOutcome on `gate_results` — the only
+        write path callers need."""
+        outcomes = [
+            gate_results.walk_forward, gate_results.cpcv, gate_results.dsr,
+            gate_results.pbo, gate_results.monte_carlo, gate_results.cost_model,
+            gate_results.paper_days, gate_results.promotion_ladder,
+        ]
+        for outcome in outcomes:
+            if outcome is None:
+                continue
+            self.save_gate_result(
+                backtest_id=backtest_id,
+                strategy_id=strategy_id,
+                gate_name=outcome.gate_name,
+                result=outcome.result.value if hasattr(outcome.result, "value") else str(outcome.result),
+                metric_value=float(outcome.metric),
+                threshold_value=float(outcome.threshold),
+                message=outcome.message,
+                details=outcome.details,
+                subject_type=subject_type,
+                git_sha=git_sha,
+                config_snapshot=config_snapshot,
+            )
+
+    def recent_gate_results(
+        self,
+        backtest_id: str | None = None,
+        strategy_id: str | None = None,
+        limit: int = 100,
+    ) -> list[dict]:
+        clauses, params = [], []
+        if backtest_id:
+            clauses.append("backtest_id = ?")
+            params.append(backtest_id)
+        if strategy_id:
+            clauses.append("strategy_id = ?")
+            params.append(strategy_id)
+        where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
+        sql = self._p(f"SELECT * FROM backtest_gate_results{where} ORDER BY id DESC LIMIT ?")
+        params.append(limit)
+        with self._cursor() as cur:
+            cur.execute(sql, tuple(params))
+            return self._rows(cur, cur.fetchall())
+
+    def latest_gate_summary(self, strategy_id: str) -> dict | None:
+        """Gate rows from the most recent backtest run for `strategy_id`,
+        aggregated to {"backtest_id", "run_at", "all_passed", "gates": {...}}.
+
+        all_passed mirrors BacktestGateResults.all_passed: WARN and SKIP count
+        as non-blocking, only an explicit FAIL blocks. Returns None when the
+        strategy has no recorded gate run at all (caller treats that as "not
+        gated yet", which must NOT be read as a pass).
+        """
+        rows = self.recent_gate_results(strategy_id=strategy_id, limit=200)
+        if not rows:
+            return None
+        latest_backtest_id = rows[0].get("backtest_id")
+        latest = [r for r in rows if r.get("backtest_id") == latest_backtest_id]
+        gates = {
+            r.get("gate_name"): {
+                "result": r.get("result"),
+                "metric": r.get("metric_value"),
+                "threshold": r.get("threshold_value"),
+                "message": r.get("message"),
+            }
+            for r in latest
+        }
+        all_passed = bool(gates) and all(g["result"] != "fail" for g in gates.values())
+        run_at = latest[0].get("run_at")
+        return {
+            "backtest_id": latest_backtest_id,
+            "run_at": run_at.isoformat() if hasattr(run_at, "isoformat") else run_at,
+            "all_passed": all_passed,
+            "gates": gates,
+        }
+
+    # ------------------------------------------------------------------
+    # Strategy promotion ladder (REDESIGN §5 / §13 phase 3)
+    # ------------------------------------------------------------------
+
+    def get_strategy_promotion(self, strategy_id: str) -> dict | None:
+        sql = self._p("SELECT * FROM strategy_promotions WHERE strategy_id = ?")
+        with self._cursor() as cur:
+            cur.execute(sql, (strategy_id,))
+            rows = self._rows(cur, cur.fetchall())
+        return rows[0] if rows else None
+
+    def upsert_strategy_promotion(
+        self,
+        strategy_id: str,
+        status: str,
+        version: int = 1,
+        metadata: dict | None = None,
+    ) -> None:
+        now = datetime.now(timezone.utc).isoformat()
+        payload = json.dumps(metadata or {}, default=str)
+        sql = self._p(
+            """INSERT INTO strategy_promotions (strategy_id, status, version, updated_at, metadata)
+               VALUES (?,?,?,?,?)
+               ON CONFLICT (strategy_id) DO UPDATE SET
+                   status = EXCLUDED.status,
+                   version = EXCLUDED.version,
+                   updated_at = EXCLUDED.updated_at,
+                   metadata = EXCLUDED.metadata"""
+        )
+        with self._cursor() as cur:
+            cur.execute(sql, (strategy_id, status, version, now, payload))
+
+    def list_strategy_promotions(self) -> list[dict]:
+        sql = self._p("SELECT * FROM strategy_promotions ORDER BY strategy_id")
+        with self._cursor() as cur:
+            cur.execute(sql)
             return self._rows(cur, cur.fetchall())
 
     # ------------------------------------------------------------------
