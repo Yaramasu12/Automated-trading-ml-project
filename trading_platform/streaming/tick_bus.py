@@ -73,19 +73,24 @@ class TickBus:
         self._depth_subs: dict[str, asyncio.Queue[DepthSnapshot]] = {}
         self._running = False
         self._dispatcher: Optional[asyncio.Task] = None
+        # Captured in start() so synchronous callers (LiveTickFeed runs its tick
+        # processing on a plain background thread, not this event loop) have a
+        # loop to schedule onto. See publish_tick_threadsafe().
+        self._loop: Optional[asyncio.AbstractEventLoop] = None
 
     # --- Publishing (called by adapters) ---
 
     async def publish_tick(self, tick: TickV2) -> None:
         """Publish a single TickV2 to `tick.<segment>` stream."""
         if self._pub is None:
-            logger.error("TickBus not started — dropping tick for %s", tick.symbol)
+            logger.error("TickBus not started — dropping tick for %s", tick.symbol_id)
             return
         stream = f"{TICK_STREAM}:{tick.segment}"
         raw = json.dumps({
-            "symbol": tick.symbol,
+            "symbol": tick.symbol_id,
             "segment": tick.segment,
             "price": float(tick.price) if tick.price is not None else None,
+            "qty": tick.qty,
             "timestamp": tick.timestamp.isoformat() if hasattr(tick.timestamp, "isoformat") else str(tick.timestamp),
             "source": tick.source.value if hasattr(tick.source, "value") else str(tick.source),
             "bid": float(tick.bid) if tick.bid is not None else None,
@@ -94,7 +99,25 @@ class TickBus:
             "ask_qty": tick.ask_qty,
             "depth": tick.depth.to_dict() if tick.depth else None,
         })
-        await self._pub.xadd(stream, {"data": raw}, maxlen=self._max_len, approximate=True)
+        try:
+            await self._pub.xadd(stream, {"data": raw}, maxlen=self._max_len, approximate=True)
+        except Exception as exc:
+            raise TickBusError(f"publish_tick failed for {tick.symbol_id}: {exc}") from exc
+
+    def publish_tick_threadsafe(self, tick: TickV2) -> None:
+        """Fire-and-forget publish from a plain synchronous thread.
+
+        LiveTickFeed processes ticks on a background `threading.Thread`, not
+        this bus's event loop, so calling the coroutine `publish_tick`
+        directly from there just builds a coroutine object that nothing ever
+        awaits — it silently never runs (confirmed 2026-08-27: the tick bus
+        had been "publishing" nothing since inception, with only a
+        RuntimeWarning to show for it). Honestly no-ops when the bus was
+        never started, instead of manufacturing a dangling coroutine.
+        """
+        if self._pub is None or self._loop is None:
+            return
+        asyncio.run_coroutine_threadsafe(self.publish_tick(tick), self._loop)
 
     async def publish_depth(self, depth: DepthSnapshot) -> None:
         """Publish a DepthSnapshot to `depth.<symbol>` stream."""
@@ -112,9 +135,10 @@ class TickBus:
         for tick in ticks:
             stream = f"{TICK_STREAM}:{tick.segment}"
             pipeline.xadd(stream, {"data": json.dumps({
-                "symbol": tick.symbol,
+                "symbol": tick.symbol_id,
                 "segment": tick.segment,
                 "price": float(tick.price) if tick.price is not None else None,
+                "qty": tick.qty,
                 "timestamp": tick.timestamp.isoformat() if hasattr(tick.timestamp, "isoformat") else str(tick.timestamp),
                 "source": tick.source.value if hasattr(tick.source, "value") else str(tick.source),
                 "bid": float(tick.bid) if tick.bid is not None else None,
@@ -123,7 +147,10 @@ class TickBus:
                 "ask_qty": tick.ask_qty,
                 "depth": tick.depth.to_dict() if tick.depth else None,
             })}, maxlen=self._max_len, approximate=True)
-        await pipeline.execute()
+        try:
+            await pipeline.execute()
+        except Exception as exc:
+            raise TickBusError(f"publish_ticks failed for {len(ticks)} ticks: {exc}") from exc
 
     # --- Subscription lifecycle ---
 
@@ -140,7 +167,7 @@ class TickBus:
             segments: if None, subscribe to ALL segments; otherwise specific ones.
         """
         if self._pub is None:
-            raise RuntimeError("TickBus not started — call start() first")
+            raise TickBusNotStartedError("TickBus not started — call start() first")
 
         queue: asyncio.Queue[TickV2] = asyncio.Queue(maxsize=50_000)
         self._subs[group_name] = queue
@@ -171,6 +198,7 @@ class TickBus:
 
     async def start(self) -> None:
         """Connect to Redis and start dispatching."""
+        self._loop = asyncio.get_running_loop()
         self._pub = redis.from_url(self._redis_url, decode_responses=True)
         try:
             await self._pub.ping()
@@ -194,6 +222,7 @@ class TickBus:
             await self._pub.aclose()
         self._subs.clear()
         self._depth_subs.clear()
+        self._loop = None
         logger.info("TickBus stopped")
 
     # --- Internal dispatch loop ---
@@ -239,9 +268,10 @@ class TickBus:
                                         except (ValueError, TypeError):
                                             _ts = datetime.now(timezone.utc)
                                     tick = TickV2(
-                                        symbol=data["symbol"],
+                                        symbol_id=data["symbol"],
                                         segment=data["segment"],
                                         price=Decimal(str(data["price"])) if data.get("price") is not None else None,
+                                        qty=data.get("qty") or 0,
                                         timestamp=_ts,
                                         source=FeedSource(data["source"]) if data.get("source") else FeedSource.UNKNOWN,
                                         bid=Decimal(str(data["bid"])) if data.get("bid") is not None else None,

@@ -25,6 +25,7 @@ class FeedSource(str, enum.Enum):
     TRUEDATA = "truedata"
     SIMULATED = "simulated"
     REPLAY = "replay"  # deterministic replay from Timescale tick table
+    UNKNOWN = "unknown"  # wire data with a missing/unrecognized source tag
 
 
 class TickSide(str, enum.Enum):
