@@ -89,7 +89,7 @@ class HAR_RVForecaster:
         """
         self._daily_rv.append(realized_vol)
         
-        if len(self._daily_rv) < self.warmup_days:
+        if len(self._daily_rv) <= self.warmup_days:
             return {
                 "forecast": 0.0,
                 "lower": 0.0,
@@ -209,6 +209,7 @@ class HAR_RVForecaster:
             ss_tot = np.sum((y - np.mean(y)) ** 2)
             r_squared = 1 - ss_res / ss_tot if ss_tot > 0 else 0.0
             
+            self.r_squared = r_squared
             logger.info(f"HAR-RV OLS: β_day={self.beta_day:.4f}, β_week={self.beta_week:.4f}, "
                         f"β_month={self.beta_month:.4f}, R²={r_squared:.4f}")
             
@@ -251,26 +252,27 @@ class HAR_RVForecaster:
             n_below = sum(1 for v in historical_rvp if v < rvp)
             iv_rank = n_below / len(historical_rvp) * 100
         
-        # Quintile
+        # Quintile — derived from the same percentile rank as iv_rank above
+        # (n_below / total) rather than a separate scan. The previous version
+        # looped ascending over sorted_rvp and broke at the FIRST tier whose
+        # cutoff index it had reached, which is always the LOWEST qualifying
+        # tier, not the highest — e.g. a value at the 73rd percentile (which
+        # iv_rank correctly reports as 73.0) came out as quintile 2, not 4,
+        # because the loop broke out at i=q_size (the Q2 boundary) without
+        # ever checking whether rvp also cleared the Q3/Q4/Q5 boundaries.
         quintile = 3
         if historical_rvp and len(historical_rvp) > 10:
-            sorted_rvp = sorted(historical_rvp)
-            q_size = len(sorted_rvp) // 5
-            for i, q in enumerate(sorted_rvp):
-                if rvp >= q and i >= q_size * 4:
-                    quintile = 5
-                    break
-                elif rvp >= q and i >= q_size * 3:
-                    quintile = 4
-                    break
-                elif rvp >= q and i >= q_size * 2:
-                    quintile = 3
-                    break
-                elif rvp >= q and i >= q_size:
-                    quintile = 2
-                    break
-                elif rvp >= q:
-                    quintile = 1
+            pct = n_below / len(historical_rvp)  # same ratio iv_rank uses
+            if pct >= 0.8:
+                quintile = 5
+            elif pct >= 0.6:
+                quintile = 4
+            elif pct >= 0.4:
+                quintile = 3
+            elif pct >= 0.2:
+                quintile = 2
+            else:
+                quintile = 1
         
         is_rich = quintile >= 4
         is_entry = is_rich and iv_rank > 50
@@ -377,13 +379,18 @@ def compare_har_garch(
     if len(daily_rv) < 30:
         return {"error": "insufficient_data", "observations": len(daily_rv)}
     
-    # HAR-RV forecast
+    # HAR-RV forecast. update() (not vrp_signal()) is what carries the actual
+    # forecast + readiness — vrp_signal() answers a different question (is the
+    # CURRENT premium rich vs history) and never returns "forecast"/"ready" at
+    # all, so capture the update() result directly instead of reaching into
+    # vrp_signal()'s dict for keys it doesn't have.
     har = HAR_RVForecaster()
     har.update_weights(daily_rv)
     for rv in daily_rv:
-        har.update(rv)
-    har_result = har.vrp_signal(atm_iv)
-    
+        update_result = har.update(rv)
+    historical_rvp = [atm_iv - rv for rv in daily_rv]
+    entry_result = har.vrp_signal(atm_iv, historical_rvp=historical_rvp)
+
     # Simple GARCH(1,1) estimate (simplified)
     mu = np.mean(daily_rv)
     omega = 1e-6
@@ -400,12 +407,12 @@ def compare_har_garch(
     garch_forecast = np.sqrt(max(garch_forecast, 1e-6))
     
     # HAR-RV forecast
-    har_rv_forecast = har_result["forecast"]
-    
+    har_rv_forecast = update_result["forecast"]
+
     # VRP from both
     rvp_har = atm_iv - har_rv_forecast
     rvp_garch = atm_iv - garch_forecast
-    
+
     return {
         "har_rv_forecast": float(har_rv_forecast),
         "garch_forecast": float(garch_forecast),
@@ -418,9 +425,9 @@ def compare_har_garch(
             "beta_week": har.beta_week,
             "beta_month": har.beta_month,
         },
-        "har_r_squared": har_result.get("r_squared", 0.0),
-        "har_ready": har_result.get("ready", False),
-        "har_is_entry_ready": har_result.get("is_entry_ready", False),
+        "har_r_squared": getattr(har, "r_squared", 0.0),
+        "har_ready": update_result.get("ready", False),
+        "har_is_entry_ready": entry_result.get("is_entry_ready", False),
     }
 
 
