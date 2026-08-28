@@ -36,3 +36,11 @@ duckdb==1.5.5
 # money path — nothing in api/runtime.py constructs it). If a future session
 # wants Feast for real, that needs an explicit uvicorn-version decision, not
 # just adding the package back.
+# trading_platform/mcp/server.py — official MCP Python SDK. Not on the money
+# path (a separate, opt-in, read-only observability server, run standalone
+# via `python -m trading_platform.mcp.server`, not imported by api/app.py).
+# NOTE: added 2026-08-28, installed clean against the existing pinned set on
+# this Windows dev box — constraints.lock still needs regenerating on the
+# reference Linux x86_64 environment before this is fully locked; do not
+# assume the transitive versions here are captured there yet.
+mcp[cli]==2.1.1
