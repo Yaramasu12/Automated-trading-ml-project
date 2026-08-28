@@ -204,7 +204,20 @@ class LocalLLMClient:
             except Exception:  # noqa: BLE001 - diagnostics only
                 pass
             raise RuntimeError(f"local LLM HTTP {exc.code}: {detail}") from exc
-        return data["choices"][0]["message"]["content"]
+        message = data["choices"][0]["message"]
+        content = message.get("content") or ""
+        if content.strip():
+            return content
+        # 2026-08-27: every model actually loaded in LM Studio right now is a
+        # "thinking" hybrid (confirmed: even a 1-word prompt burns its whole
+        # token budget on hidden reasoning and never reaches a formal final
+        # answer). `enable_thinking: false` in chat_template_kwargs is a no-op
+        # on this build. Rather than return nothing, fall back to the
+        # reasoning stream itself — the model IS working through the actual
+        # task there, it just never "closes" into content within any
+        # practical budget. parse_proposal() only regexes for
+        # NAME:/PARAMS:/```python``` markers, so it works on either field.
+        return message.get("reasoning_content") or ""
 
 
 def parse_proposal(text: str) -> Proposal | None:
