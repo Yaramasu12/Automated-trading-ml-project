@@ -734,8 +734,19 @@ export function Engine() {
             <CardHeader title="OMS Events" subtitle="Recent orders" icon={<DollarSign size={14} />} />
             <Table
               columns={[
-                { key: 'order_id', label: 'Order ID', render: (v) => <span className="text-xs font-mono text-ink-muted">{String(v).slice(0, 12)}</span> },
-                { key: 'symbol', label: 'Symbol', render: (v) => <span className="text-brand-blue">{String(v)}</span> },
+                { key: 'order_id', label: 'Order ID', render: (v, r: any) => {
+                  const id = String(v ?? '')
+                  if (id.startsWith('square_off:')) {
+                    let label = 'scheduled square-off'
+                    try {
+                      const meta = JSON.parse(String(r?.metadata ?? '{}'))
+                      label = `${meta.reason ?? label} (${meta.positions_targeted ?? 0} pos)`
+                    } catch { /* keep default label */ }
+                    return <span className="text-xs font-mono text-ink-faint">{label}</span>
+                  }
+                  return <span className="text-xs font-mono text-ink-muted">{id.slice(0, 12)}</span>
+                } },
+                { key: 'symbol', label: 'Symbol', render: (v) => v ? <span className="text-brand-blue">{String(v)}</span> : <span className="text-ink-faint">—</span> },
                 // OMS events carry event_type + occurred_at; there is no
                 // separate "status" field — the event type IS the status.
                 { key: 'event_type', label: 'Event', render: (v) => (
