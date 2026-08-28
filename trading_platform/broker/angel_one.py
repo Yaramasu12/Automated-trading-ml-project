@@ -141,6 +141,26 @@ class AngelOneBrokerClient(BrokerClient):
             }
         return None
 
+    def cancel_order(self, broker_order_id: str) -> bool:
+        """Cancel a resting order (chase-to-market's first step before
+        resubmitting as MARKET). Best-effort: any failure is logged and
+        treated as "not cancelled" rather than raised, since the scheduler's
+        chase logic must still resubmit as MARKET even if the cancel itself
+        errors — leaving an entry un-submitted because a cancel call failed
+        would be worse than a possible duplicate order (the broker will
+        reject a true duplicate; a resting limit that fills a moment after a
+        failed cancel simply completes the entry, which was the goal anyway).
+        """
+        try:
+            smart_api = self.ensure_logged_in()
+            # "NORMAL" matches _to_angel_order's own "variety" — a cancel must
+            # target the same variety the order was placed under.
+            response = smart_api.cancelOrder(broker_order_id, "NORMAL")
+            return bool(response and response.get("status"))
+        except Exception as exc:
+            logger.warning("Angel One cancel_order failed for %s: %s", broker_order_id, exc)
+            return False
+
     def positions(self) -> list[dict]:
         response = self._read_only_call("position")
         return response.get("data") or []

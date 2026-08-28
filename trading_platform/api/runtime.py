@@ -30,7 +30,7 @@ from trading_platform.data.instrument_master import build_default_universe
 from trading_platform.data.market_data import SyntheticDataProvider
 from trading_platform.data.options_chain_collector import OptionsChainCollector
 from trading_platform.decision.orchestrator import DecisionCycleOrchestrator
-from trading_platform.decision.pipeline import DecisionPipeline
+from trading_platform.decision.pipeline import DecisionPipeline, MarketDataUnavailable
 from trading_platform.derivatives.engine import ContractSelector, ExpiryCalendar, GreeksCalculator, IVSurfaceBuilder, OptionChainBuilder, RolloverPlanner
 from trading_platform.risk.historical_var import HistoricalVarCalculator
 from trading_platform.risk.portfolio_greeks import PortfolioGreeksCalculator
@@ -56,6 +56,10 @@ from trading_platform.goal.scaling import PositionScaler
 from trading_platform.governance.live_readiness import (
     InstrumentFreshnessTracker,
     LiveReadinessAggregator,
+)
+from trading_platform.governance.regulatory_compliance import (
+    Jurisdiction,
+    RegulatoryComplianceFramework,
 )
 from trading_platform.monitoring.metrics import OperationalEventLogHandler, OperationalMonitor
 from trading_platform.news.calendar import EconomicCalendar
@@ -244,6 +248,10 @@ class TradingRuntime:
             instrument_freshness=self.instrument_freshness,
             feed_staleness=self.live_feed.staleness_tracker,
         )
+        # governance/regulatory_compliance.py's checklist is a stateless
+        # constructor (no runtime deps) -- see arm_live() for how its
+        # results get mapped from real system state and enforced.
+        self.regulatory_compliance = RegulatoryComplianceFramework()
 
         # Async execution layer
         self.oms = OMSEventStore(algo_id=self.settings.angel_one_algo_id or None)
@@ -659,6 +667,21 @@ class TradingRuntime:
                 blockers = canary_readiness.get("blocking_reasons") or ["not_ready"]
                 reasons = ", ".join(str(reason) for reason in blockers)
                 raise ValueError(f"live_canary_readiness_blocked: {reasons}")
+            compliance = self.regulatory_compliance_payload()
+            # Of the SEBI checklist's 4 controls, only these 3 are things this
+            # runtime can actually satisfy today. sebi_compliance (a real,
+            # exchange-issued Algo-ID) is genuinely not configured on any
+            # deployment yet (see angel_one.py's algoID comment) — treating
+            # it as a hard blocker would make LIVE arming permanently
+            # impossible rather than gate on something actionable. It is
+            # still computed and surfaced (payload + /governance) so arming
+            # starts blocking on it automatically the moment an Algo-ID is
+            # configured, without another code change.
+            _BLOCKING_COMPLIANCE_CONTROLS = ("pre_trade_risk_gate", "kill_switch", "exchange_conformance")
+            checks = compliance.get("checks", {})
+            failed = [name for name in _BLOCKING_COMPLIANCE_CONTROLS if not checks.get(name, True)]
+            if failed:
+                raise ValueError(f"regulatory_compliance_blocked: {', '.join(failed)}")
         self.live_armed = armed
         self.monitor.record_event(
             "live_arm_changed",
@@ -683,6 +706,31 @@ class TradingRuntime:
             subscribed_symbols=feed_snap.get("subscribed_symbols", []),
         )
         return readiness.to_dict()
+
+    def regulatory_compliance_payload(self) -> dict:
+        """Evaluates the SEBI (India, this platform's only live jurisdiction)
+        pre-trade compliance checklist from governance/regulatory_compliance.py
+        and returns a dict suitable for arm_live()'s gate and the
+        /governance dashboard.
+
+        Every control below maps to a real, currently-observable runtime
+        signal — RegulatoryComplianceFramework.check_pre_trade() treats any
+        control NOT passed as a kwarg as automatically passing, which would
+        be exactly the kind of fabricated-pass this codebase's honesty
+        discipline exists to prevent, so none are left implicit.
+        """
+        result = self.regulatory_compliance.check_pre_trade(
+            Jurisdiction.INSEI_SEBI,
+            # SEBI retail-algo Algo-ID (REDESIGN_PROMPT.md §6.2) — configured
+            # per angel_one.py's _to_angel_order comment; empty by default.
+            sebi_compliance=bool(self.settings.angel_one_algo_id),
+            pre_trade_risk_gate=self.risk_engine is not None,
+            kill_switch=not self.kill_switch_active,
+            exchange_conformance=bool(self.settings.angel_one_configured),
+        )
+        payload = result.to_dict()
+        payload["all_mandatory_passed"] = result.all_mandatory_passed
+        return payload
 
     def set_kill_switch(self, active: bool, reason: str = "") -> dict:
         reason = reason.strip() or ("runtime_direct_activation" if active else "manual_clear")
@@ -3238,7 +3286,7 @@ class TradingRuntime:
         failures = 0
         for underlying in underlyings:
             try:
-                self.options_chain_collector.capture(underlying)
+                result = self.options_chain_collector.capture(underlying)
             except Exception as exc:
                 failures += 1
                 note_swallowed(f"chain_capture.{underlying}", exc)
@@ -3252,6 +3300,22 @@ class TradingRuntime:
                         underlying, self._chain_capture_skip_passes,
                     )
                     return
+                continue
+            # capture() is best-effort and does NOT raise for a per-strike
+            # rate-limit (see _ChainRateLimited in options_chain_collector.py)
+            # — it swallows those internally so one bad contract never breaks
+            # the sweep. That means the except-block above never saw the 354
+            # rate-limit hits this loop produced in practice (confirmed via
+            # /health's swallowed_by_component 2026-08-18); this checks the
+            # explicit flag capture() now reports instead.
+            if isinstance(result, dict) and result.get("rate_limited"):
+                self._chain_capture_skip_passes = self._CHAIN_CAPTURE_COOLDOWN_PASSES
+                logger.warning(
+                    "chain capture hit an Angel One rate-limit on %s (mid-sweep) — "
+                    "pausing capture for %d passes to protect the decision path",
+                    underlying, self._chain_capture_skip_passes,
+                )
+                return
         if failures and failures == len(underlyings):
             self._chain_capture_skip_passes = self._CHAIN_CAPTURE_COOLDOWN_PASSES
             logger.warning(
@@ -3402,18 +3466,30 @@ class TradingRuntime:
         if not use_live_history:
             self.decision_pipeline.history_provider = None
         try:
-            scans = [
-                self.decision_pipeline.scan(
-                    underlying=underlying,
-                    start=start,
-                    days=days,
-                    execution_mode=ExecutionMode.PAPER,
-                    live_armed=False,
-                    kill_switch_active=self.kill_switch_active,
-                    strategy_names=strategy_names,
-                )
-                for underlying in underlyings
-            ]
+            # Per-underlying try/except, not a list comprehension: a symbol
+            # that fails closed with MarketDataUnavailable (real data was
+            # expected and every real attempt failed) must not abort the
+            # whole shadow run — skip that underlying and keep going, mirroring
+            # how the live scan loop's _scan_symbol() already isolates
+            # per-symbol failures. Any OTHER exception still propagates, so a
+            # genuinely unexpected bug surfaces via the route's existing
+            # except Exception -> HTTPException(400) rather than being
+            # silently absorbed here.
+            scans = []
+            for underlying in underlyings:
+                try:
+                    scans.append(self.decision_pipeline.scan(
+                        underlying=underlying,
+                        start=start,
+                        days=days,
+                        execution_mode=ExecutionMode.PAPER,
+                        live_armed=False,
+                        kill_switch_active=self.kill_switch_active,
+                        strategy_names=strategy_names,
+                    ))
+                except MarketDataUnavailable as exc:
+                    note_swallowed("shadow_run.scan_skipped", exc)
+                    logger.warning("shadow_run: skipping %s after real-data failure: %s", underlying, exc)
         finally:
             self.decision_pipeline.history_provider = history_provider
         router = ExecutionRouter(
@@ -4052,9 +4128,20 @@ class TradingRuntime:
         Read-only/diagnostic, same as portfolio_greeks_snapshot.
         """
         def historical_returns(underlying: str) -> list[float]:
-            bars = self.decision_pipeline._fetch_bars(
-                underlying, date.today() - timedelta(days=400), 300
-            )
+            try:
+                bars = self.decision_pipeline._fetch_bars(
+                    underlying, date.today() - timedelta(days=400), 300
+                )
+            except MarketDataUnavailable as exc:
+                # Fails closed like the live scan path: no real bars for this
+                # underlying this cycle -> exclude it from the VaR computation
+                # rather than fabricate a return series. HistoricalVarCalculator
+                # already tolerates individual underlyings coming back empty
+                # (filters them out of usable_lengths) and only reports the
+                # whole book unavailable if EVERY underlying is empty.
+                note_swallowed("portfolio_var.bars_unavailable", exc)
+                logger.warning("portfolio_var: skipping %s after real-data failure: %s", underlying, exc)
+                return []
             closes = [b.close for b in bars] if bars else []
             if len(closes) < 2:
                 return []
@@ -4152,6 +4239,9 @@ class TradingRuntime:
                 "compliance_max_orders": self.compliance.max_orders_per_day,
                 "rejection_count_session": len(self._risk_rejection_log),
             },
+            # governance/regulatory_compliance.py's SEBI checklist — read-only
+            # here (also enforced as a blocking gate in arm_live()).
+            "regulatory_compliance": self.regulatory_compliance_payload(),
         }
 
     # ------------------------------------------------------------------

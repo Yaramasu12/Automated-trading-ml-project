@@ -63,8 +63,28 @@ class PriceResolutionService:
             note_swallowed("price_resolution.live_tick", exc)
             tick = None
         if tick is not None and getattr(tick, "last_price", 0) and tick.last_price > 0:
-            is_stale = self._is_tick_stale(symbol)
-            return PriceResolution(price=float(tick.last_price), source="live", is_stale=is_stale)
+            # An option's LTP only means something if it actually traded
+            # today. Angel One echoes a stale reference price — sometimes
+            # from a much earlier session, back when the strike was near the
+            # money — for a contract with zero trades today, tagged with a
+            # wrapper timestamp that refreshes on every poll. Confirmed
+            # 2026-08-21: a FINNIFTY put ~700 points OTM carried volume=0,
+            # open/high/low=0, and a "live" last_price of 351.5, while
+            # neighbouring similarly-OTM strikes (with real volume) priced at
+            # 2-6 — the feed's own staleness tracker never caught it, because
+            # only the TRADE data was stale, not the tick delivery. An
+            # untraded option has no real current price to report; fall
+            # through to the theoretical mark below instead of trusting the
+            # echo. Indices/spot ticks legitimately carry volume=0 always, so
+            # this only applies when `instrument` is an option.
+            is_untraded_option = (
+                instrument is not None
+                and getattr(instrument, "option_type", None) is not None
+                and not getattr(tick, "volume", 0)
+            )
+            if not is_untraded_option:
+                is_stale = self._is_tick_stale(symbol)
+                return PriceResolution(price=float(tick.last_price), source="live", is_stale=is_stale)
 
         if instrument is not None:
             try:

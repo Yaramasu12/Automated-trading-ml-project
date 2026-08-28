@@ -29,6 +29,17 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+class MarketDataUnavailable(RuntimeError):
+    """Raised by _fetch_bars() when history_provider is configured but every
+    real-data attempt (cache, disk, live fetch, rate-limit cooldown) failed.
+
+    Never raised when history_provider is None (backtest/demo mode, no real
+    broker configured) — there, synthetic bars remain the correct, intended
+    behavior. Callers with a real history_provider must not substitute
+    fabricated data for a failed real fetch; they should skip this underlying
+    for the cycle instead."""
+
+
 @dataclass(frozen=True)
 class DecisionCandidate:
     underlying: str
@@ -138,6 +149,19 @@ class DecisionPipeline:
         # the lockout worse and starve every symbol of real data.
         self._candle_cooldown_until = 0.0
         self._bars_source_logged: set[str] = set()
+        # Set by every _fetch_bars() call: True if that call returned
+        # fabricated bars instead of real Angel One candles. Callers that are
+        # about to act on a signal (not just observe/backtest) must check this
+        # for the underlying they just fetched and refuse to trade if True —
+        # see bars_were_synthetic().
+        self._last_fetch_synthetic: dict[str, bool] = {}
+
+    def bars_were_synthetic(self, underlying: str) -> bool:
+        """True if the most recent _fetch_bars(underlying, ...) call fell back
+        to fabricated data rather than real Angel One candles. A signal built
+        from a True result must not be treated as tradeable — see the
+        SYNTHETIC-DATA FALLBACK warning this mirrors in _fetch_bars."""
+        return self._last_fetch_synthetic.get(underlying, False)
 
     def scan(
         self,
@@ -349,13 +373,20 @@ class DecisionPipeline:
             note_swallowed("pipeline.candle_csv_write", exc)
 
     def _fetch_bars(self, underlying: str, start: date, days: int) -> list[MarketBar]:
-        """Real Angel One daily bars (cached per day); synthetic only as a LOUD last resort.
+        """Real Angel One daily bars (cached per day). Fails closed, not synthetic.
 
         This function is the single source of the platform's market view — the
-        features, regime, win-probability and EV all derive from these bars. A
-        silent synthetic fallback here means every downstream decision is made
-        on fake data, so real data is cached per day and failures are logged at
-        WARNING with note_swallowed (surfaced in health output).
+        features, regime, win-probability and EV all derive from these bars.
+        When history_provider is configured (real broker present) and every
+        real-data attempt fails, this raises MarketDataUnavailable rather than
+        substituting fabricated data — a decision made on fake data is worse
+        than no decision. Callers must let that propagate (or catch it and
+        skip this underlying for the cycle), never treat it as recoverable by
+        falling back to synthetic bars themselves. Only when history_provider
+        is None (explicit backtest/demo mode, no real broker configured) do
+        synthetic bars remain the correct, expected return value. Every real
+        attempt and its failure is logged at WARNING with note_swallowed
+        (surfaced in /health's swallowed_by_component).
         """
         min_bars = max(days, self._MIN_FEATURE_BARS)
         today_ist = now_ist().date()
@@ -370,10 +401,12 @@ class DecisionPipeline:
                 cached = self._real_bars_cache.get(underlying)
                 if cached is not None and cached[0] == today_ist and len(cached[1]) >= self._MIN_FEATURE_BARS:
                     bars = cached[1]
+                    self._last_fetch_synthetic[underlying] = False
                     return bars[-min_bars:] if len(bars) > min_bars else list(bars)
                 disk_bars = self._load_bars_from_disk(underlying, today_ist)
                 if disk_bars is not None:
                     self._real_bars_cache[underlying] = (today_ist, disk_bars)
+                    self._last_fetch_synthetic[underlying] = False
                     return disk_bars[-min_bars:] if len(disk_bars) > min_bars else list(disk_bars)
                 if time.monotonic() >= self._candle_cooldown_until:
                     try:
@@ -422,6 +455,7 @@ class DecisionPipeline:
                                     "REAL market data for %s: %d daily bars, last close %.2f",
                                     underlying, len(bars), bars[-1].close,
                                 )
+                            self._last_fetch_synthetic[underlying] = False
                             return bars[-min_bars:] if len(bars) > min_bars else list(bars)
                         raise RuntimeError(
                             f"only {len(bars)} candles returned (need >= {self._MIN_FEATURE_BARS})"
@@ -438,6 +472,39 @@ class DecisionPipeline:
                             "SYNTHETIC-DATA FALLBACK for %s (%s) — decisions for this symbol are NOT "
                             "based on the real market this scan", underlying, msg[:120],
                         )
+                        # Fail closed: history_provider was configured (real data
+                        # was expected), and every real attempt failed. Do NOT
+                        # fall through to synthetic bars — raise so the caller
+                        # skips this underlying rather than trading on fake data.
+                        raise MarketDataUnavailable(
+                            f"real bars unavailable for {underlying}: {msg[:200]}"
+                        ) from exc
+                else:
+                    # Rate-limit cooldown active: previously fell straight
+                    # through to the synthetic return below with no exception
+                    # raised — a second, quieter fallback route than the except
+                    # branch above. Now fails closed the same way.
+                    note_swallowed(
+                        "pipeline.real_bars_fallback",
+                        RuntimeError("candle rate-limit cooldown active"),
+                    )
+                    logger.warning(
+                        "SYNTHETIC-DATA FALLBACK for %s (rate-limit cooldown active) — decisions "
+                        "for this symbol are NOT based on the real market this scan", underlying,
+                    )
+                    raise MarketDataUnavailable(
+                        f"real bars unavailable for {underlying}: rate-limit cooldown active"
+                    )
+        else:
+            note_swallowed(
+                "pipeline.real_bars_fallback",
+                RuntimeError("no history provider configured"),
+            )
+            logger.warning(
+                "SYNTHETIC-DATA FALLBACK for %s (no history provider configured) — decisions "
+                "for this symbol are NOT based on the real market this scan", underlying,
+            )
+        self._last_fetch_synthetic[underlying] = True
         return self.data_provider.generate_daily_bars(underlying, start, min_bars, self._base_price(underlying))
 
     # Minimum signal confidence to proceed to risk evaluation

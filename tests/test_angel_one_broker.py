@@ -34,10 +34,25 @@ class FakeSmartApi:
     def tradeBook(self):
         return {"status": True, "data": []}
 
+    def cancelOrder(self, order_id, variety):
+        return {"status": True, "data": {"orderid": order_id}}
+
+
+class _RaisingCancelSmartApi(FakeSmartApi):
+    def cancelOrder(self, order_id, variety):
+        raise RuntimeError("network error")
+
+
+class _RejectingCancelSmartApi(FakeSmartApi):
+    def cancelOrder(self, order_id, variety):
+        return {"status": False, "message": "order already complete"}
+
 
 class TestableAngelOneBrokerClient(AngelOneBrokerClient):
+    _smart_api_cls = FakeSmartApi
+
     def login(self) -> None:
-        self._smart_api = FakeSmartApi()
+        self._smart_api = self._smart_api_cls()
         self._auth_token = "jwt"
         self._feed_token = "feed"
         self._refresh_token = "refresh"
@@ -70,6 +85,25 @@ class AngelOneBrokerTests(unittest.TestCase):
         broker = TestableAngelOneBrokerClient(dataclasses.replace(_settings(), angel_one_algo_id="ALGO123"))
         params = broker._to_angel_order(_intent())
         self.assertEqual(params["algoID"], "ALGO123")
+
+    def test_cancel_order_returns_true_on_broker_success(self):
+        broker = TestableAngelOneBrokerClient(_settings())
+        self.assertTrue(broker.cancel_order("AO-123"))
+
+    def test_cancel_order_returns_false_on_broker_rejection(self):
+        class _Broker(TestableAngelOneBrokerClient):
+            _smart_api_cls = _RejectingCancelSmartApi
+        broker = _Broker(_settings())
+        self.assertFalse(broker.cancel_order("AO-123"))
+
+    def test_cancel_order_returns_false_rather_than_raising_on_error(self):
+        """Chase-to-market must always be able to proceed to the MARKET
+        resubmit regardless of what the cancel call does -- it must never
+        propagate an exception that would abort the chase."""
+        class _Broker(TestableAngelOneBrokerClient):
+            _smart_api_cls = _RaisingCancelSmartApi
+        broker = _Broker(_settings())
+        self.assertFalse(broker.cancel_order("AO-123"))
 
 
 def _settings() -> Settings:

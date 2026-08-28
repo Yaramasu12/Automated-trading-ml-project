@@ -16,11 +16,14 @@ from trading_platform.backtesting.engine import BacktestConfig, BacktestEngine
 from trading_platform.backtesting.evaluator import WalkForwardEvaluator
 from trading_platform.broker.simulated import SimulatedBrokerClient
 from trading_platform.data.instrument_master import build_default_universe
-from trading_platform.domain.enums import OrderType, ProductType, Side
+from trading_platform.domain.enums import OrderStatus, OrderType, ProductType, Side
 from trading_platform.domain.models import OrderIntent, Signal
 
 
-def _make_intent(side: Side, price: float = 100.0, quantity: int = 100) -> OrderIntent:
+def _make_intent(
+    side: Side, price: float = 100.0, quantity: int = 100,
+    order_type: OrderType = OrderType.MARKET, limit_price: float | None = None,
+) -> OrderIntent:
     instrument = build_default_universe().get("RELIANCE")
     signal = Signal(
         strategy_name="test",
@@ -36,8 +39,9 @@ def _make_intent(side: Side, price: float = 100.0, quantity: int = 100) -> Order
         signal=signal,
         instrument=instrument,
         quantity=quantity,
-        order_type=OrderType.MARKET,
+        order_type=order_type,
         product_type=ProductType.INTRADAY,
+        limit_price=limit_price,
     )
 
 
@@ -254,6 +258,75 @@ class SimulatedBrokerSlippageTests(unittest.TestCase):
         intent = _make_intent(Side.BUY, price=100.0, quantity=1)
         result = broker.submit_order(intent)
         self.assertAlmostEqual(result.average_price, 100.0, places=4)
+
+
+class SimulatedBrokerRestingLimitTests(unittest.TestCase):
+    """A LIMIT order must behave like a real resting order: fill immediately
+    only if it already crosses the market, otherwise stay ACKNOWLEDGED/open
+    until order_status() sees the market cross it or cancel_order() removes
+    it. Before this, SimulatedBrokerClient always filled synchronously
+    regardless of order_type, so paper mode could never exercise
+    ExecutionScheduler's chase-to-market path at all."""
+
+    def test_buy_limit_below_market_rests_unfilled(self):
+        broker = SimulatedBrokerClient(spread_bps=0.0, impact_bps_per_unit=0.0, noise_bps=0.0)
+        # signal.price (used as the market reference when no live feed is
+        # wired) is 100; a BUY limit at 90 has not been reached yet.
+        intent = _make_intent(Side.BUY, price=100.0, order_type=OrderType.LIMIT, limit_price=90.0)
+        result = broker.submit_order(intent)
+        self.assertEqual(result.status, OrderStatus.ACKNOWLEDGED)
+        self.assertIsNotNone(result.broker_order_id)
+        self.assertIsNone(result.average_price)
+
+    def test_sell_limit_above_market_rests_unfilled(self):
+        broker = SimulatedBrokerClient(spread_bps=0.0, impact_bps_per_unit=0.0, noise_bps=0.0)
+        intent = _make_intent(Side.SELL, price=100.0, order_type=OrderType.LIMIT, limit_price=110.0)
+        result = broker.submit_order(intent)
+        self.assertEqual(result.status, OrderStatus.ACKNOWLEDGED)
+
+    def test_limit_already_crossing_market_fills_immediately(self):
+        broker = SimulatedBrokerClient(spread_bps=0.0, impact_bps_per_unit=0.0, noise_bps=0.0)
+        # BUY limit at 110 when the market reference is 100 -- already
+        # marketable, must fill synchronously like MARKET does.
+        intent = _make_intent(Side.BUY, price=100.0, order_type=OrderType.LIMIT, limit_price=110.0)
+        result = broker.submit_order(intent)
+        self.assertEqual(result.status, OrderStatus.FILLED)
+        self.assertIsNotNone(result.average_price)
+
+    def test_order_status_reports_open_until_market_crosses_then_fills_at_limit(self):
+        broker = SimulatedBrokerClient(spread_bps=0.0, impact_bps_per_unit=0.0, noise_bps=0.0)
+        intent = _make_intent(Side.BUY, price=100.0, order_type=OrderType.LIMIT, limit_price=95.0)
+        result = broker.submit_order(intent)
+        order_id = result.broker_order_id
+
+        # Market reference is still 100 (signal.price, no live feed wired) --
+        # the BUY limit at 95 has not been reached.
+        status = broker.order_status(order_id)
+        self.assertEqual(status["state"], "open")
+
+        # Wire a live feed reporting a price that now crosses the limit.
+        class _FakeFeed:
+            def latest_tick(self, symbol):
+                class _T:
+                    last_price = 94.0
+                return _T()
+        broker.set_live_feed(_FakeFeed())
+
+        status = broker.order_status(order_id)
+        self.assertEqual(status["state"], "complete")
+        self.assertAlmostEqual(status["average_price"], 95.0, places=4)  # fills AT the limit, not the market price
+        self.assertGreater(status["filled_units"], 0)
+        # Terminal orders are not queryable again.
+        self.assertIsNone(broker.order_status(order_id))
+
+    def test_cancel_order_removes_a_resting_order(self):
+        broker = SimulatedBrokerClient(spread_bps=0.0, impact_bps_per_unit=0.0, noise_bps=0.0)
+        intent = _make_intent(Side.BUY, price=100.0, order_type=OrderType.LIMIT, limit_price=90.0)
+        result = broker.submit_order(intent)
+        self.assertTrue(broker.cancel_order(result.broker_order_id))
+        self.assertIsNone(broker.order_status(result.broker_order_id))
+        # Cancelling an unknown/already-cancelled id is a no-op, not an error.
+        self.assertFalse(broker.cancel_order(result.broker_order_id))
 
 
 # ---------------------------------------------------------------------------

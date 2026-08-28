@@ -34,3 +34,16 @@ class BrokerClient(ABC):
     def positions(self) -> list[dict]:
         raise NotImplementedError
 
+    @abstractmethod
+    def cancel_order(self, broker_order_id: str) -> bool:
+        """Cancel a previously-submitted, not-yet-terminal order.
+
+        Returns True if the cancel was accepted, False otherwise. Required
+        for chase-to-market: a resting LIMIT entry that hasn't filled within
+        the chase window gets cancelled here before being resubmitted as
+        MARKET. Abstract (not a soft default) because a no-op stub would let
+        the scheduler double-book a limit AND a market order for the same
+        intent without ever noticing the cancel silently did nothing.
+        """
+        raise NotImplementedError
+

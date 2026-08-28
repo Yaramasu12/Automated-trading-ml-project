@@ -51,6 +51,9 @@ class _NoOpBroker(BrokerClient):
     def order_status(self, order_id: str) -> dict | None:
         return None
 
+    def cancel_order(self, broker_order_id: str) -> bool:
+        return True
+
 
 @contextlib.contextmanager
 def _scheduler_in_tmpdir(compliance=None):

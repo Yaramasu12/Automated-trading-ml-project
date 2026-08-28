@@ -94,6 +94,36 @@ class PriceResolutionServiceTests(unittest.TestCase):
         r = self.svc.resolve("SYM", entry_price=10.0)
         self.assertEqual(r.source, "entry")
 
+    def test_untraded_option_tick_falls_back_to_theoretical_mark(self):
+        """A deep-OTM option that has not traded today can carry a stale
+        "live" last_price (Angel One echoes an old reference, e.g. from when
+        the strike was near the money) with volume=0. That must not be
+        trusted as a real market price — confirmed live 2026-08-21 on
+        FINNIFTY25AUG2625550PE: last_price=351.5 with volume=0 while
+        neighbouring similarly-OTM strikes (real volume) priced at 2-6."""
+        self.live_feed.latest_tick.return_value = SimpleNamespace(last_price=351.5, volume=0)
+        self.theoretical_mark.return_value = 4.4
+        option = SimpleNamespace(option_type="PE")
+        r = self.svc.resolve("FINNIFTY25AUG2625550PE", instrument=option, entry_price=12.15)
+        self.assertEqual(r.price, 4.4)
+        self.assertEqual(r.source, "model")
+
+    def test_untraded_non_option_tick_is_still_trusted(self):
+        """Indices/spot symbols legitimately report volume=0 always — the
+        untraded-option guard must not reject them."""
+        self.live_feed.latest_tick.return_value = SimpleNamespace(last_price=26261.0, volume=0)
+        r = self.svc.resolve("FINNIFTY", entry_price=26000.0)
+        self.assertEqual(r.price, 26261.0)
+        self.assertEqual(r.source, "live")
+
+    def test_option_tick_with_real_volume_is_still_trusted(self):
+        self.live_feed.latest_tick.return_value = SimpleNamespace(last_price=2.7, volume=90960)
+        option = SimpleNamespace(option_type="PE")
+        r = self.svc.resolve("FINNIFTY25AUG2625200PE", instrument=option, entry_price=5.0)
+        self.assertEqual(r.price, 2.7)
+        self.assertEqual(r.source, "live")
+        self.theoretical_mark.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

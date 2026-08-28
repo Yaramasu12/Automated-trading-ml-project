@@ -25,7 +25,7 @@ import random
 from datetime import datetime, timedelta, timezone
 
 from trading_platform.broker.base import BrokerClient, BrokerResult
-from trading_platform.domain.enums import OrderStatus, Side
+from trading_platform.domain.enums import OrderStatus, OrderType, Side
 from trading_platform.domain.models import OrderIntent
 
 
@@ -57,6 +57,12 @@ class SimulatedBrokerClient(BrokerClient):
         self.submitted: list[OrderIntent] = []
         self._rng = random.Random(seed)
         self._live_feed = None   # set via set_live_feed() after runtime init
+        # Resting LIMIT orders that haven't crossed yet: broker_order_id -> intent.
+        # Lets paper mode genuinely exercise ExecutionScheduler's ACKNOWLEDGED ->
+        # poll -> chase-to-market path, not just always-immediate-fill — a
+        # LIMIT order here only fills when the simulated price actually
+        # crosses it, exactly like a real resting order would.
+        self._pending: dict[str, OrderIntent] = {}
 
     def set_live_feed(self, live_feed) -> None:
         """Wire in the Angel One live tick feed for real-time fill prices."""
@@ -82,9 +88,43 @@ class SimulatedBrokerClient(BrokerClient):
         acknowledged_at = submitted_at + timedelta(milliseconds=self.latency_ms)
         self.submitted.append(intent)
 
-        # Prefer live Angel One price; fall back to signal price
+        # Prefer live Angel One price; fall back to signal price. This is the
+        # MARKET's reference price, distinct from intent.limit_price (the
+        # order's own requested price) below.
         live_px = self._live_price(intent.instrument.symbol)
-        reference_price = live_px or intent.limit_price or intent.signal.price
+        market_price = live_px or intent.signal.price
+
+        if intent.order_type == OrderType.LIMIT and intent.limit_price:
+            if not self._crosses(intent.signal.side, market_price, intent.limit_price):
+                # Resting, not filled: ACKNOWLEDGED + a broker order id is
+                # ACK-compatible with ExecutionScheduler._submit_to_broker
+                # (spawns _track_order_until_terminal on any ACKNOWLEDGED/
+                # SUBMITTED result carrying a broker_order_id) -- the exact
+                # same path a live order takes. Without this branch, paper
+                # mode could never exercise chase-to-market: every order used
+                # to fill synchronously regardless of order_type.
+                order_id = f"SIM-LMT-{len(self.submitted):06d}"
+                self._pending[order_id] = intent
+                return BrokerResult(
+                    status=OrderStatus.ACKNOWLEDGED,
+                    broker_order_id=order_id,
+                    average_price=None,
+                    submitted_at=submitted_at,
+                    acknowledged_at=acknowledged_at,
+                    message="simulated_resting_limit",
+                    raw={
+                        "mode": "paper_sim",
+                        "limit_price": intent.limit_price,
+                        "market_price": market_price,
+                        "side": intent.signal.side.value,
+                    },
+                )
+            # Already crosses at submission time -- behaves like a marketable
+            # order, filled through the same slippage model as MARKET.
+            reference_price = market_price
+        else:
+            reference_price = live_px or intent.limit_price or intent.signal.price
+
         fill_price, slippage_pct = self._apply_slippage(intent, reference_price)
         return BrokerResult(
             status=OrderStatus.FILLED,
@@ -102,6 +142,39 @@ class SimulatedBrokerClient(BrokerClient):
                 "side": intent.signal.side.value,
             },
         )
+
+    def order_status(self, order_id: str) -> dict | None:
+        """Poll-compatible with ExecutionScheduler._track_order_until_terminal:
+        re-checks whether the simulated market price has now crossed the
+        resting limit. Fills exactly at the limit price (no extra slippage) --
+        a resting limit order's whole guarantee is never filling worse than
+        its own limit."""
+        intent = self._pending.get(order_id)
+        if intent is None:
+            return None
+        live_px = self._live_price(intent.instrument.symbol)
+        market_price = live_px or intent.signal.price
+        if not self._crosses(intent.signal.side, market_price, intent.limit_price):
+            return {"state": "open", "average_price": 0.0, "filled_units": 0, "message": "resting"}
+        del self._pending[order_id]
+        return {
+            "state": "complete",
+            "average_price": intent.limit_price,
+            "filled_units": intent.quantity * intent.instrument.lot_size,
+            "message": "",
+        }
+
+    def cancel_order(self, broker_order_id: str) -> bool:
+        return self._pending.pop(broker_order_id, None) is not None
+
+    @staticmethod
+    def _crosses(side: Side, market_price: float, limit_price: float) -> bool:
+        """True once the market has reached a price the limit order would
+        fill at: BUY fills when the market has fallen to/through the limit;
+        SELL fills when it has risen to/through the limit."""
+        if side == Side.BUY:
+            return market_price <= limit_price
+        return market_price >= limit_price
 
     def positions(self) -> list[dict]:
         return []

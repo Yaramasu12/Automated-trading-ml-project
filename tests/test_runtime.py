@@ -142,6 +142,74 @@ class RuntimeTests(unittest.TestCase):
         self.assertTrue(state["live_armed"])
         self.assertTrue(state["live_order_confirmation_ready"])
 
+    def _fully_ready_live_runtime(self) -> "TradingRuntime":
+        """Every existing live-arming gate satisfied — shared setup for the
+        regulatory-compliance gate tests below, mirroring
+        test_live_arm_allows_only_when_every_live_gate_is_present."""
+        runtime = TradingRuntime(
+            Settings(
+                execution_mode=ExecutionMode.LIVE,
+                broker="ANGEL_ONE",
+                live_trading_enabled=True,
+                initial_capital=1_000_000,
+                max_drawdown=0.10,
+                max_daily_loss=0.02,
+                max_position_pct=0.05,
+                max_margin_utilization=0.60,
+                live_order_confirmation="I_ACCEPT_REAL_MONEY_LIVE_ORDERS",
+                angel_one_api_key="api-key",
+                angel_one_api_secret="secret-key",
+                angel_one_client_code="client",
+                angel_one_pin="1234",
+                angel_one_totp_secret="ABCDEF",
+                angel_one_instrument_master_url="https://example.invalid/OpenAPIScripMaster.json",
+                angel_one_instrument_cache_path="data/processed/test_angel_instruments.json",
+                aws_region="ap-south-1",
+            )
+        )
+        runtime.instrument_freshness.record_refresh(
+            source="https://api.angelone.in/test", parsed_count=120_000
+        )
+        runtime.live_feed._subscribed_symbols = ["NIFTY"]
+        runtime.live_feed._running = True
+        runtime.live_feed.staleness_tracker.record("NIFTY")
+        runtime.live_canary_readiness_payload = lambda: {
+            "can_consider_live_canary": True,
+            "blocking_reasons": [],
+        }
+        return runtime
+
+    def test_regulatory_compliance_gate_blocks_arming_when_risk_engine_missing(self):
+        """2026-08-22: governance/regulatory_compliance.py wired into
+        arm_live() as a real blocking gate on the controls this runtime can
+        actually satisfy today (risk engine present / kill switch clear /
+        broker configured). kill_switch and exchange_conformance are already
+        covered by the pre-existing live_readiness gate (redundant defense
+        in depth here); pre_trade_risk_gate is the one NEW check this gate
+        adds that nothing else in arm_live() verifies — simulated here since
+        risk_engine is unconditionally constructed and never actually None
+        in real operation."""
+        runtime = self._fully_ready_live_runtime()
+        runtime.risk_engine = None
+
+        with self.assertRaisesRegex(ValueError, "regulatory_compliance_blocked"):
+            runtime.arm_live(True)
+
+    def test_regulatory_compliance_gate_does_not_block_on_missing_algo_id(self):
+        """The SEBI Algo-ID control is genuinely unconfigured on every
+        deployment today (see angel_one.py's algoID comment) — it must be
+        visible in the payload but must NOT by itself block arming, or LIVE
+        mode would become permanently unusable on this platform."""
+        runtime = self._fully_ready_live_runtime()
+        self.assertEqual(runtime.settings.angel_one_algo_id, "")
+
+        payload = runtime.regulatory_compliance_payload()
+        self.assertFalse(payload["checks"]["sebi_compliance"])
+        self.assertFalse(payload["all_mandatory_passed"])
+
+        state = runtime.arm_live(True)  # must NOT raise
+        self.assertTrue(state["live_armed"])
+
     def test_backtest_endpoint_payload(self):
         runtime = TradingRuntime()
         result = runtime.run_backtest({"days": 30, "underlyings": ["NIFTY", "RELIANCE"]})
@@ -389,6 +457,71 @@ class RuntimeTests(unittest.TestCase):
         self.assertGreater(after["total_orders"], 0)
         self.assertIn(after["status"], {"HEALTHY", "DEGRADED"})
         self.assertGreater(events["count"], 0)
+
+    def test_shadow_run_skips_underlying_on_market_data_unavailable(self):
+        """A per-underlying MarketDataUnavailable (real data was expected and
+        every real attempt failed) must not abort the whole shadow run —
+        shadow_run() should skip just that underlying and keep going,
+        mirroring the live scan loop's per-symbol isolation in
+        decision/orchestrator.py::_scan_symbol()."""
+        from unittest.mock import patch
+        from trading_platform.decision.pipeline import MarketDataUnavailable
+
+        runtime = TradingRuntime()
+        runtime.set_execution_mode("PAPER")
+        import dataclasses as _dc
+        runtime.risk_engine.limits = _dc.replace(runtime.risk_engine.limits, block_futures_opening=False)
+
+        original_fetch = runtime.decision_pipeline._fetch_bars
+
+        def _flaky_fetch(underlying, start, days):
+            if underlying == "NIFTY":
+                raise MarketDataUnavailable("simulated real-data failure for NIFTY")
+            return original_fetch(underlying, start, days)
+
+        with patch.object(runtime.decision_pipeline, "_fetch_bars", side_effect=_flaky_fetch):
+            result = runtime.shadow_run(
+                {
+                    "underlyings": ["NIFTY", "RELIANCE", "BANKNIFTY"],
+                    "days": 60,
+                    "strategy_names": ["futures_trend", "mean_reversion", "breakout"],
+                }
+            )
+        # Did not raise/500 despite NIFTY failing closed — RELIANCE/BANKNIFTY
+        # still produced results.
+        self.assertEqual(result["mode"], "PAPER")
+        self.assertGreaterEqual(result["submitted_orders"], 1)
+
+    def test_portfolio_var_snapshot_skips_underlying_on_market_data_unavailable(self):
+        """A position whose underlying's real bars are unavailable must be
+        excluded from the VaR computation, not crash the whole snapshot —
+        HistoricalVarCalculator.compute() already tolerates individual
+        underlyings coming back with an empty return series."""
+        from datetime import date as _date
+        from unittest.mock import patch
+        from trading_platform.decision.pipeline import MarketDataUnavailable
+        from trading_platform.domain.enums import AssetClass, Exchange, InstrumentType, OptionType, Segment
+        from trading_platform.domain.models import Instrument, Position
+
+        runtime = TradingRuntime()
+        opt_inst = Instrument(
+            symbol="NIFTY24000CE", name="NIFTY", exchange=Exchange.NFO, segment=Segment.OPTIONS,
+            asset_class=AssetClass.INDEX, instrument_type=InstrumentType.OPTION, token="NIFTY24000CE",
+            lot_size=50, expiry=_date(2100, 1, 7), strike=24000.0, option_type=OptionType.CE,
+            underlying="NIFTY",
+        )
+        runtime.portfolio.positions["NIFTY24000CE"] = Position(instrument=opt_inst, quantity=-1, average_price=100.0)
+
+        with patch.object(runtime, "_position_spot_price", return_value=24000.0), \
+             patch.object(runtime, "_position_mark_price", return_value=100.0), \
+             patch.object(runtime.decision_pipeline, "_fetch_bars",
+                           side_effect=MarketDataUnavailable("simulated real-data failure")):
+            result = runtime.portfolio_var_snapshot()
+
+        # Must not raise — degrades to unavailable (no underlying contributed
+        # usable history), never an exception bubbling out of the route.
+        self.assertIn("available", result)
+        self.assertFalse(result["available"])
 
     def test_derivatives_endpoint_payloads(self):
         runtime = TradingRuntime()

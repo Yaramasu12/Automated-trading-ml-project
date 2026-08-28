@@ -1,21 +1,24 @@
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import inspect
 import itertools
 import logging
+import os
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Callable, Awaitable, TYPE_CHECKING
 
 from trading_platform.broker.base import BrokerClient
-from trading_platform.domain.enums import OrderPriority, OrderStatus
+from trading_platform.domain.enums import OrderPriority, OrderStatus, OrderType
 from trading_platform.domain.models import Order, OrderIntent, PrioritizedOrderIntent, Trade, compute_signal_hash
 from trading_platform.event_bus import InMemoryEventBus
 from trading_platform.execution.fill_processor import FillProcessor
 from trading_platform.execution.final_gate import FinalGateDecision, FinalGateFn
 from trading_platform.execution.lock_manager import InstrumentLockManager
 from trading_platform.execution.oms_store import OMSEventStore
+from trading_platform.execution.order_pricing import limit_price_at_touch
 from trading_platform.execution.rate_limiter import TokenBucketRateLimiter
 
 if TYPE_CHECKING:
@@ -28,6 +31,10 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _seq_counter = itertools.count()
+
+
+def _env_flag(name: str, default: bool) -> bool:
+    return os.getenv(name, str(default)).strip().lower() in {"1", "true", "yes", "on"}
 
 
 @dataclass
@@ -408,10 +415,29 @@ class ExecutionScheduler:
                 symbol=symbol,
             )
 
+    # Smart order routing: new ENTRY intents are submitted as a LIMIT order
+    # near the touch (see order_pricing.limit_price_at_touch) instead of a
+    # blind MARKET order, then chased to MARKET if unfilled -- see
+    # _chase_to_market_if_unfilled. Scoped to entries only: exits
+    # (STOP_LOSS/TARGET/TRAILING_STOP/EMERGENCY_EXIT/etc., all priorities
+    # below ENTRY) stay pure MARKET, since chasing a limit on a stop-loss
+    # would delay getting out while the adverse move that triggered it
+    # continues -- the whole point of a stop is speed, not price
+    # improvement. ENABLE_SMART_ORDER_ROUTING=false reverts instantly to the
+    # old pure-MARKET behavior everywhere, as an escape hatch.
+    def _maybe_upgrade_to_limit(self, intent: OrderIntent) -> OrderIntent:
+        if intent.order_type != OrderType.MARKET or intent.priority != OrderPriority.ENTRY:
+            return intent
+        if not _env_flag("ENABLE_SMART_ORDER_ROUTING", True):
+            return intent
+        limit_price = limit_price_at_touch(intent.signal.price, intent.signal.side)
+        return dataclasses.replace(intent, order_type=OrderType.LIMIT, limit_price=limit_price)
+
     async def _submit_to_broker(self, intent: OrderIntent) -> None:
         now = datetime.now(timezone.utc)
         loop = asyncio.get_running_loop()
 
+        intent = self._maybe_upgrade_to_limit(intent)
         result = await loop.run_in_executor(None, self.broker.submit_order, intent)
 
         order = Order(intent=intent)
@@ -563,6 +589,11 @@ class ExecutionScheduler:
     # Polling cadence for acknowledged (live) orders.
     _TRACK_POLL_SECONDS = 2.0
     _TRACK_TIMEOUT_SECONDS = 120.0
+    # How long a chased LIMIT entry is allowed to rest before being cancelled
+    # and resubmitted as MARKET. Well under both _TRACK_TIMEOUT_SECONDS above
+    # and MultiLegOrderManager._LEG_FILL_TIMEOUT (75s per leg) so a chase
+    # never starves either budget.
+    _CHASE_TIMEOUT_SECONDS = 9.0
 
     async def _track_order_until_terminal(self, intent: OrderIntent, order: Order) -> None:
         """Poll the broker until an acknowledged order reaches a terminal state.
@@ -574,7 +605,19 @@ class ExecutionScheduler:
           - partial fill at timeout → book the filled portion (fix M3)
           - unknown at timeout → CRITICAL alarm + fill_unresolved OMS event;
             the position may exist at the broker — reconcile before trading on.
+
+        A LIMIT entry (see _maybe_upgrade_to_limit) is handled entirely by
+        _chase_to_market_if_unfilled instead: a short chase phase, then (if
+        still unfilled) cancel-and-resubmit as MARKET with its own short
+        bounded follow-up window. That method owns the whole chased-order
+        lifecycle and never falls through to the logic below — see its
+        docstring for why the two phases stay bounded well under
+        MultiLegOrderManager's 75s per-leg fill budget.
         """
+        if intent.order_type == OrderType.LIMIT:
+            await self._chase_to_market_if_unfilled(intent, order)
+            return
+
         broker_order_id = order.broker_order_id or ""
         symbol = intent.instrument.symbol
         lot_size = max(1, int(getattr(intent.instrument, "lot_size", 1) or 1))
@@ -668,6 +711,215 @@ class ExecutionScheduler:
             "order.fill_unresolved.v1",
             {"idempotency_key": intent.idempotency_key, "symbol": symbol,
              "broker_order_id": broker_order_id},
+            "execution",
+        )
+
+    # Bounded follow-up window after a chased order is resubmitted as MARKET.
+    # MARKET orders are expected to resolve almost immediately (fill
+    # synchronously or ack-then-complete within a poll or two); this exists
+    # only as a short safety net, not a second full tracking window — chase
+    # (_CHASE_TIMEOUT_SECONDS=9s) + this (30s) stays comfortably under
+    # MultiLegOrderManager._LEG_FILL_TIMEOUT=75s per leg, with margin for
+    # scheduler/network overhead. Reusing the full _TRACK_TIMEOUT_SECONDS=120s
+    # here instead would let a chased multi-leg entry blow that per-leg
+    # budget and get treated as failed by MultiLegOrderManager while this
+    # task was still legitimately tracking it in the background.
+    _POST_CHASE_TIMEOUT_SECONDS = 30.0
+
+    async def _chase_to_market_if_unfilled(self, intent: OrderIntent, order: Order) -> None:
+        """Chase a resting LIMIT entry to MARKET if it doesn't fill quickly.
+
+        Polls for up to _CHASE_TIMEOUT_SECONDS; if the order is still open at
+        that point, books any partial fill it picked up first, cancels the
+        resting remainder, and resubmits a MARKET order for ONLY the
+        still-unfilled quantity (never the full original quantity — that
+        would double the position if the limit leg had already partially
+        filled), then follows up for a further bounded
+        _POST_CHASE_TIMEOUT_SECONDS, applying the same partial-then-remainder
+        accounting again if needed. Terminal in every branch — always
+        returns after fully recording the outcome (fill, rejection, or an
+        unresolved alarm matching _track_order_until_terminal's own timeout
+        semantics), never leaves the caller with more work to do.
+
+        Reusing the SAME idempotency_key on the market resubmit is safe:
+        oms_store's idempotency_key column is indexed, not UNIQUE, so a
+        second broker_submitted row for the same key is a valid audit trail
+        (limit submitted -> cancelled -> market submitted -> filled), and
+        oms.is_duplicate() is only consulted at enqueue()/_process_intent()
+        time, both already passed long before this method ever runs — the
+        chase path never re-enters either gate, and never bypasses
+        final_gate/RiskEngine/manual_approval/kill-switch, all of which ran
+        on the ORIGINAL intent before submission and are unaffected by a
+        pricing/mechanics-only change this far downstream.
+        """
+        symbol = intent.instrument.symbol
+        lot_size = max(1, int(getattr(intent.instrument, "lot_size", 1) or 1))
+        loop = asyncio.get_running_loop()
+
+        async def _poll(deadline: float, broker_order_id: str) -> dict | None:
+            status_fn = getattr(self.broker, "order_status", None)
+            if status_fn is None:
+                return None
+            last: dict | None = None
+            while loop.time() < deadline:
+                await asyncio.sleep(self._TRACK_POLL_SECONDS)
+                try:
+                    status = await loop.run_in_executor(None, status_fn, broker_order_id)
+                except Exception as exc:
+                    logger.warning("Chase order-status poll error for %s: %s", broker_order_id, exc)
+                    continue
+                if not status:
+                    continue
+                last = status
+                if str(status.get("state", "")).lower() in {"complete", "rejected", "cancelled"}:
+                    break
+            return last
+
+        def _lots_filled(status: dict | None) -> int:
+            units = int((status or {}).get("filled_units") or 0)
+            return units // lot_size
+
+        def _record_rejection(order_id: str, broker_order_id: str, status: dict | None, state: str) -> None:
+            self.oms.append(
+                event_type="broker_rejected", order_id=order_id,
+                symbol=symbol, broker_order_id=broker_order_id,
+                rejection_reason=str((status or {}).get("message", state)),
+            )
+            self._publish(
+                "order.rejected.v1",
+                {"idempotency_key": order_id, "symbol": symbol,
+                 "broker_order_id": broker_order_id, "reason": state},
+                "execution",
+            )
+            self._rejected += 1
+
+        # ── Phase 1: chase the resting LIMIT order ──────────────────────────
+        chase_deadline = loop.time() + self._CHASE_TIMEOUT_SECONDS
+        status = await _poll(chase_deadline, order.broker_order_id or "")
+        state = str((status or {}).get("state", "")).lower()
+
+        if state in {"rejected", "cancelled"}:
+            _record_rejection(intent.idempotency_key, order.broker_order_id or "", status, state)
+            return
+
+        avg_price = float((status or {}).get("average_price") or 0.0)
+        fill_lots = _lots_filled(status)
+        remaining_qty = intent.quantity - fill_lots
+
+        if (state == "complete" or remaining_qty <= 0) and fill_lots > 0 and avg_price > 0:
+            await self._handle_fill(
+                intent, order, avg_price, min(fill_lots, intent.quantity),
+                datetime.now(timezone.utc), partial=fill_lots < intent.quantity,
+            )
+            return
+        if state == "complete":
+            return  # complete but no usable fill data — nothing bookable
+
+        if fill_lots > 0 and avg_price > 0:
+            logger.warning(
+                "Chase: limit order %s partially filled %d/%d lot(s) before the chase timeout — "
+                "booking the partial fill and chasing only the %d remaining lot(s) to MARKET",
+                order.broker_order_id, fill_lots, intent.quantity, remaining_qty,
+            )
+            await self._handle_fill(
+                intent, order, avg_price, fill_lots, datetime.now(timezone.utc), partial=True,
+            )
+
+        # ── Cancel the resting remainder, resubmit MARKET for what's left ──
+        cancel_fn = getattr(self.broker, "cancel_order", None)
+        cancelled = False
+        if cancel_fn is not None:
+            try:
+                cancelled = await loop.run_in_executor(None, cancel_fn, order.broker_order_id or "")
+            except Exception as exc:
+                logger.warning("Chase cancel_order failed for %s: %s", order.broker_order_id, exc)
+        self.oms.append(
+            event_type="broker_cancelled", order_id=intent.idempotency_key,
+            idempotency_key=intent.idempotency_key, symbol=symbol,
+            broker_order_id=order.broker_order_id,
+            rejection_reason="chase_timeout_unfilled" if cancelled else "chase_timeout_cancel_failed",
+        )
+        # Resubmit even if the cancel itself failed or raced a fill — a
+        # broker-side reject on a genuine duplicate is recoverable; silently
+        # leaving part of an approved entry un-submitted because a
+        # best-effort cancel call errored is not.
+        market_intent = dataclasses.replace(
+            intent, order_type=OrderType.MARKET, limit_price=None, quantity=remaining_qty,
+        )
+        result = await loop.run_in_executor(None, self.broker.submit_order, market_intent)
+        market_order = Order(
+            intent=market_intent, status=result.status, broker_order_id=result.broker_order_id,
+            submitted_at=result.submitted_at, acknowledged_at=result.acknowledged_at,
+            average_price=result.average_price,
+        )
+        self.oms.append(
+            event_type="broker_submitted", order_id=market_intent.idempotency_key,
+            idempotency_key=market_intent.idempotency_key, symbol=symbol,
+            strategy_name=market_intent.signal.strategy_name,
+            broker_order_id=result.broker_order_id,
+            metadata={"status": result.status.value, "reason": "chase_to_market"},
+        )
+
+        if result.status == OrderStatus.FILLED and result.average_price:
+            await self._handle_fill(
+                market_intent, market_order, result.average_price, market_intent.quantity,
+                datetime.now(timezone.utc),
+            )
+            return
+        if result.status == OrderStatus.REJECTED:
+            _record_rejection(market_intent.idempotency_key, result.broker_order_id or "", None, "rejected")
+            return
+        if result.status not in {OrderStatus.ACKNOWLEDGED, OrderStatus.SUBMITTED} or not result.broker_order_id:
+            return
+
+        # ── Phase 2: bounded follow-up on the market resubmit ───────────────
+        # Market resubmits are expected to resolve almost immediately; this
+        # is a short safety net, not a second full tracking window — see
+        # _POST_CHASE_TIMEOUT_SECONDS's docstring for the 75s-per-leg budget
+        # this stays under.
+        follow_up_deadline = loop.time() + self._POST_CHASE_TIMEOUT_SECONDS
+        status = await _poll(follow_up_deadline, result.broker_order_id)
+        state = str((status or {}).get("state", "")).lower()
+
+        if state in {"rejected", "cancelled"}:
+            _record_rejection(market_intent.idempotency_key, result.broker_order_id, status, state)
+            return
+
+        m_avg_price = float((status or {}).get("average_price") or 0.0)
+        m_fill_lots = _lots_filled(status)
+        if m_fill_lots >= market_intent.quantity and m_avg_price > 0:
+            await self._handle_fill(
+                market_intent, market_order, m_avg_price, market_intent.quantity, datetime.now(timezone.utc),
+            )
+            return
+        if m_fill_lots > 0 and m_avg_price > 0:
+            logger.critical(
+                "Chased order %s (%s) PARTIALLY filled %d/%d lot(s) after market resubmit — "
+                "booking partial, remainder unresolved",
+                result.broker_order_id, symbol, m_fill_lots, market_intent.quantity,
+            )
+            await self._handle_fill(
+                market_intent, market_order, m_avg_price, m_fill_lots,
+                datetime.now(timezone.utc), partial=True,
+            )
+
+        logger.critical(
+            "Chased order %s (%s) fill status UNRESOLVED after market resubmit — position may exist "
+            "at broker without ledger/exit tracking. Run POST /execution/reconcile before further trading.",
+            result.broker_order_id, symbol,
+        )
+        self._unresolved_orders += 1
+        self.oms.append(
+            event_type="fill_unresolved", order_id=market_intent.idempotency_key,
+            idempotency_key=market_intent.idempotency_key, symbol=symbol,
+            broker_order_id=result.broker_order_id,
+            rejection_reason="no_terminal_state_within_chase_follow_up",
+            metadata={"last_status": status},
+        )
+        self._publish(
+            "order.fill_unresolved.v1",
+            {"idempotency_key": market_intent.idempotency_key, "symbol": symbol,
+             "broker_order_id": result.broker_order_id},
             "execution",
         )
 

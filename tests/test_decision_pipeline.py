@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 from trading_platform.agent.market_hours import now_ist
 from trading_platform.data.instrument_master import build_default_universe
-from trading_platform.decision.pipeline import DecisionPipeline
+from trading_platform.decision.pipeline import DecisionPipeline, MarketDataUnavailable
 from trading_platform.domain.enums import ExecutionMode
 from trading_platform.domain.models import MarketBar
 from trading_platform.portfolio.ledger import PortfolioLedger
@@ -137,6 +137,70 @@ class FetchBarsCommodityFallbackTests(unittest.TestCase):
         self.assertGreater(len(bars), 0)
         resolved = history.requested_instruments[0]
         self.assertIn(resolved.symbol, ("RELIANCE", "RELIANCE-EQ"))
+
+
+class FailingHistoryProvider:
+    def get_candles(self, instrument, from_dt, to_dt, interval="ONE_DAY"):
+        raise RuntimeError("candle API unavailable")
+
+
+class BarsWereSyntheticTests(unittest.TestCase):
+    """2026-08-22: _fetch_bars fails CLOSED, not synthetic, whenever a real
+    history_provider is configured and every real-data attempt fails --
+    raises MarketDataUnavailable instead of substituting fabricated bars, so
+    a caller can never silently act on a signal built from fake data. Only
+    when history_provider is None (explicit backtest/demo mode, no real
+    broker configured) do synthetic bars remain the correct, intended return
+    value -- covered by test_no_history_provider_is_flagged_synthetic below,
+    which must keep passing unchanged.
+
+    Also covers a previously-silent path: a rate-limit cooldown skipped the
+    real fetch and fell through to synthetic bars with no exception raised at
+    all -- now it fails closed exactly like the real-fetch-exception case."""
+
+    def _pipeline(self, history_provider):
+        master = build_default_universe(date(2026, 1, 1))
+        return DecisionPipeline(
+            master, StrategyFactory(), RiskEngine(), PortfolioLedger(1_000_000),
+            history_provider=history_provider,
+        )
+
+    def test_real_fetch_is_not_flagged_synthetic(self):
+        pipeline = self._pipeline(FakeHistoryProvider(min_bars=30))
+        with patch.object(pipeline, "_load_bars_from_disk", return_value=None):
+            pipeline._fetch_bars("RELIANCE", date(2026, 1, 1), 30)
+        self.assertFalse(pipeline.bars_were_synthetic("RELIANCE"))
+
+    def test_history_provider_failure_raises_instead_of_returning_synthetic(self):
+        pipeline = self._pipeline(FailingHistoryProvider())
+        with patch.object(pipeline, "_load_bars_from_disk", return_value=None):
+            with self.assertRaises(MarketDataUnavailable):
+                pipeline._fetch_bars("RELIANCE", date(2026, 1, 1), 30)
+
+    def test_no_history_provider_is_flagged_synthetic(self):
+        """The one case where synthetic bars are still the correct, intended
+        return value: no real broker configured at all (backtest/demo mode).
+        This must NOT raise and must NOT change."""
+        pipeline = self._pipeline(None)
+        pipeline._fetch_bars("RELIANCE", date(2026, 1, 1), 30)
+        self.assertTrue(pipeline.bars_were_synthetic("RELIANCE"))
+
+    def test_rate_limit_cooldown_raises_instead_of_falling_through_to_synthetic(self):
+        """Regression: this branch previously returned synthetic bars with NO
+        exception raised at all -- silently even quieter than the
+        real-fetch-exception path. Now it must fail closed identically."""
+        import time as _time
+        pipeline = self._pipeline(FakeHistoryProvider(min_bars=30))
+        pipeline._candle_cooldown_until = _time.monotonic() + 60.0
+        with patch.object(pipeline, "_load_bars_from_disk", return_value=None):
+            with self.assertRaises(MarketDataUnavailable):
+                pipeline._fetch_bars("RELIANCE", date(2026, 1, 1), 30)
+
+    def test_unknown_underlying_defaults_to_not_synthetic(self):
+        """bars_were_synthetic() for an underlying never fetched must not
+        read as a fallback -- it simply hasn't been asked about."""
+        pipeline = self._pipeline(FakeHistoryProvider(min_bars=30))
+        self.assertFalse(pipeline.bars_were_synthetic("NEVER_FETCHED"))
 
 
 if __name__ == "__main__":

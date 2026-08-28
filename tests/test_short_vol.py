@@ -666,6 +666,41 @@ class IvRankGateTests(unittest.TestCase):
         self.assertEqual(ex._iv_rank_history("BANKNIFTY"), [])
 
 
+class SyntheticDataFailClosedTests(IvRankGateTests):
+    """2026-08-20: build() must refuse to enter when DecisionPipeline flags
+    this scan's daily bars as fabricated (candle rate-limit/outage fallback
+    -- see pipeline.py's SYNTHETIC-DATA FALLBACK warning and
+    bars_were_synthetic()). realized_vol/VRP computed off fake history is
+    not a real signal. This is the decision-INPUT counterpart to the
+    SHORTVOL_REQUIRE_REAL_QUOTES guard, which only protects the fill PRICE."""
+
+    def _executor(self, *, synthetic=False, **kwargs):
+        ex = super()._executor(**kwargs)
+        ex._rt.decision_pipeline.bars_were_synthetic = lambda u, _s=synthetic: _s
+        return ex
+
+    def test_enters_normally_when_bars_are_real(self):
+        ex = self._executor(synthetic=False, vix_history=[float(v) for v in range(10, 30)])
+        plan = ex.build("NIFTY")
+        self.assertTrue(plan["enter"], plan.get("reason"))
+
+    def test_refuses_entry_when_bars_are_synthetic(self):
+        ex = self._executor(synthetic=True, vix_history=[float(v) for v in range(10, 30)])
+        plan = ex.build("NIFTY")
+        self.assertFalse(plan["enter"])
+        self.assertEqual(plan["legs"], [])
+        self.assertIn("SYNTHETIC-DATA FALLBACK", plan["reason"])
+
+    def test_missing_bars_were_synthetic_defaults_to_real(self):
+        """Lightweight test doubles that predate this check (a bare
+        decision_pipeline SimpleNamespace with no bars_were_synthetic
+        attribute) must not crash build() -- getattr-guarded."""
+        ex = IvRankGateTests._executor(self, vix_history=[float(v) for v in range(10, 30)])
+        self.assertFalse(hasattr(ex._rt.decision_pipeline, "bars_were_synthetic"))
+        plan = ex.build("NIFTY")
+        self.assertTrue(plan["enter"], plan.get("reason"))
+
+
 class GoalGovernanceWiringTests(IvRankGateTests):
     """2026-08-06 (REDESIGN_PROMPT.md §9): GoalGovernance's phase-based
     scaling_factor now actually reduces live short-vol lot sizing —

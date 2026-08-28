@@ -33,13 +33,18 @@ def _bar(close):
 class FakeHistory:
     """Maps instrument.symbol -> close price; raises for unmapped symbols."""
 
-    def __init__(self, prices: dict[str, float], fail_symbols: set[str] | None = None):
+    def __init__(self, prices: dict[str, float], fail_symbols: set[str] | None = None,
+                 rate_limited_symbols: set[str] | None = None):
         self.prices = prices
         self.fail_symbols = fail_symbols or set()
+        self.rate_limited_symbols = rate_limited_symbols or set()
         self.calls: list[str] = []
 
     def get_candles(self, instrument, from_dt, to_dt, interval="ONE_DAY"):
         self.calls.append(instrument.symbol)
+        if instrument.symbol in self.rate_limited_symbols:
+            # Same phrasing Angel One actually returns (AB1021).
+            raise RuntimeError("Too many requests")
         if instrument.symbol in self.fail_symbols:
             raise RuntimeError("simulated candle fetch failure")
         price = self.prices.get(instrument.symbol)
@@ -69,12 +74,12 @@ class OptionsChainCollectorTests(unittest.TestCase):
         self._tmpdir.cleanup()
 
     def _runtime(self, opts, expiries, prices, fail_symbols=None, spot=24000.0, live_tick=True,
-                 fallback_closes=None):
+                 fallback_closes=None, rate_limited_symbols=None):
         master = SimpleNamespace(
             expiries=lambda u, seg=None: list(expiries),
             by_underlying=lambda u, seg=None: opts,
         )
-        history = FakeHistory(prices, fail_symbols)
+        history = FakeHistory(prices, fail_symbols, rate_limited_symbols)
         live_feed = SimpleNamespace(
             latest_tick=lambda u: (SimpleNamespace(last_price=spot) if live_tick else None)
         )
@@ -114,6 +119,27 @@ class OptionsChainCollectorTests(unittest.TestCase):
         result = collector.capture("NIFTY", strikes_each_side=1)
 
         self.assertEqual(result["rows"], 3)  # 4 candidates minus the 1 that raised
+
+    def test_capture_stops_early_and_flags_rate_limit(self):
+        """A rate-limit (unlike an ordinary per-contract failure) must stop the
+        sweep and be reported, so the caller's circuit breaker can engage —
+        see runtime.py's _run_chain_capture_tick and options_chain_collector's
+        _ChainRateLimited."""
+        expiry = date.today() + timedelta(days=3)
+        strikes = [23900, 24000, 24100]
+        opts = [_option(s, ot, expiry) for s in strikes for ot in (OptionType.CE, OptionType.PE)]
+        prices = {f"NIFTY{int(s)}{ot.value}": 100.0 for s in strikes for ot in (OptionType.CE, OptionType.PE)}
+        # First fetch attempted (23900 CE) hits the rate limit.
+        runtime = self._runtime(opts, [expiry], prices, spot=23900.0,
+                                 rate_limited_symbols={"NIFTY23900CE"})
+        collector = OptionsChainCollector(runtime, out_dir=str(self.out_dir))
+
+        result = collector.capture("NIFTY", strikes_each_side=1)
+
+        self.assertTrue(result.get("rate_limited"))
+        self.assertEqual(result["rows"], 0)
+        # The sweep must not have plowed through the remaining strikes.
+        self.assertEqual(runtime.angel_one_history.calls, ["NIFTY23900CE"])
 
     def test_capture_reports_error_when_no_upcoming_expiry(self):
         runtime = self._runtime([], [], {})

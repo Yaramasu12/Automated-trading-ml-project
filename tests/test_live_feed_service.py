@@ -90,5 +90,64 @@ class ResolveFeedSymbolsTests(unittest.TestCase):
         self.assertEqual(resolved, [])
 
 
+class _FakeLiveFeed:
+    def snapshot(self) -> dict:
+        return {}
+
+
+class _FakeSettings:
+    live_feed_default_symbols = []
+    live_feed_max_symbols = 100
+
+
+class _ModeHolder:
+    """Mimics TradingRuntime.execution_mode: an attribute that changes value
+    in place (via set_execution_mode/arm_live) without the holding object
+    itself being reconstructed."""
+
+    def __init__(self, value):
+        self.value = value
+
+
+class ExecutionModeReadThroughCallableTests(unittest.TestCase):
+    """2026-08-22 architecture review: TradingRuntime's decomposition
+    invariant is that execution_mode/live_armed change WITHOUT a service
+    rebuild, so api/*_service.py must read them through an injected
+    CALLABLE, never capture the value at construction time (unlike
+    instrument_master, which IS replaced wholesale on refresh, so services
+    holding it ARE rebuilt — see LiveFeedService's own module docstring).
+    A service that captured the value instead would keep reporting the mode
+    the runtime was in when it happened to be constructed, forever.
+
+    LiveFeedService.live_feed_snapshot()'s get_execution_mode callable is the
+    representative case: this test flips the underlying mode AFTER
+    construction and confirms the service observes the change immediately,
+    with no reconstruction — pinning the pattern so a future extraction from
+    TradingRuntime can't silently regress it back to a captured value."""
+
+    def test_service_observes_mode_change_without_reconstruction(self):
+        from trading_platform.domain.enums import ExecutionMode
+
+        mode_holder = _ModeHolder(ExecutionMode.PAPER)
+        service = LiveFeedService(
+            live_feed=_FakeLiveFeed(), instrument_master=None, instrument_freshness=None,
+            monitor=None, settings=_FakeSettings(),
+            can_submit_live_orders=lambda: False,
+            load_cached_instruments=lambda: False,
+            get_execution_mode=lambda: mode_holder.value,   # callable, not a captured value
+        )
+
+        self.assertEqual(service.live_feed_snapshot()["mode"], "paper_market_data")
+
+        # The runtime flips execution_mode in place (TradingRuntime.set_execution_mode
+        # does exactly this: self.execution_mode = next_mode) -- no service rebuild.
+        mode_holder.value = ExecutionMode.LIVE
+
+        self.assertEqual(
+            service.live_feed_snapshot()["mode"], "live_market_data",
+            "service must read the CURRENT mode through the callable, not one captured at construction",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

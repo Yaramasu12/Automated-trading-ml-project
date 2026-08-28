@@ -309,6 +309,20 @@ class ShortVolExecutor:
             "realized_vol": round(self.strategy.realized_vol(closes), 2),
             "enter": False, "lots": 0, "net_credit_pts": 0.0, "max_loss_pts": 0.0, "legs": [],
         }
+        # Fail closed: _closes_and_spot() -> DecisionPipeline._fetch_bars() may
+        # have silently substituted fabricated daily bars for real Angel One
+        # candles (rate-limit, outage, etc). realized_vol/VRP computed off
+        # fake history is not a real signal — refuse rather than trade on it.
+        # Mirrors the SHORTVOL_REQUIRE_REAL_QUOTES guard below, one layer
+        # earlier: that one protects the fill PRICE, this protects the
+        # decision INPUT. getattr-guarded: real DecisionPipeline instances
+        # always have this (see pipeline.py __init__); lightweight test
+        # doubles that predate this check default to "not synthetic".
+        bars_were_synthetic = getattr(self._rt.decision_pipeline, "bars_were_synthetic", None)
+        if bars_were_synthetic is not None and bars_were_synthetic(underlying):
+            return {**base, "vix": 0.0, "vrp": 0.0,
+                    "reason": f"SYNTHETIC-DATA FALLBACK for {underlying} this scan — "
+                              f"refusing to enter on fabricated history"}
         if spot <= 0:
             return {**base, "vix": 0.0, "vrp": 0.0, "reason": "no spot price"}
 

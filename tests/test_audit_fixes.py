@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import dataclasses
 import tempfile
 import time
 import unittest
@@ -56,6 +57,7 @@ class _AckThenStatusBroker(BrokerClient):
     def __init__(self, statuses: list[dict | None]):
         self.statuses = list(statuses)
         self.submitted: list[OrderIntent] = []
+        self.cancelled: list[str] = []
 
     def is_ready(self) -> bool:
         return True
@@ -63,13 +65,18 @@ class _AckThenStatusBroker(BrokerClient):
     def submit_order(self, intent: OrderIntent) -> BrokerResult:
         self.submitted.append(intent)
         now = datetime.now(timezone.utc)
-        return BrokerResult(OrderStatus.ACKNOWLEDGED, "AO-1", None, now, now, "ack")
+        order_id = f"AO-{len(self.submitted)}"
+        return BrokerResult(OrderStatus.ACKNOWLEDGED, order_id, None, now, now, "ack")
 
     def positions(self) -> list[dict]:
         return []
 
     def order_status(self, order_id: str) -> dict | None:
         return self.statuses.pop(0) if self.statuses else None
+
+    def cancel_order(self, broker_order_id: str) -> bool:
+        self.cancelled.append(broker_order_id)
+        return True
 
 
 def _scheduler(broker, tmpdir: str, portfolio: PortfolioLedger | None = None,
@@ -86,6 +93,8 @@ def _scheduler(broker, tmpdir: str, portfolio: PortfolioLedger | None = None,
     )
     sched._TRACK_POLL_SECONDS = 0.01      # keep tests fast
     sched._TRACK_TIMEOUT_SECONDS = 0.2
+    sched._CHASE_TIMEOUT_SECONDS = 0.05
+    sched._POST_CHASE_TIMEOUT_SECONDS = 0.1
     return sched
 
 
@@ -177,6 +186,197 @@ class LiveFillTrackingTests(unittest.IsolatedAsyncioTestCase):
 
             self.assertEqual(len(fills), 1)
             self.assertEqual(fills[0].quantity, 1, "partial fill must book only the filled lots")
+
+
+class _ChaseableBroker(BrokerClient):
+    """Scriptable broker for chase-to-market tests.
+
+    `submissions` is consumed one BrokerResult per submit_order() call, in
+    order (so test 1 = the LIMIT entry, submission 2 = the chased MARKET
+    resubmit, if one happens). `statuses` feeds order_status() polls for
+    whichever order is currently resting -- a single unittest-scenario only
+    ever has one order resting at a time, so a shared queue is enough.
+    """
+    name = "FAKE_CHASE"
+
+    def __init__(self, submissions: list[BrokerResult], statuses: list[dict | None] | None = None,
+                 cancel_result: bool = True):
+        self.submissions = list(submissions)
+        self.statuses = list(statuses or [])
+        self.cancel_result = cancel_result
+        self.submitted: list[OrderIntent] = []
+        self.cancelled: list[str] = []
+
+    def is_ready(self) -> bool:
+        return True
+
+    def submit_order(self, intent: OrderIntent) -> BrokerResult:
+        self.submitted.append(intent)
+        result = self.submissions.pop(0)
+        if result.broker_order_id is None:
+            result = dataclasses.replace(result, broker_order_id=f"FK-{len(self.submitted)}")
+        return result
+
+    def positions(self) -> list[dict]:
+        return []
+
+    def order_status(self, order_id: str) -> dict | None:
+        return self.statuses.pop(0) if self.statuses else None
+
+    def cancel_order(self, broker_order_id: str) -> bool:
+        self.cancelled.append(broker_order_id)
+        return self.cancel_result
+
+
+class ChaseToMarketTests(unittest.IsolatedAsyncioTestCase):
+    """Entry orders are submitted as a near-touch LIMIT (order_pricing) and
+    chased to MARKET if unfilled -- see ExecutionScheduler._maybe_upgrade_to_limit
+    and _chase_to_market_if_unfilled. Scoped to OrderPriority.ENTRY only."""
+
+    def _ack(self, order_id: str | None = None) -> BrokerResult:
+        now = datetime.now(timezone.utc)
+        return BrokerResult(OrderStatus.ACKNOWLEDGED, order_id, None, now, now, "ack")
+
+    def _filled(self, price: float) -> BrokerResult:
+        now = datetime.now(timezone.utc)
+        return BrokerResult(OrderStatus.FILLED, None, price, now, now, "filled")
+
+    async def test_entry_market_intent_is_submitted_as_limit(self):
+        """The scheduler must rewrite a MARKET entry to LIMIT before ever
+        reaching the broker -- verifies _maybe_upgrade_to_limit's own effect,
+        independent of chase timing."""
+        lot = _MASTER.get("RELIANCE").lot_size
+        broker = _ChaseableBroker(
+            submissions=[self._ack("L1")],
+            statuses=[{"state": "complete", "average_price": 2805.0, "filled_units": 2 * lot, "message": ""}],
+        )
+        with _scheduler_in_tmpdir(broker) as sched:
+            fills: list[Trade] = []
+            sched.register_fill_callback(lambda trade, intent: fills.append(trade))
+            await sched._submit_to_broker(_intent(quantity=2))
+            await _wait_for(lambda: bool(fills))
+            self.assertEqual(broker.submitted[0].order_type, OrderType.LIMIT)
+            self.assertIsNotNone(broker.submitted[0].limit_price)
+
+    async def test_chase_succeeds_before_timeout_no_resubmit(self):
+        lot = _MASTER.get("RELIANCE").lot_size
+        broker = _ChaseableBroker(
+            submissions=[self._ack("L1")],
+            statuses=[{"state": "complete", "average_price": 2805.0, "filled_units": 2 * lot, "message": ""}],
+        )
+        portfolio = PortfolioLedger(10_000_000)
+        with _scheduler_in_tmpdir(broker, portfolio) as sched:
+            fills: list[Trade] = []
+            sched.register_fill_callback(lambda trade, intent: fills.append(trade))
+            await sched._submit_to_broker(_intent(quantity=2))
+            await _wait_for(lambda: bool(fills))
+
+            self.assertEqual(len(fills), 1)
+            self.assertAlmostEqual(fills[0].price, 2805.0)
+            self.assertEqual(len(broker.submitted), 1, "must not resubmit once the limit fills in time")
+            self.assertEqual(broker.cancelled, [])
+
+    async def test_chase_timeout_then_market_resubmit_fills(self):
+        broker = _ChaseableBroker(
+            submissions=[self._ack("L1"), self._filled(2810.0)],
+            statuses=[],   # the resting limit never resolves -> chase timeout fires
+        )
+        portfolio = PortfolioLedger(10_000_000)
+        with _scheduler_in_tmpdir(broker, portfolio) as sched:
+            fills: list[Trade] = []
+            sched.register_fill_callback(lambda trade, intent: fills.append(trade))
+            await sched._submit_to_broker(_intent(quantity=2))
+            await _wait_for(lambda: bool(fills))
+
+            self.assertEqual(len(fills), 1)
+            self.assertAlmostEqual(fills[0].price, 2810.0)
+            self.assertEqual(fills[0].quantity, 2, "full quantity chased -- the limit leg never filled any of it")
+            self.assertEqual(len(broker.submitted), 2, "must cancel and resubmit as MARKET")
+            self.assertEqual(broker.submitted[1].order_type, OrderType.MARKET)
+            self.assertEqual(broker.cancelled, ["L1"])
+            events = [e["event_type"] for e in sched.oms.recent_events(50)]
+            self.assertIn("broker_cancelled", events)
+
+    async def test_cancel_failure_does_not_block_market_resubmit(self):
+        """A best-effort cancel that fails must not leave the entry
+        un-submitted -- the broker will reject a true duplicate, which is
+        recoverable; silently never entering is not."""
+        broker = _ChaseableBroker(
+            submissions=[self._ack("L1"), self._filled(2810.0)],
+            statuses=[], cancel_result=False,
+        )
+        portfolio = PortfolioLedger(10_000_000)
+        with _scheduler_in_tmpdir(broker, portfolio) as sched:
+            fills: list[Trade] = []
+            sched.register_fill_callback(lambda trade, intent: fills.append(trade))
+            await sched._submit_to_broker(_intent(quantity=2))
+            await _wait_for(lambda: bool(fills))
+
+            self.assertEqual(len(fills), 1)
+            self.assertEqual(len(broker.submitted), 2, "resubmit must proceed even though cancel_order returned False")
+            events = [e for e in sched.oms.recent_events(50) if e["event_type"] == "broker_cancelled"]
+            self.assertEqual(events[0]["rejection_reason"], "chase_timeout_cancel_failed")
+
+    async def test_partial_fill_during_chase_is_booked_then_only_remainder_is_chased(self):
+        """A limit leg that partially fills before the chase deadline must
+        not have its FULL original quantity resubmitted as MARKET -- that
+        would double the position. Only the unfilled remainder is chased."""
+        lot = _MASTER.get("RELIANCE").lot_size
+        broker = _ChaseableBroker(
+            submissions=[self._ack("L1"), self._filled(2810.0)],
+            # Stays "open" with 1/3 lots filled for the whole chase window --
+            # never reaches "complete", so the chase deadline fires.
+            statuses=[{"state": "open", "average_price": 2800.0, "filled_units": 1 * lot, "message": ""}],
+        )
+        portfolio = PortfolioLedger(10_000_000)
+        with _scheduler_in_tmpdir(broker, portfolio) as sched:
+            fills: list[Trade] = []
+            sched.register_fill_callback(lambda trade, intent: fills.append(trade))
+            await sched._submit_to_broker(_intent(quantity=3))
+            await _wait_for(lambda: len(fills) >= 2)
+
+            self.assertEqual(len(fills), 2, "expected one partial fill from the limit leg, one from the market chase")
+            self.assertEqual(fills[0].quantity, 1)
+            self.assertAlmostEqual(fills[0].price, 2800.0)
+            self.assertEqual(fills[1].quantity, 2, "only the remaining 2 lots should be chased, not all 3")
+            self.assertAlmostEqual(fills[1].price, 2810.0)
+            self.assertEqual(broker.submitted[1].quantity, 2, "market resubmit must request only the remainder")
+
+    async def test_exit_priority_intent_is_never_upgraded_to_limit(self):
+        """Exits (stop-loss/target/trailing-stop/emergency) must stay pure
+        MARKET even with smart routing enabled -- chasing a limit price on a
+        protective exit would delay getting out while the adverse move that
+        triggered it continues."""
+        lot = _MASTER.get("RELIANCE").lot_size
+        broker = _ChaseableBroker(
+            submissions=[self._ack("X1")],
+            statuses=[{"state": "complete", "average_price": 2800.0, "filled_units": 1 * lot, "message": ""}],
+        )
+        with _scheduler_in_tmpdir(broker) as sched:
+            fills: list[Trade] = []
+            sched.register_fill_callback(lambda trade, intent: fills.append(trade))
+            await sched._submit_to_broker(_intent(quantity=1, priority=OrderPriority.STOP_LOSS))
+            await _wait_for(lambda: bool(fills))
+            self.assertEqual(broker.submitted[0].order_type, OrderType.MARKET)
+            self.assertEqual(len(broker.submitted), 1, "an exit must never be chased/resubmitted")
+
+    async def test_smart_routing_disabled_by_env_flag_stays_market(self):
+        import os
+        os.environ["ENABLE_SMART_ORDER_ROUTING"] = "false"
+        try:
+            lot = _MASTER.get("RELIANCE").lot_size
+            broker = _ChaseableBroker(
+                submissions=[self._ack("M1")],
+                statuses=[{"state": "complete", "average_price": 2800.0, "filled_units": 1 * lot, "message": ""}],
+            )
+            with _scheduler_in_tmpdir(broker) as sched:
+                fills: list[Trade] = []
+                sched.register_fill_callback(lambda trade, intent: fills.append(trade))
+                await sched._submit_to_broker(_intent(quantity=1))
+                await _wait_for(lambda: bool(fills))
+                self.assertEqual(broker.submitted[0].order_type, OrderType.MARKET)
+        finally:
+            del os.environ["ENABLE_SMART_ORDER_ROUTING"]
 
 
 class ModeStampAndDedupTests(unittest.IsolatedAsyncioTestCase):

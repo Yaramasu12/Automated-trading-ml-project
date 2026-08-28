@@ -52,6 +52,18 @@ from trading_platform.logging_safety import note_swallowed
 logger = logging.getLogger(__name__)
 
 
+class _ChainRateLimited(Exception):
+    """Internal marker: a per-strike price fetch hit Angel One's rate limit.
+
+    `capture()` swallows ordinary per-strike failures (one bad contract must
+    not lose the rest of the chain), but a rate-limit is different: it is
+    global to the API key, so every remaining fetch in this sweep — and the
+    decision pipeline's own candle calls — will fail too. Raising this lets
+    `capture()` stop early and tell its caller, instead of quietly burning
+    the rest of the rate-limit budget one swallowed exception at a time.
+    """
+
+
 # ---------------------------------------------------------------------------
 # Data models (REDESIGN §3/§5 — used by StreamingOptionsChainCollector)
 # ---------------------------------------------------------------------------
@@ -550,6 +562,13 @@ class OptionsChainCollector:
                 return float(bars[-1].close)
         except Exception as exc:
             note_swallowed("options_chain_collector.option_price", exc)
+            msg = str(exc).lower()
+            # Same phrasing Angel One returns for candle throttling elsewhere
+            # (see decision/pipeline.py's identical check). Distinguishing
+            # this from an ordinary per-contract failure is the whole fix —
+            # see _ChainRateLimited's docstring.
+            if "too many requests" in msg or "access rate" in msg or "exceeding" in msg:
+                raise _ChainRateLimited(str(exc)) from exc
         return None
 
     def capture(self, underlying: str, strikes_each_side: int = 5) -> dict:
@@ -594,7 +613,20 @@ class OptionsChainCollector:
                 inst = next((i for i in opts if i.strike == strike and i.option_type == otype), None)
                 if inst is None:
                     continue
-                price = self._latest_price(inst)
+                try:
+                    price = self._latest_price(inst)
+                except _ChainRateLimited:
+                    if rows:
+                        self._append_csv(underlying, rows)
+                    logger.warning(
+                        "options_chain_collector: %s rate-limited by Angel One after "
+                        "%d/%d strikes — stopping this sweep early",
+                        underlying, len(rows), len(selected) * 2,
+                    )
+                    return {
+                        "underlying": underlying, "expiry": expiry.isoformat(),
+                        "rows": len(rows), "rate_limited": True,
+                    }
                 if price is None or price <= 0:
                     continue
                 iv = None
