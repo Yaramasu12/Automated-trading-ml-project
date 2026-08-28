@@ -39,6 +39,35 @@ class ReadOnlySurfaceTests(unittest.TestCase):
         for verb in ("POST", "PUT", "DELETE", "PATCH"):
             self.assertNotIn(verb, source, f"found {verb} in mcp/server.py — this server must stay read-only")
 
+    def test_module_never_imports_order_placing_code(self) -> None:
+        """Stronger than scanning for HTTP verbs in this file's own source:
+        this asserts the module can't reach order-placement code AT ALL,
+        even indirectly — no import of execution/, broker/, or the agent
+        runner that drives the actual trading loop. A future edit that
+        tried to "helpfully" add a place-order tool would have to add one
+        of these imports, and this test would catch it before the write
+        capability itself needed to exist to be caught."""
+        import inspect
+        source = inspect.getsource(mcp_server)
+        for forbidden in (
+            "trading_platform.execution", "trading_platform.broker",
+            "trading_platform.agent.trading_agent", "trading_platform.strategies",
+        ):
+            self.assertNotIn(forbidden, source, f"mcp/server.py imports {forbidden} — must stay a pure REST-API passthrough")
+
+    def test_every_tool_name_uses_a_read_only_verb_prefix(self) -> None:
+        """A prefix whitelist (get_/list_) is a more robust guarantee than a
+        blacklist of dangerous words in the name — a blacklist has a real
+        false-positive trap here (get_db_trades legitimately contains
+        "trade" as a substring despite being a pure read), and more
+        importantly a blacklist can always miss a word nobody thought of."""
+        tools = asyncio.run(mcp_server.mcp.list_tools())
+        for t in tools:
+            self.assertTrue(
+                t.name.startswith("get_") or t.name.startswith("list_"),
+                f"tool {t.name!r} doesn't use a read-only verb prefix",
+            )
+
     def test_get_helper_never_passes_a_request_body(self) -> None:
         """urllib.request.urlopen(url) with no `data=` is always a GET —
         confirms _get() can't be turned into a write by a future edit that

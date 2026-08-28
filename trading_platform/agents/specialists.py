@@ -17,6 +17,7 @@ import logging
 import os
 from typing import TYPE_CHECKING, Any, Sequence
 
+from trading_platform.ai.guardrails import scan_for_directive_language
 from trading_platform.agents.schemas import (
     AgentVote,
     ExecutionAdvice,
@@ -110,11 +111,26 @@ def _safe_vote(
     gateway_ids: list[str] = list(response.get("evidence_ids") or [])
     merged_ids = list(dict.fromkeys((ctx_evidence_ids or []) + gateway_ids))
 
+    reasoning = str(response.get("reasoning", ""))[:500]
+    # action is already a closed enum (validated above) so this can't hijack
+    # the actual decision — but a prompt-injection attack that got past
+    # wrap_untrusted_content() could still try to plant directive-sounding
+    # text in the free-text reasoning shown to a human operator. Flag, don't
+    # silently strip: an analyst mentioning "the model considered placing an
+    # order" is legitimate content, so this is a signal to look at, not a
+    # verdict to act on automatically.
+    scan = scan_for_directive_language(reasoning)
+    if scan.flagged:
+        logger.warning(
+            "specialist %s reasoning matched directive-language patterns %s — review for prompt injection: %r",
+            agent_name, scan.matched_patterns, reasoning[:200],
+        )
+
     return AgentVote(
         agent_name=agent_name,
         action=action,
         confidence=float(response.get("confidence", 0.5)),
-        reasoning=str(response.get("reasoning", ""))[:500],
+        reasoning=reasoning,
         evidence_ids=merged_ids,
         model_id=model_id,
         failure_mode=response.get("failure_mode"),
