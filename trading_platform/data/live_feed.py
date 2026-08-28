@@ -499,7 +499,7 @@ class LiveTickFeed:
         # NEW: publish TickV2 to tick bus (replay exercises full pipeline)
         tick_v2 = make_tick_v2(tick)
         if tick_v2 is not None:
-            self._tick_bus.publish_tick(tick_v2)
+            self._tick_bus.publish_tick_threadsafe(tick_v2)
         for handler in handlers:
             try:
                 handler(tick)
@@ -886,7 +886,7 @@ class LiveTickFeed:
                 # NEW: normalize → TickV2 → publish to tick bus
                 tick_v2 = make_tick_v2(tick)
                 if tick_v2 is not None:
-                    self._tick_bus.publish_tick(tick_v2)
+                    self._tick_bus.publish_tick_threadsafe(tick_v2)
                 for handler in handlers:
                     try:
                         handler(tick)

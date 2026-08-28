@@ -93,7 +93,8 @@ class ReconnectRobustnessTests(unittest.TestCase):
         fake_ws_cls.return_value = fake_ws_instance
 
         with mock.patch("trading_platform.data.live_feed.RawAngelOneWebSocket", fake_ws_cls), \
-                mock.patch("trading_platform.data.live_feed.time.sleep"):
+                mock.patch("trading_platform.data.live_feed.time.sleep"), \
+                mock.patch("trading_platform.data.live_feed._market_is_open_now", return_value=True):
             feed._run()
 
         # Proves the loop did NOT stop at _MAX_RETRIES — it kept going until
@@ -117,7 +118,8 @@ class ReconnectRobustnessTests(unittest.TestCase):
         fake_ws_cls = mock.Mock(return_value=fake_ws_instance)
 
         with mock.patch("trading_platform.data.live_feed.RawAngelOneWebSocket", fake_ws_cls), \
-                mock.patch("trading_platform.data.live_feed.time.sleep"):
+                mock.patch("trading_platform.data.live_feed.time.sleep"), \
+                mock.patch("trading_platform.data.live_feed._market_is_open_now", return_value=True):
             feed._run()
 
         self.assertFalse(feed._running)
