@@ -27,6 +27,14 @@ feedparser==6.0.14
 polars==1.43.2
 redis==8.1.0
 duckdb==1.5.5
+# Backs VectorMemoryStore's persistence (agents/vector_memory.py, wired
+# 2026-08-29) — fully opt-in/best-effort: QDRANT_ENABLED can be true with no
+# Qdrant server running (the qdrant compose service is itself opt-in via
+# --profile) and the store degrades to in-memory-only, unaffected. Server
+# deployed here is qdrant/qdrant:v1.11.0 (docker-compose.yml) — this client
+# is newer (1.19.0) and prints a compatibility warning on every connection;
+# confirmed non-blocking, nothing has actually failed because of it.
+qdrant-client==1.19.0
 # feast is deliberately NOT pinned here: feast==0.65.0 requires
 # uvicorn<=0.34.0, which conflicts with uvicorn==0.46.0 above (confirmed via
 # `pip install` failing with ResolutionImpossible) — installing it would

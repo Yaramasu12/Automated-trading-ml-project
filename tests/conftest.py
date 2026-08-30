@@ -33,3 +33,21 @@ def _isolated_default_db_paths(tmp_path, monkeypatch):
     monkeypatch.setattr(trace_store_module, "_DEFAULT_DB_PATH", tmp_path / "trading.db")
     monkeypatch.setattr(trace_store_module, "_DEFAULT_DIR", tmp_path / "decision_traces")
     yield
+
+
+@pytest.fixture(autouse=True)
+def _no_real_qdrant_connections(monkeypatch):
+    """QDRANT_ENABLED defaults True in Settings (2026-08-29, once
+    VectorMemoryStore's persistence was actually wired) — same shape as the
+    ENABLE_AI_COUNCIL flag CI already disables, but CI's env-var override
+    doesn't help a plain local `pytest`/`python -m unittest` run. Without
+    this, every bare TradingRuntime() across the ~11 test files that
+    construct one attempts a REAL network connection to Qdrant: fine
+    (~15ms) when it's running on this dev box, but measured +20-45s across
+    the full suite even in that fast case, and up to +1s PER construction
+    on any machine/CI where Qdrant isn't running (it's opt-in infra — a
+    plain `docker compose up` doesn't start it). Unit tests must not depend
+    on a real external service being up; force it off here the same way the
+    fixture above forces tests off the real database files."""
+    monkeypatch.setenv("QDRANT_ENABLED", "false")
+    yield

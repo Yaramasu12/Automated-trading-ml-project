@@ -36,6 +36,7 @@ import logging
 import math
 import re
 import threading
+import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Callable
@@ -118,7 +119,11 @@ class VectorMemoryStore:
     replace `search` with a proper ANN index without changing the interface.
     """
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        qdrant_url: str | None = None,
+        qdrant_collection: str = "agent_vector_memory",
+    ) -> None:
         self._docs: dict[str, VectorDocument] = {}
         self._tokens: dict[str, set[str]] = {}   # doc_id → token set
         self._lock = threading.RLock()
@@ -127,6 +132,52 @@ class VectorMemoryStore:
         # call uses keyword (Jaccard) matching only — today's behavior,
         # unchanged, and what stub-runtime / no-AI-council deployments get.
         self._embed_fn: Callable[[str], list[float] | None] | None = None
+        # Optional Qdrant-backed persistence — see _init_qdrant()'s docstring
+        # for why this is fully best-effort: RAG memory quality (does search()
+        # find the right doc) is unaffected either way, only whether it
+        # survives a process restart.
+        self._qdrant_collection = qdrant_collection
+        self._qdrant = self._init_qdrant(qdrant_url) if qdrant_url else None
+
+    def _init_qdrant(self, qdrant_url: str):
+        """Best-effort Qdrant connection. Returns None (never raises) on any
+        failure — qdrant is opt-in infra (docker-compose's `--profile
+        research|paper|live`), so a plain `docker compose up` legitimately
+        won't have it running, and that must degrade to today's in-memory-
+        only behavior, not break the AI council's memory entirely.
+        """
+        try:
+            from qdrant_client import QdrantClient
+            from qdrant_client.models import Distance, VectorParams
+
+            # Short timeout deliberately: a real local/Docker-network Qdrant
+            # answers in single-digit milliseconds, but Qdrant is opt-in
+            # infra (not started by a plain `docker compose up`) and
+            # QDRANT_ENABLED defaults True, so "not running" is the COMMON
+            # case, not the exception. Measured 2026-08-29: a full 5s timeout
+            # on a genuinely unreachable host took 4.3s per attempt — with 11
+            # test files constructing a full TradingRuntime(), that's real
+            # minutes added to any environment without Qdrant running.
+            client = QdrantClient(url=qdrant_url, timeout=1)
+            try:
+                client.get_collection(self._qdrant_collection)
+            except Exception:
+                # 768 = nomic-embed-text-v1.5's dimension (LOCAL_LLM_EMBEDDING_MODEL) —
+                # the only embedder actually wired via set_embedder() today.
+                client.create_collection(
+                    collection_name=self._qdrant_collection,
+                    vectors_config=VectorParams(size=768, distance=Distance.COSINE),
+                )
+            logger.info("VectorMemoryStore: connected to Qdrant at %s (collection=%s)",
+                        qdrant_url, self._qdrant_collection)
+            return client
+        except Exception as exc:
+            logger.warning(
+                "VectorMemoryStore: Qdrant unavailable at %s (%s) — falling back to "
+                "in-memory-only; RAG memory will NOT survive a restart",
+                qdrant_url, exc,
+            )
+            return None
 
     # ── Mutators ──────────────────────────────────────────────────────────────
 
@@ -139,11 +190,101 @@ class VectorMemoryStore:
         with self._lock:
             self._docs[doc.doc_id] = doc
             self._tokens[doc.doc_id] = _tokenise(doc.content + " " + " ".join(doc.tags))
+        # Persist outside the lock too — same reasoning as the embed call above.
+        if doc.embedding is not None:
+            self._qdrant_upsert(doc)
 
     def remove(self, doc_id: str) -> None:
         with self._lock:
             self._docs.pop(doc_id, None)
             self._tokens.pop(doc_id, None)
+        if self._qdrant is not None:
+            try:
+                self._qdrant.delete(
+                    collection_name=self._qdrant_collection,
+                    points_selector=[self._qdrant_point_id(doc_id)],
+                )
+            except Exception as exc:
+                note_swallowed("vector_memory.qdrant_delete", exc)
+
+    @staticmethod
+    def _qdrant_point_id(doc_id: str) -> str:
+        """Qdrant point IDs must be an unsigned int or a UUID — our doc_ids
+        are arbitrary strings (e.g. "strat-futures-carry-001") — derive a
+        stable, deterministic UUID so the same doc_id always maps to the
+        same point (upserts overwrite correctly) without needing a separate
+        id-mapping table. The real doc_id is also stored in the payload,
+        which is what load_from_qdrant() actually reads back."""
+        return str(uuid.uuid5(uuid.NAMESPACE_URL, f"vector_memory:{doc_id}"))
+
+    def _qdrant_upsert(self, doc: VectorDocument) -> None:
+        if self._qdrant is None:
+            return
+        try:
+            from qdrant_client.models import PointStruct
+            self._qdrant.upsert(
+                collection_name=self._qdrant_collection,
+                points=[PointStruct(
+                    id=self._qdrant_point_id(doc.doc_id),
+                    vector=doc.embedding,
+                    payload={
+                        "doc_id": doc.doc_id,
+                        "content": doc.content,
+                        "category": doc.category,
+                        "tags": doc.tags,
+                        "ts": doc.ts.isoformat(),
+                        "metadata": doc.metadata,
+                    },
+                )],
+            )
+        except Exception as exc:
+            note_swallowed("vector_memory.qdrant_upsert", exc)
+
+    def load_from_qdrant(self) -> int:
+        """Hydrate this store from previously-persisted Qdrant points.
+        Call once at startup, before seed_defaults() — seeding afterward is
+        a safe no-op for any doc_id already restored (add() overwrites by
+        doc_id) and guarantees the baseline seeds exist even against a
+        brand-new, empty collection. Returns the number of documents loaded
+        (0 if Qdrant isn't connected — never raises)."""
+        if self._qdrant is None:
+            return 0
+        loaded = 0
+        try:
+            next_offset = None
+            while True:
+                points, next_offset = self._qdrant.scroll(
+                    collection_name=self._qdrant_collection,
+                    limit=256,
+                    offset=next_offset,
+                    with_payload=True,
+                    with_vectors=True,
+                )
+                for point in points:
+                    payload = point.payload or {}
+                    doc_id = payload.get("doc_id")
+                    if not doc_id:
+                        continue
+                    doc = VectorDocument(
+                        doc_id=doc_id,
+                        content=payload.get("content", ""),
+                        category=payload.get("category", "unknown"),
+                        tags=list(payload.get("tags") or []),
+                        metadata=dict(payload.get("metadata") or {}),
+                        embedding=list(point.vector) if point.vector else None,
+                    )
+                    with self._lock:
+                        self._docs[doc.doc_id] = doc
+                        self._tokens[doc.doc_id] = _tokenise(doc.content + " " + " ".join(doc.tags))
+                    loaded += 1
+                if next_offset is None:
+                    break
+            if loaded:
+                logger.info("VectorMemoryStore: loaded %d documents from Qdrant", loaded)
+            return loaded
+        except Exception as exc:
+            note_swallowed("vector_memory.qdrant_load", exc)
+            return loaded
 
     def set_embedder(self, embed_fn: Callable[[str], list[float] | None]) -> None:
         """Wire a real embedding function and backfill it for every

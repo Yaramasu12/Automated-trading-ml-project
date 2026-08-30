@@ -387,7 +387,16 @@ class TradingRuntime:
 
         # ── Gap 2: VectorMemory + RAG (only needed when AI council is active) ──
         if self.settings.enable_ai_council:
-            self._vector_store = VectorMemoryStore()
+            self._vector_store = VectorMemoryStore(
+                qdrant_url=self.settings.qdrant_url if self.settings.QDRANT_ENABLED else None,
+            )
+            # Restore whatever survived from a prior process (if Qdrant is
+            # reachable) BEFORE seeding — seed_defaults() is idempotent by
+            # doc_id (add() overwrites), so calling it after a successful
+            # restore is a safe no-op for those ids and guarantees the
+            # baseline knowledge base exists even against a brand-new,
+            # empty collection.
+            self._vector_store.load_from_qdrant()
             self._vector_store.seed_defaults()
             self._rag_retriever = RAGRetriever(self._vector_store)
             self._llm_gateway = LocalModelGateway(

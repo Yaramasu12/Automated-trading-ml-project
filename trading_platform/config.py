@@ -350,11 +350,25 @@ class Settings:
     TIMESCALE_PASSWORD: str = field(default_factory=lambda: _env("TIMESCALE_PASSWORD", "trader_password"))
     TIMESCALE_DB: str = field(default_factory=lambda: _env("TIMESCALE_DB", "trading_ts"))
 
-    # ── NEW (REDESIGN §8): Qdrant vector DB ──────────────────
-    QDRANT_HOST: str = field(default_factory=lambda: _env("QDRANT_HOST", "localhost"))
+    # ── Qdrant vector DB — backs VectorMemoryStore's persistence (2026-08-29;
+    # previously wired to nothing despite this flag existing since REDESIGN §8).
+    # Defaults True: connection is fully best-effort (VectorMemoryStore never
+    # raises if Qdrant isn't reachable — see agents/vector_memory.py's
+    # _init_qdrant()), so defaulting on costs nothing when the qdrant service
+    # isn't running (a plain `docker compose up` without `--profile research`
+    # doesn't start it) and buys persistence across restarts when it is.
+    # "127.0.0.1", not "localhost": measured 2026-08-29 on this Windows dev
+    # box — resolving the hostname "localhost" added a consistent ~1s to
+    # EVERY qdrant-client call (dual-stack IPv6/IPv4 resolution delay), vs
+    # 0.016s through the literal IP. Real server latency is ~6ms either way;
+    # this is pure client-side DNS overhead, confirmed by timing the same
+    # call repeatedly against the same open connection. Docker-compose
+    # overrides this to the `qdrant` service name for container networking,
+    # which isn't subject to this specific host-OS resolver behavior.
+    QDRANT_HOST: str = field(default_factory=lambda: _env("QDRANT_HOST", "127.0.0.1"))
     QDRANT_PORT: int = field(default_factory=lambda: _env_int("QDRANT_PORT", 6333))
     QDRANT_GRPC_PORT: int = field(default_factory=lambda: _env_int("QDRANT_GRPC_PORT", 6334))
-    QDRANT_ENABLED: bool = field(default_factory=lambda: _env_bool("QDRANT_ENABLED", False))
+    QDRANT_ENABLED: bool = field(default_factory=lambda: _env_bool("QDRANT_ENABLED", True))
 
     # ── Existing: Local LLM (LM Studio) ──────────────────────
     LOCAL_LLM_RUNTIME: str = field(default_factory=lambda: _env("LOCAL_LLM_RUNTIME", "stub"))
