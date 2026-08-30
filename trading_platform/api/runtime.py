@@ -4477,6 +4477,22 @@ class TradingRuntime:
         """Return TypedTopicBus topic counts and status."""
         return self.typed_bus.topic_status()
 
+    def vector_memory_status(self) -> dict:
+        """RAG memory / Qdrant persistence status for GET /vector-memory/status.
+        None when the AI council is disabled entirely (ENABLE_AI_COUNCIL=false),
+        not an error — mirrors ai_capabilities.py's "degraded" framing rather
+        than raising for an intentionally-off feature."""
+        if self._vector_store is None:
+            return {"enabled": False}
+        status = self._vector_store.qdrant_status()
+        status["enabled"] = True
+        status["categories"] = self._vector_store.all_categories()
+        return status
+
+    def ai_council_preview(self, payload: dict) -> dict:
+        symbols = payload.get("symbols", ["NIFTY"])
+        regime = payload.get("regime", "unknown")
+
     def ai_council_preview(self, payload: dict) -> dict:
         symbols = payload.get("symbols", ["NIFTY"])
         regime = payload.get("regime", "unknown")

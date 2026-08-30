@@ -388,6 +388,20 @@ class VectorMemoryStore:
         with self._lock:
             return list({d.category for d in self._docs.values()})
 
+    def qdrant_status(self) -> dict[str, Any]:
+        """Observability for GET /vector-memory/status — is persistence
+        actually connected, and how many of the in-memory docs have a real
+        embedding (only those get upserted; see add()/set_embedder())."""
+        with self._lock:
+            total = len(self._docs)
+            embedded = sum(1 for d in self._docs.values() if d.embedding is not None)
+        return {
+            "connected": self._qdrant is not None,
+            "collection": self._qdrant_collection,
+            "documents_in_memory": total,
+            "documents_with_embedding": embedded,
+        }
+
     # ── Seed data ─────────────────────────────────────────────────────────────
 
     def seed_defaults(self) -> None:

@@ -34,6 +34,7 @@ from trading_platform.api.schemas import (
     StrategyCatalogResponse,
 )
 from trading_platform.config import load_settings
+from trading_platform.logging_safety import note_swallowed
 
 try:
     from fastapi import Depends, FastAPI, HTTPException, WebSocket, WebSocketDisconnect
@@ -229,6 +230,15 @@ def portfolio_var():
 @app.get("/governance")
 def governance_dashboard():
     return runtime.governance_dashboard()
+
+
+@app.get("/governance/regulatory-compliance", dependencies=[_AuthDep])
+def governance_regulatory_compliance():
+    """SEBI pre-trade compliance checklist (governance/regulatory_compliance.py)
+    — wired into arm_live()'s gate, but had no read endpoint of its own, so
+    there was no way to see the checklist's current pass/fail state without
+    actually attempting to arm live trading."""
+    return runtime.regulatory_compliance_payload()
 
 
 @app.post("/shadow/run", dependencies=[_AuthDep])
@@ -1068,6 +1078,40 @@ def ai_council_decisions(limit: int = 20):
 @app.post("/ai-council/preview", dependencies=[_AuthDep])
 def ai_council_preview(payload: dict):
     return runtime.ai_council_preview(payload)
+
+
+@app.get("/vector-memory/status", dependencies=[_AuthDep])
+def vector_memory_status():
+    """Is RAG memory (agents/vector_memory.py's VectorMemoryStore) actually
+    persisted to Qdrant, or in-memory-only (wiped on every restart)? See
+    trading_platform/agents/vector_memory.py's qdrant_status()."""
+    return runtime.vector_memory_status()
+
+
+@app.get("/ai-council/skill-eval", dependencies=[_AuthDep])
+def ai_council_skill_eval(limit: int = 500):
+    """Does the council's own confidence actually predict trade quality? Pure
+    data correlation (trace_id join, no LLM calls), so unlike a RAG/agent
+    generation eval this is fast enough to serve synchronously. See
+    governance/eval_harness.py for the shared logic and why this currently
+    reports a structural (not "insufficient data") finding on this
+    deployment."""
+    from trading_platform.governance.eval_harness import evaluate_council_skill
+
+    traces = list(runtime.trace_store.iter_recent(limit))
+    decisions_raw = [t.get("agent_outputs", []) for t in traces if t.get("agent_outputs")]
+    try:
+        sql = "SELECT trace_id, underlying, won, pnl_pct, quality, regime, ts FROM reflections ORDER BY id DESC LIMIT ?"
+        if runtime.db._mode == "postgres":
+            sql = sql.replace("?", "%s")
+        with runtime.db._cursor() as cur:
+            cur.execute(sql, (limit,))
+            from trading_platform.data.persistence import _row_to_dict
+            reflections = [_row_to_dict(cur, row) for row in cur.fetchall()]
+    except Exception as exc:
+        reflections = []
+        note_swallowed("api.council_skill_eval_reflections", exc)
+    return evaluate_council_skill(decisions_raw, reflections)
 
 
 # ── Runtime monitor (24/7 local-model observability) ────────────────────────────
