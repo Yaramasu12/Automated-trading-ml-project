@@ -36,6 +36,27 @@ class TestVectorMemoryStoreQdrant(unittest.TestCase):
         store.add(doc)
         store._qdrant.upsert.assert_not_called()
 
+    def test_set_embedder_backfill_also_persists_to_qdrant(self):
+        """Regression: seed_defaults() runs BEFORE set_embedder() in
+        production (runtime.py seeds first, wires the embedder once the LLM
+        gateway exists), so every seed doc gets its embedding through
+        set_embedder()'s backfill loop, not through add(). Confirmed against
+        a real running container 2026-08-29: agent_vector_memory had 0
+        points after a full restart despite add()'s own upsert being
+        correct, because the backfill path never called it."""
+        store = VectorMemoryStore(qdrant_url=None)
+        store._qdrant = MagicMock()
+        doc = VectorDocument(doc_id="seed1", content="hello", category="cat")  # no embedding yet
+        store._docs[doc.doc_id] = doc
+        store._tokens[doc.doc_id] = set()
+
+        store.set_embedder(lambda text: [0.5, 0.5, 0.5])
+
+        store._qdrant.upsert.assert_called_once()
+        call_kwargs = store._qdrant.upsert.call_args[1]
+        self.assertEqual(call_kwargs['collection_name'], store._qdrant_collection)
+        self.assertEqual(len(call_kwargs['points']), 1)
+
     def test_remove_calls_delete(self):
         store = VectorMemoryStore(qdrant_url=None)
         store._qdrant = MagicMock()

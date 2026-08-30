@@ -309,6 +309,17 @@ class VectorMemoryStore:
                 if current is doc:  # still the same doc, wasn't replaced/removed meanwhile
                     current.embedding = embedding
                     backfilled += 1
+            if current is doc:
+                # Outside the lock, same reasoning as add()'s upsert — this
+                # is the path that actually gives seed docs their first real
+                # embedding in production (seed_defaults() runs before the
+                # embedder exists; set_embedder() backfills after), so
+                # without this call here too, nothing ever gets persisted to
+                # Qdrant despite add()'s own upsert being correct — confirmed
+                # 2026-08-29: agent_vector_memory had 0 points after a real
+                # container restart, all 25 seed docs backfilled via this
+                # exact path with no upsert ever firing.
+                self._qdrant_upsert(current)
         if backfilled:
             logger.info(
                 "VectorMemoryStore: backfilled real embeddings for %d/%d documents",
