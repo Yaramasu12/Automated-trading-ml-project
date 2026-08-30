@@ -201,6 +201,8 @@ export const getPortfolioPositions = () => get<Record<string, unknown>>('/portfo
 // ─── Risk / governance ───────────────────────────────────────────────────────
 export const getRiskRejections = (limit = 100) => get<Record<string, unknown>>(`/risk/rejections?limit=${limit}`)
 export const getGovernanceDashboard = () => get<Record<string, unknown>>('/governance')
+export const getRegulatoryCompliance = () => get<import('./types').RegulatoryComplianceStatus>('/governance/regulatory-compliance')
+export const getLiveReadiness = () => get<import('./types').LiveReadiness>('/live/readiness')
 
 // ─── Exit plans ──────────────────────────────────────────────────────────────
 export const getActiveExitPlans = () => get<Record<string, unknown>>('/execution/exit-plans')
@@ -209,6 +211,17 @@ export const getActiveExitPlans = () => get<Record<string, unknown>>('/execution
 export const getAICouncilStatus = () => get<import('./types').AICouncilStatus>('/ai-council/status')
 export const getAICouncilDecisions = (limit = 20) => get<{ decisions: import('./types').AICouncilDecision[] }>(`/ai-council/decisions?limit=${limit}`)
 export const runAICouncilPreview = (payload: Record<string, unknown>) => post<import('./types').AICouncilDecision>('/ai-council/preview', payload)
+export const getAICouncilSkillEval = (limit = 500) => get<import('./types').CouncilSkillEval>(`/ai-council/skill-eval?limit=${limit}`)
+
+// ─── Vector memory / RAG persistence ───────────────────────────────────────────
+export const getVectorMemoryStatus = () => get<import('./types').VectorMemoryStatus>('/vector-memory/status')
+
+// ─── Transaction cost analysis ─────────────────────────────────────────────────
+export const getExecutionTCA = (limit = 100) => get<import('./types').TCASummary>(`/execution/tca?limit=${limit}`)
+
+// ─── Research hypotheses (LLM-proposed strategy ideas) ─────────────────────────
+export const getResearchHypotheses = (status = 'proposed', limit = 50) =>
+  get<{ hypotheses: Record<string, unknown>[] }>(`/research/hypotheses?status=${status}&limit=${limit}`)
 
 // ─── Neural Lab ───────────────────────────────────────────────────────────────
 export const getNeuralStatus = () => get<import('./types').NeuralStatus>('/neural/status')

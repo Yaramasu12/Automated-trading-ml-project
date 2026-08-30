@@ -1,14 +1,20 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { clsx } from 'clsx'
-import { Brain, Loader2, RefreshCw, ShieldAlert, Vote, Workflow } from 'lucide-react'
-import { getAICouncilDecisions, getAICouncilStatus, runAICouncilPreview } from '../api'
+import { Brain, Database, Loader2, RefreshCw, ShieldAlert, Target, Vote, Workflow } from 'lucide-react'
+import {
+  getAICouncilDecisions, getAICouncilStatus, runAICouncilPreview,
+  getAICouncilSkillEval, getVectorMemoryStatus,
+} from '../api'
 import { Card, CardBody, CardHeader } from '../components/shared/Card'
 import { JsonPanel, KeyValueGrid, PageHeader, ProgressBar, StatTile } from '../components/shared/Command'
 import { Table } from '../components/shared/Table'
 import { Tag } from '../components/shared/Badge'
 import { useStore } from '../store'
 import { fmtDateTime, pct } from '../utils'
-import type { AgentVote, AICouncilDecision, StrategyProposal } from '../types'
+import type {
+  AgentVote, AICouncilDecision, StrategyProposal,
+  CouncilSkillEval, VectorMemoryStatus,
+} from '../types'
 
 function agentName(vote: AgentVote) {
   return vote.agent_name ?? vote.agent ?? 'agent'
@@ -56,13 +62,17 @@ export function AICouncil() {
   const [preview, setPreview] = useState<AICouncilDecision | null>(null)
   const [loading, setLoading] = useState(false)
   const [previewing, setPreviewing] = useState(false)
+  const [vectorMemory, setVectorMemory] = useState<VectorMemoryStatus | null>(null)
+  const [skillEval, setSkillEval] = useState<CouncilSkillEval | null>(null)
 
   const load = useCallback(async () => {
     setLoading(true)
     try {
-      const [statusRes, decisionRes] = await Promise.allSettled([
+      const [statusRes, decisionRes, vectorRes, skillRes] = await Promise.allSettled([
         getAICouncilStatus(),
         getAICouncilDecisions(20),
+        getVectorMemoryStatus(),
+        getAICouncilSkillEval(500),
       ])
       if (statusRes.status === 'fulfilled') setStatus(statusRes.value)
       if (decisionRes.status === 'fulfilled') {
@@ -71,6 +81,8 @@ export function AICouncil() {
           .filter(Boolean) as AICouncilDecision[]
         setDecisions(normalized)
       }
+      if (vectorRes.status === 'fulfilled') setVectorMemory(vectorRes.value)
+      if (skillRes.status === 'fulfilled') setSkillEval(skillRes.value)
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to load AI Council')
     } finally {
@@ -274,6 +286,70 @@ export function AICouncil() {
             emptyMessage="No persisted council decisions"
             compact
           />
+        </Card>
+      </div>
+
+      <div className="grid grid-cols-1 xl:grid-cols-2 gap-5">
+        <Card>
+          <CardHeader
+            title="RAG Memory"
+            subtitle={vectorMemory?.enabled
+              ? (vectorMemory.connected ? 'Persisted to Qdrant' : 'In-memory only — lost on restart')
+              : 'AI council disabled'}
+            icon={<Database size={14} />}
+          />
+          <CardBody>
+            {vectorMemory?.enabled ? (
+              <KeyValueGrid
+                columns="grid-cols-2"
+                items={[
+                  { label: 'Qdrant', value: vectorMemory.connected ? 'CONNECTED' : 'DISCONNECTED', accent: vectorMemory.connected ? 'green' : 'yellow' },
+                  { label: 'Documents', value: String(vectorMemory.documents_in_memory ?? 0), accent: 'cyan' },
+                  { label: 'Embedded', value: String(vectorMemory.documents_with_embedding ?? 0), accent: 'purple' },
+                  { label: 'Categories', value: String((vectorMemory.categories ?? []).length), accent: 'gray' },
+                ]}
+              />
+            ) : (
+              <div className="text-xs text-ink-faint py-4 text-center">AI council is disabled — no RAG memory active.</div>
+            )}
+          </CardBody>
+        </Card>
+
+        <Card>
+          <CardHeader
+            title="Council Skill Eval"
+            subtitle="Does confidence actually predict outcome quality?"
+            icon={<Target size={14} />}
+          />
+          <CardBody className="space-y-2">
+            {skillEval ? (
+              <>
+                <KeyValueGrid
+                  columns="grid-cols-2"
+                  items={[
+                    { label: 'Decisions Traced', value: String(skillEval.total_decisions_traced), accent: 'gray' },
+                    { label: 'Outcomes Traced', value: String(skillEval.total_outcomes_traced), accent: 'gray' },
+                    { label: 'Joined', value: String(skillEval.joined_count), accent: skillEval.joined_count > 0 ? 'green' : 'yellow' },
+                    { label: 'Real (non-stub)', value: String(skillEval.real_decision_count), accent: 'purple' },
+                  ]}
+                />
+                {skillEval.buckets ? (
+                  <div className="grid grid-cols-2 gap-2 pt-2">
+                    {Object.entries(skillEval.buckets).map(([label, b]) => (
+                      <div key={label} className="rounded-lg bg-surface-elevated border border-surface-border p-2.5">
+                        <div className="text-[10px] uppercase tracking-wider text-ink-faint">{label.replace(/_/g, ' ')} (n={b.n})</div>
+                        <div className="text-sm font-mono text-ink mt-1">{pct(b.win_rate * 100, 0)} win rate</div>
+                      </div>
+                    ))}
+                  </div>
+                ) : skillEval.structural_note ? (
+                  <div className="text-xs text-ink-faint pt-2 leading-relaxed">{skillEval.structural_note}</div>
+                ) : null}
+              </>
+            ) : (
+              <div className="text-xs text-ink-faint py-4 text-center">Loading...</div>
+            )}
+          </CardBody>
         </Card>
       </div>
 

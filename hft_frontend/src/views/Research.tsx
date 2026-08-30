@@ -31,6 +31,7 @@ import { EmptyState } from '../components/shared/States'
 import { inr, pct } from '../utils'
 import {
   getBacktestGates, getResearchCandles, getResearchSymbols, getStrategyPromotions,
+  getResearchHypotheses,
   type GateRow, type ResearchCandle,
 } from '../api'
 
@@ -43,16 +44,18 @@ export function Research() {
   const [totalBars, setTotalBars] = useState(0)
   const [gates, setGates] = useState<GateRow[]>([])
   const [promotions, setPromotions] = useState<Record<string, unknown>[]>([])
+  const [hypotheses, setHypotheses] = useState<Record<string, unknown>[]>([])
   const [busy, setBusy] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
   const loadMeta = useCallback(async () => {
     const r = await Promise.allSettled([
-      getResearchSymbols(), getBacktestGates(80), getStrategyPromotions(),
+      getResearchSymbols(), getBacktestGates(80), getStrategyPromotions(), getResearchHypotheses(),
     ])
     if (r[0].status === 'fulfilled') setSymbols(r[0].value.symbols ?? [])
     if (r[1].status === 'fulfilled') setGates(r[1].value.results ?? [])
     if (r[2].status === 'fulfilled') setPromotions(r[2].value.promotions ?? [])
+    if (r[3].status === 'fulfilled') setHypotheses(r[3].value.hypotheses ?? [])
     if (r.every((x) => x.status === 'rejected')) setError('Backend unreachable.')
   }, [])
 
@@ -291,6 +294,41 @@ export function Research() {
                   </div>
                 )
               })}
+            </div>
+          )}
+        </CardBody>
+      </Card>
+
+      {/* ── LLM-proposed strategy hypotheses ────────────────────────────
+           research/llm_researcher.py proposes, hypothesis_harness.py
+           disposes — holdout + attempt-counting guard against false
+           positives. This screen shows whatever's been PERSISTED via
+           mark-tested; most exploratory runs (scripts/run_llm_research_
+           session.py) currently only print to stdout and never reach this
+           table — see the empty-state hint below. */}
+      <Card>
+        <CardHeader
+          title="Research Hypotheses"
+          subtitle="LLM-proposed strategy ideas, holdout-gated"
+          icon={<FlaskConical size={14} />}
+        />
+        <CardBody>
+          {hypotheses.length === 0 ? (
+            <EmptyState
+              title="No persisted hypotheses"
+              hint="scripts/run_llm_research_session.py runs proposals through the holdout-gated harness but currently only prints results — nothing here yet until that's wired to persist."
+            />
+          ) : (
+            <div className="space-y-2">
+              {hypotheses.map((h: any, i: number) => (
+                <div key={h.id ?? i} className="rounded border border-surface-border bg-surface-inset p-3">
+                  <div className="flex items-center justify-between">
+                    <span className="text-[12px] font-semibold">{String(h.name ?? h.hypothesis_name ?? `hypothesis-${i}`)}</span>
+                    <span className="text-[10px] text-ink-faint uppercase tracking-wide">{String(h.status ?? 'unknown')}</span>
+                  </div>
+                  {h.rationale && <div className="mt-1 text-[11px] text-ink-muted">{String(h.rationale)}</div>}
+                </div>
+              ))}
             </div>
           )}
         </CardBody>

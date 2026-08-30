@@ -36,8 +36,9 @@ import { useStore } from '../store'
 import { inr, pct, fmtDateTime } from '../utils'
 import {
   getEquityCurve, getPortfolioPositions, getDBSummary, getRecentTrades,
-  getHealth, getFeedSnapshot,
+  getHealth, getFeedSnapshot, getLiveReadiness, getRegulatoryCompliance,
 } from '../api'
+import type { LiveReadiness, RegulatoryComplianceStatus } from '../types'
 
 const POLL_MS = 15_000
 
@@ -49,11 +50,13 @@ type Loaded = {
   trades: any[]
   health: any | null
   feed: any | null
+  liveReadiness: LiveReadiness | null
+  regCompliance: RegulatoryComplianceStatus | null
 }
 
 const EMPTY: Loaded = {
   equity: [], positions: [], portfolio: null, dbSummary: null,
-  trades: [], health: null, feed: null,
+  trades: [], health: null, feed: null, liveReadiness: null, regCompliance: null,
 }
 
 export function CommandCenter() {
@@ -69,6 +72,7 @@ export function CommandCenter() {
     const results = await Promise.allSettled([
       getEquityCurve(undefined, 400), getPortfolioPositions(), getDBSummary(),
       getRecentTrades(25), getHealth(), getFeedSnapshot(),
+      getLiveReadiness(), getRegulatoryCompliance(),
     ])
     const val = <T,>(i: number, fallback: T): T =>
       results[i].status === 'fulfilled' ? ((results[i] as PromiseFulfilledResult<any>).value ?? fallback) : fallback
@@ -86,6 +90,8 @@ export function CommandCenter() {
       trades: val<any>(3, {})?.trades ?? [],
       health: val<any>(4, null),
       feed: val<any>(5, null),
+      liveReadiness: val<any>(6, null),
+      regCompliance: val<any>(7, null),
     })
     setLoading(false)
     setLastLoad(Date.now())
@@ -172,6 +178,58 @@ export function CommandCenter() {
           {data.health?.operational_status ?? '—'}
         </div>
       </div>
+
+      {/* ── Live-trading readiness — the seven gates + SEBI compliance
+           checklist that decide whether arm_live() would even be allowed
+           to succeed, surfaced here instead of only discoverable by
+           actually attempting to arm live trading ── */}
+      <Card>
+        <CardHeader
+          title="Live-Trading Readiness"
+          subtitle={data.liveReadiness
+            ? (data.liveReadiness.armed_eligible ? 'All gates pass' : `${data.liveReadiness.blocking_reasons.length} blocking reason(s)`)
+            : 'Loading...'}
+          icon={<ShieldCheck size={14} />}
+        />
+        <CardBody className="space-y-3">
+          {data.liveReadiness && (
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2">
+              {data.liveReadiness.gates.map((g) => (
+                <div key={g.name} className={clsx(
+                  'rounded border px-2.5 py-2 text-[11px]',
+                  g.passed ? 'border-brand-green/30 bg-brand-green/5 text-brand-green'
+                           : 'border-brand-red/30 bg-brand-red/5 text-brand-red',
+                )}>
+                  <div className="font-semibold">{g.name}</div>
+                  <div className="text-ink-muted mt-0.5 line-clamp-2">{g.reason}</div>
+                </div>
+              ))}
+            </div>
+          )}
+          {data.regCompliance && (
+            <div className="pt-2 border-t border-surface-border">
+              <div className="text-[11px] font-semibold text-ink-muted mb-2">
+                SEBI Compliance — {data.regCompliance.all_mandatory_passed ? 'passed' : 'blocked'}
+              </div>
+              <div className="flex flex-wrap gap-1.5">
+                {Object.entries(data.regCompliance.checks).map(([name, passed]) => (
+                  <span key={name} className={clsx(
+                    'rounded px-1.5 py-0.5 text-[10px] uppercase tracking-wide',
+                    passed ? 'bg-brand-green/15 text-brand-green' : 'bg-brand-red/15 text-brand-red',
+                  )}>
+                    {name.replace(/_/g, ' ')}
+                  </span>
+                ))}
+              </div>
+              {data.regCompliance.violations.length > 0 && (
+                <div className="mt-2 text-[10px] text-brand-red">
+                  {data.regCompliance.violations.join(' · ')}
+                </div>
+              )}
+            </div>
+          )}
+        </CardBody>
+      </Card>
 
       {/* Headline metrics */}
       <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">

@@ -567,3 +567,84 @@ export interface ShortVolPreview {
   legs: ShortVolLeg[]
   expiry?: string
 }
+
+// ─── Vector memory / Qdrant persistence (2026-08-29) ──────────────────────────
+
+export interface VectorMemoryStatus {
+  enabled: boolean
+  connected?: boolean
+  collection?: string
+  documents_in_memory?: number
+  documents_with_embedding?: number
+  categories?: string[]
+}
+
+// ─── AI council skill eval — confidence vs. real outcome (2026-08-29) ─────────
+
+export interface CouncilSkillEvalBucket {
+  n: number
+  win_rate: number
+  mean_quality: number
+}
+
+export interface CouncilSkillEvalJoinedRow {
+  trace_id: string
+  n_votes: number
+  n_real_votes: number
+  n_stub_votes: number
+  mean_confidence: number
+  won: boolean | null
+  pnl_pct: number | null
+  quality: number | null
+}
+
+export interface CouncilSkillEval {
+  total_decisions_traced: number
+  total_outcomes_traced: number
+  joined_count: number
+  structural_note: string | null
+  real_decision_count: number
+  stub_only_count: number
+  sample_size_sufficient: boolean
+  buckets: Record<string, CouncilSkillEvalBucket> | null
+  joined: CouncilSkillEvalJoinedRow[]
+}
+
+// ─── Transaction cost analysis ─────────────────────────────────────────────────
+
+export interface TCASummary {
+  enabled: boolean
+  fills_analyzed: number
+  summary: Record<string, unknown> | null
+  recent: Record<string, unknown>[]
+  reason?: string
+  error?: string
+}
+
+// ─── Live-trading readiness gates ──────────────────────────────────────────────
+
+export interface ReadinessGate {
+  name: string
+  passed: boolean
+  reason: string
+  evidence: Record<string, unknown>
+}
+
+export interface LiveReadiness {
+  armed_eligible: boolean
+  blocking_reasons: string[]
+  evaluated_at: string
+  gates: ReadinessGate[]
+}
+
+// ─── SEBI regulatory compliance checklist ──────────────────────────────────────
+
+export interface RegulatoryComplianceStatus {
+  jurisdiction: string
+  status: string
+  checks: Record<string, boolean>
+  violations: string[]
+  warnings: string[]
+  checked_at: string
+  all_mandatory_passed: boolean
+}

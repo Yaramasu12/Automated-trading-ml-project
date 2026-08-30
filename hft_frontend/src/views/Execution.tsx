@@ -5,16 +5,16 @@ import {
   AlertTriangle, CheckCircle2, ArrowUpRight, ArrowDownRight,
 } from 'lucide-react'
 import { clsx } from 'clsx'
-import { Card, CardBody } from '../components/shared/Card'
+import { Card, CardHeader, CardBody } from '../components/shared/Card'
 import { Table } from '../components/shared/Table'
 import { PageHeader } from '../components/shared/PageHeader'
 import { EmptyState } from '../components/shared/States'
 import { fmtDateTime, inr, pct } from '../utils'
 import {
   getPortfolioPositions, getRecentTrades, getFeedSnapshot,
-  getOmsEvents,
+  getOmsEvents, getExecutionTCA,
 } from '../api'
-import type { LivePosition, LivePortfolioMetrics, Trade } from '../types'
+import type { LivePosition, LivePortfolioMetrics, Trade, TCASummary } from '../types'
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
@@ -245,17 +245,19 @@ export function Execution() {
   const [feedSymbols, setFeedSymbols]   = useState<string[]>([])
   const [tickCount, setTickCount]       = useState(0)
   const [omsEvents, setOmsEvents]       = useState<unknown[]>([])
+  const [tca, setTca]                   = useState<TCASummary | null>(null)
   const [loading, setLoading]           = useState(true)
   const [lastRefresh, setLastRefresh]   = useState<Date | null>(null)
   const [tab, setTab]                   = useState<'positions' | 'fills' | 'oms'>('positions')
 
   const refresh = useCallback(async () => {
     try {
-      const [posRes, tradeRes, feedRes, omsRes] = await Promise.allSettled([
+      const [posRes, tradeRes, feedRes, omsRes, tcaRes] = await Promise.allSettled([
         getPortfolioPositions(),
         getRecentTrades(100),
         getFeedSnapshot(),
         getOmsEvents(50),
+        getExecutionTCA(50),
       ])
 
       if (posRes.status === 'fulfilled') {
@@ -276,6 +278,9 @@ export function Execution() {
       if (omsRes.status === 'fulfilled') {
         const d = omsRes.value as any
         setOmsEvents(d.events ?? [])
+      }
+      if (tcaRes.status === 'fulfilled') {
+        setTca(tcaRes.value)
       }
       setLastRefresh(new Date())
     } finally {
@@ -392,6 +397,41 @@ export function Execution() {
           hint="Toggle PAPER SIM above to see live positions and fills."
         />
       )}
+
+      {/* ── transaction cost analysis — the dominant lever on this platform's
+           realized edge (spread cost alone was measured at >100% of short-vol's
+           gross edge); scores real fills, not backtested ones ── */}
+      <Card>
+        <CardHeader
+          title="Transaction Cost Analysis"
+          subtitle={tca?.enabled
+            ? `${tca.fills_analyzed} real fill${tca.fills_analyzed === 1 ? '' : 's'} analyzed`
+            : (tca?.reason ?? 'unavailable')}
+        />
+        <CardBody>
+          {tca?.enabled && tca.summary ? (
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+              {Object.entries(tca.summary).map(([key, value]) => (
+                <div key={key} className="rounded-lg bg-surface-elevated border border-surface-border p-3">
+                  <div className="text-[10px] uppercase tracking-wider text-ink-faint">{key.replace(/_/g, ' ')}</div>
+                  <div className="text-sm font-mono text-ink mt-1">
+                    {typeof value === 'number' ? value.toFixed(4) : String(value)}
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <EmptyState
+              className="py-8"
+              icon={<Layers size={18} />}
+              title={tca?.enabled ? 'No fills yet' : 'TCA disabled'}
+              hint={tca?.enabled
+                ? 'Summary appears once real fills have been recorded — nothing to score on a quiet trading day.'
+                : (tca?.reason ?? 'Set ENABLE_TCA=true to score real fills against arrival price.')}
+            />
+          )}
+        </CardBody>
+      </Card>
 
     </div>
   )
