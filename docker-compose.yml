@@ -297,6 +297,10 @@ services:
       PGADMIN_DEFAULT_EMAIL: saikumarynwm@gmail.com
       PGADMIN_DEFAULT_PASSWORD: admin
       PGADMIN_CONFIG_SERVER_MODE: "False"
+      # Local-only dev tool (bound to localhost, no real auth boundary to
+      # protect) -- the master-password prompt on top of the login above
+      # is pure friction here, not a meaningful second factor.
+      PGADMIN_CONFIG_MASTER_PASSWORD_REQUIRED: "False"
     ports:
       - "0.0.0.0:8082:80"
     volumes:
