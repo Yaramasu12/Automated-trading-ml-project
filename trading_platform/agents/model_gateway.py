@@ -129,6 +129,7 @@ class LocalModelGateway:
         primary_model: str = "gemma4-31b",
         fast_model: str = "gemma4-e4b",
         coordinator_model: str = "gemma4-26b-moe",
+        secondary_model: str | None = None,
         max_concurrent_calls: int = 2,
         embedding_model: str = "text-embedding-nomic-embed-text-v1.5",
         sentiment_model: str = "llama-3-8b-instruct-finance-rag",
@@ -145,6 +146,11 @@ class LocalModelGateway:
         self.primary_model = primary_model
         self.fast_model = fast_model
         self.coordinator_model = coordinator_model
+        # 4th model-pool slot (see specialists.py's BATCHABLE_AGENT_CLASSES /
+        # config.py's local_llm_secondary_model docstring) — defaults to
+        # fast_model so a gateway constructed without it still has 3 distinct
+        # pool slots instead of erroring on a missing attribute.
+        self.secondary_model = secondary_model or fast_model
         self.embedding_model = embedding_model
         self.sentiment_model = sentiment_model
         # Global cap on concurrent in-flight HTTP calls to the local runtime —

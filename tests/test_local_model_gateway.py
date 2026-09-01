@@ -401,5 +401,20 @@ class TestScoreSentiment(unittest.TestCase):
         self.assertLess(elapsed, 1.0)
 
 
+class SecondaryModelTests(unittest.TestCase):
+    """2026-09-01: 4th model-pool slot, added when gemma-4-e4b became
+    unavailable and the 9 batchable council specialists needed to spread
+    across 4 distinct models instead of piling onto one fast_model."""
+
+    def test_defaults_to_fast_model_when_not_specified(self):
+        gw = LocalModelGateway(runtime="stub", fast_model="my-fast-model")
+        self.assertEqual(gw.secondary_model, "my-fast-model")
+
+    def test_explicit_secondary_model_is_kept(self):
+        gw = LocalModelGateway(runtime="stub", fast_model="my-fast-model", secondary_model="my-secondary-model")
+        self.assertEqual(gw.secondary_model, "my-secondary-model")
+        self.assertEqual(gw.fast_model, "my-fast-model")
+
+
 if __name__ == "__main__":
     unittest.main()

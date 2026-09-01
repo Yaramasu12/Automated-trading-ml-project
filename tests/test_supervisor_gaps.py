@@ -46,6 +46,7 @@ class _RespondingGateway:
     fast_model = "fake-fast"
     primary_model = "fake-primary"
     coordinator_model = "fake-coordinator"
+    secondary_model = "fake-secondary"
 
     def __init__(self, reply: dict) -> None:
         self._reply = reply

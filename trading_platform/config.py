@@ -217,6 +217,16 @@ class Settings:
     local_llm_gateway: str = field(default_factory=lambda: _env("LOCAL_LLM_GATEWAY", "disabled"))
     local_llm_coordinator_model: str = field(default_factory=lambda: _env("LOCAL_LLM_COORDINATOR_MODEL", "gemma4-26b-moe"))
     local_llm_fast_model: str = field(default_factory=lambda: _env("LOCAL_LLM_FAST_MODEL", "gemma4-e4b"))
+    # 4th model-pool slot: added 2026-09-01 when the small/fast model
+    # (gemma-4-e4b) became unavailable in LM Studio and only large (27B+)
+    # models remained loaded. With no genuinely "fast" model left, the 9
+    # batchable council specialists (specialists.py's BATCHABLE_AGENT_CLASSES)
+    # spread across all 4 available models instead of piling onto one --
+    # see each class's MODEL_ATTR. Defaults to local_llm_fast_model so an
+    # unconfigured deployment still behaves as a 3-model rotation.
+    local_llm_secondary_model: str = field(default_factory=lambda: _env(
+        "LOCAL_LLM_SECONDARY_MODEL", _env("LOCAL_LLM_FAST_MODEL", "gemma4-e4b")
+    ))
     local_llm_sentiment_model: str = field(default_factory=lambda: _env(
         "LOCAL_LLM_SENTIMENT_MODEL", "llama-3-8b-instruct-finance-rag"
     ))

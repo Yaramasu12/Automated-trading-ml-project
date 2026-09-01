@@ -408,6 +408,7 @@ class TradingRuntime:
                 primary_model=self.settings.local_llm_primary_model,
                 fast_model=self.settings.local_llm_fast_model,
                 coordinator_model=self.settings.local_llm_coordinator_model,
+                secondary_model=self.settings.local_llm_secondary_model,
                 max_concurrent_calls=self.settings.local_llm_max_concurrent_calls,
                 embedding_model=self.settings.local_llm_embedding_model,
                 sentiment_model=self.settings.local_llm_sentiment_model,

@@ -33,6 +33,7 @@ class _CountingGateway:
     fast_model = "fake-fast"
     primary_model = "fake-primary"
     coordinator_model = "fake-coordinator"
+    secondary_model = "fake-secondary"
     max_tokens = 2048
     rag_retriever = None
 

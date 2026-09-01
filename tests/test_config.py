@@ -53,6 +53,30 @@ class AnnualTargetPctTests(unittest.TestCase):
         self.assertEqual(settings.annual_target_pct, 0.28)
 
 
+class LocalLLMSecondaryModelTests(unittest.TestCase):
+    """2026-09-01: added as a 4th model-pool slot when gemma-4-e4b (the
+    small/fast model the original fast/primary/coordinator split was built
+    around) became unavailable in LM Studio -- see specialists.py's
+    BATCHABLE_AGENT_CLASSES round-robin."""
+
+    def test_falls_back_to_fast_model_when_unset(self):
+        # Patch load_local_env_files() to a no-op: this repo's own .env sets
+        # LOCAL_LLM_SECONDARY_MODEL for real deployment, which would otherwise
+        # leak into this test's "unset" scenario since load_local_env_files()
+        # deliberately does not overwrite an env var that's merely absent from
+        # os.environ at call time -- it fills it right back in from the file.
+        with mock.patch("trading_platform.config.load_local_env_files"):
+            with mock.patch.dict(os.environ, {"LOCAL_LLM_FAST_MODEL": "some-fast-model"}):
+                os.environ.pop("LOCAL_LLM_SECONDARY_MODEL", None)
+                settings = load_settings()
+        self.assertEqual(settings.local_llm_secondary_model, "some-fast-model")
+
+    def test_env_override(self):
+        with mock.patch.dict(os.environ, {"LOCAL_LLM_SECONDARY_MODEL": "some-other-model"}):
+            settings = load_settings()
+        self.assertEqual(settings.local_llm_secondary_model, "some-other-model")
+
+
 class LoadSettingsConfiguresLoggingTests(unittest.TestCase):
     """2026-08-31: nothing in the app's startup path called logging.basicConfig(),
     so the root logger had no handler and every note_swallowed()/logger.warning()

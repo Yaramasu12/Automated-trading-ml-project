@@ -161,7 +161,7 @@ def _safe_vote(
 
 class NewsMacroAgent:
     name = "NewsMacroAgent"
-    MODEL_ATTR = "fast_model"
+    MODEL_ATTR = "primary_model"
     TASK = "Assess macro/news event risk for the symbols above."
 
     def __init__(self, gateway: LocalModelGateway) -> None:
@@ -181,7 +181,7 @@ class NewsMacroAgent:
 
 class QuantResearchAgent:
     name = "QuantResearchAgent"
-    MODEL_ATTR = "primary_model"
+    MODEL_ATTR = "fast_model"
     TASK = (
         "Analyze feature importance, strategy decay signals, and alpha hypotheses "
         "given the indicators above."
@@ -204,6 +204,10 @@ class QuantResearchAgent:
 
 class TrendMomentumAgent:
     name = "TrendMomentumAgent"
+    # 2026-09-01: with gemma-4-e4b gone and only 4 large (27B-35B) models left
+    # in LM Studio, the 9 batchable specialists round-robin across all 4
+    # gateway model slots (fast/secondary/coordinator/primary) instead of 8 of
+    # 9 piling onto one -- see BATCHABLE_AGENT_CLASSES and .env's matching note.
     MODEL_ATTR = "fast_model"
     TASK = "Assess trend and momentum strength using the momentum and trend_strength indicators above."
 
@@ -224,7 +228,7 @@ class TrendMomentumAgent:
 
 class MeanReversionAgent:
     name = "MeanReversionAgent"
-    MODEL_ATTR = "fast_model"
+    MODEL_ATTR = "secondary_model"
     TASK = "Assess mean reversion opportunity using rsi_14, bb_width, and realized_volatility above."
 
     def __init__(self, gateway: LocalModelGateway) -> None:
@@ -244,7 +248,7 @@ class MeanReversionAgent:
 
 class BreakoutAgent:
     name = "BreakoutAgent"
-    MODEL_ATTR = "fast_model"
+    MODEL_ATTR = "coordinator_model"
     TASK = "Detect breakout setups from consolidation ranges using volume_ratio and atr_14 above."
 
     def __init__(self, gateway: LocalModelGateway) -> None:
@@ -264,7 +268,7 @@ class BreakoutAgent:
 
 class GapEventAgent:
     name = "GapEventAgent"
-    MODEL_ATTR = "fast_model"
+    MODEL_ATTR = "primary_model"
     TASK = "Assess gap fill or gap continuation potential based on overnight events and the indicators above."
 
     def __init__(self, gateway: LocalModelGateway) -> None:
@@ -336,7 +340,7 @@ class OptionsVolatilityAgent:
 
 class FuturesCarryAgent:
     name = "FuturesCarryAgent"
-    MODEL_ATTR = "fast_model"
+    MODEL_ATTR = "secondary_model"
     TASK = "Evaluate futures carry, basis, and roll yield opportunities for the symbols above."
 
     def __init__(self, gateway: LocalModelGateway) -> None:
@@ -356,7 +360,7 @@ class FuturesCarryAgent:
 
 class HedgeBuilderAgent:
     name = "HedgeBuilderAgent"
-    MODEL_ATTR = "fast_model"
+    MODEL_ATTR = "coordinator_model"
     TASK = (
         "Recommend hedges to reduce tail risk without excessive cost, "
         "considering the portfolio drawdown and tail_risk_score above."
