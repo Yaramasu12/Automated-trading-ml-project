@@ -475,6 +475,16 @@ class AgentCouncilSupervisor:
         specialist across ALL contexts, instead of one call per (specialist,
         context). Returns {symbol: AgentCouncilDecision}, one per context.
 
+        The 9 BATCHABLE_AGENT_CLASSES calls run CONCURRENTLY (same
+        ThreadPoolExecutor + per_agent_timeout_s pattern _run_locked uses for
+        its own per-agent dispatch), not sequentially -- confirmed live
+        2026-09-01: a first version that looped over them one at a time left
+        3 of LocalModelGateway's 4 concurrency slots idle and pushed total
+        wall-clock past consult()'s own wait budget (a batch of 6 underlyings
+        still hadn't finished at 152s). Concurrent dispatch lets these calls
+        actually share the gateway's real capacity instead of only reducing
+        call COUNT without reducing latency.
+
         chunk_contexts() further splits into groups of at most
         self._max_batch_size, so an unusually large flush (e.g. max_batch_size
         was hit exactly, plus a straggler) still respects the measured-safe
@@ -485,10 +495,26 @@ class AgentCouncilSupervisor:
             (c.symbols[0] if c.symbols else "UNKNOWN"): [] for c in contexts
         }
         for group in chunk_contexts(contexts, self._max_batch_size):
-            for agent_cls in BATCHABLE_AGENT_CLASSES:
+            def _dispatch(agent_cls, group=group) -> list[AgentVote]:
                 model = getattr(self._gw, agent_cls.MODEL_ATTR)
+                return run_batch(self._gw, model, agent_cls.name, agent_cls.TASK, group)
+
+            future_to_cls: dict[concurrent.futures.Future, type] = {}
+            pool = concurrent.futures.ThreadPoolExecutor(max_workers=len(BATCHABLE_AGENT_CLASSES))
+            try:
+                for agent_cls in BATCHABLE_AGENT_CLASSES:
+                    future_to_cls[pool.submit(_dispatch, agent_cls)] = agent_cls
+                done, not_done = concurrent.futures.wait(
+                    list(future_to_cls), timeout=self._per_agent_timeout_s,
+                    return_when=concurrent.futures.ALL_COMPLETED,
+                )
+            finally:
+                pool.shutdown(wait=False, cancel_futures=True)
+
+            for fut in done:
+                agent_cls = future_to_cls[fut]
                 try:
-                    votes = run_batch(self._gw, model, agent_cls.name, agent_cls.TASK, group)
+                    votes = fut.result()
                 except Exception as exc:
                     logger.warning("AgentCouncilSupervisor: batch %s error: %s", agent_cls.name, exc)
                     votes = [
@@ -499,6 +525,19 @@ class AgentCouncilSupervisor:
                 for ctx, vote in zip(group, votes):
                     sym = ctx.symbols[0] if ctx.symbols else "UNKNOWN"
                     votes_by_symbol[sym].append(vote)
+            for fut in not_done:
+                agent_cls = future_to_cls[fut]
+                logger.warning(
+                    "AgentCouncilSupervisor: batch %s timed out after %ss — stub fallback",
+                    agent_cls.name, self._per_agent_timeout_s,
+                )
+                for ctx in group:
+                    sym = ctx.symbols[0] if ctx.symbols else "UNKNOWN"
+                    votes_by_symbol[sym].append(AgentVote(
+                        agent_name=agent_cls.name, action="HOLD", confidence=0.0,
+                        reasoning="batch_timeout", failure_mode=f"timeout_{self._per_agent_timeout_s}s",
+                    ))
+
             # OptionsVolatilityAgent is deterministic (no LLM call) — cheap
             # enough to run per-context even inside a batch.
             for ctx in group:
