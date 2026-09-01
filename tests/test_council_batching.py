@@ -146,5 +146,50 @@ class RunManyLockedTests(unittest.TestCase):
         self.assertEqual(gw.calls, 0)
 
 
+class _SlowGateway(_CountingGateway):
+    """Sleeps per call so sequential vs. concurrent dispatch is measurably
+    different in wall-clock time, not just call count."""
+
+    def __init__(self, delay_s: float) -> None:
+        super().__init__()
+        self._delay_s = delay_s
+
+    def generate(self, model, system, prompt, **kw):
+        time.sleep(self._delay_s)
+        return super().generate(model, system, prompt, **kw)
+
+
+class ConcurrentDispatchTimingTests(unittest.TestCase):
+    """2026-09-01: a first version of both the specialist-batch dispatch AND
+    the final per-context assembly (PM/execution-analyst) looped over their
+    work sequentially, so N contexts or 9 specialists cost N or 9 times a
+    single call's latency even though LocalModelGateway allows up to 4
+    truly-concurrent calls. Confirmed live: a 6-underlying batch still blew
+    past a 152s wait budget. These tests pin that both dispatch loops
+    actually overlap in wall-clock time instead of serializing."""
+
+    def test_specialist_batch_dispatch_overlaps_in_wall_clock(self):
+        gw = _SlowGateway(delay_s=0.3)
+        sup = AgentCouncilSupervisor(gw)
+        t0 = time.monotonic()
+        sup._run_many_locked([_ctx("A"), _ctx("B")])
+        elapsed = time.monotonic() - t0
+        # 9 specialists x 0.3s would be 2.7s if sequential; concurrent
+        # dispatch (4 slots) should finish well under that.
+        self.assertLess(elapsed, 2.0, "specialist batch calls do not appear to run concurrently")
+
+    def test_assembly_overlaps_across_contexts(self):
+        gw = _SlowGateway(delay_s=0.3)
+        sup = AgentCouncilSupervisor(gw)
+        contexts = [_ctx(s) for s in "ABCDEF"]
+        votes = {c.symbols[0]: [] for c in contexts}
+        t0 = time.monotonic()
+        sup._assemble_many(contexts, votes)
+        elapsed = time.monotonic() - t0
+        # 6 contexts x 2 calls (PM, execution analyst) x 0.3s would be 3.6s
+        # if sequential; concurrent dispatch should finish well under that.
+        self.assertLess(elapsed, 2.0, "per-context assembly does not appear to run concurrently")
+
+
 if __name__ == "__main__":
     unittest.main()

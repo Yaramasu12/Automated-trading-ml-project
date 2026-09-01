@@ -441,9 +441,12 @@ class AgentCouncilSupervisor:
                 flush_now = True
         if flush_now:
             self._flush_batch()
-        # Generous margin over the per-agent budget: a consult that joined
-        # right before flush still needs the full batch dispatch to run.
-        req.done.wait(timeout=self._per_agent_timeout_s + self._batch_window_s + 30.0)
+        # Two sequential phases each bounded at _per_agent_timeout_s (the
+        # specialist batch dispatch in _run_many_locked, then the per-context
+        # PM/execution-analyst assembly in _assemble_many) plus the window
+        # and a margin -- a consult that joined right before flush still
+        # needs both phases to run in full.
+        req.done.wait(timeout=2 * self._per_agent_timeout_s + self._batch_window_s + 30.0)
         if req.decision is not None:
             return req.decision
         logger.warning(
@@ -544,11 +547,62 @@ class AgentCouncilSupervisor:
                 sym = ctx.symbols[0] if ctx.symbols else "UNKNOWN"
                 votes_by_symbol[sym].append(self._opts_vol.run(ctx))
 
-        return {
-            (ctx.symbols[0] if ctx.symbols else "UNKNOWN"):
-                self._assemble_decision(ctx, votes_by_symbol[ctx.symbols[0] if ctx.symbols else "UNKNOWN"])
-            for ctx in contexts
-        }
+        return self._assemble_many(contexts, votes_by_symbol)
+
+    def _assemble_many(
+        self, contexts: list[AgentInputContext], votes_by_symbol: dict[str, list[AgentVote]],
+    ) -> dict[str, AgentCouncilDecision]:
+        """Run _assemble_decision() for every context CONCURRENTLY.
+
+        _assemble_decision makes up to 2 more gateway calls per context (PM,
+        execution analyst) -- confirmed live 2026-09-01, right after fixing
+        the specialist-batch dispatch to run concurrently: a 6-13 underlying
+        batch still blew past consult()'s wait budget, because this step had
+        the exact same bug the specialist dispatch just got fixed for --
+        calling _assemble_decision once per context in a plain loop/dict
+        comprehension, sequentially, regardless of how many of
+        LocalModelGateway's 4 concurrency slots were free.
+        """
+        future_to_ctx: dict[concurrent.futures.Future, AgentInputContext] = {}
+        pool = concurrent.futures.ThreadPoolExecutor(max_workers=max(1, len(contexts)))
+        try:
+            for ctx in contexts:
+                sym = ctx.symbols[0] if ctx.symbols else "UNKNOWN"
+                fut = pool.submit(self._assemble_decision, ctx, votes_by_symbol[sym])
+                future_to_ctx[fut] = ctx
+            done, not_done = concurrent.futures.wait(
+                list(future_to_ctx), timeout=self._per_agent_timeout_s,
+                return_when=concurrent.futures.ALL_COMPLETED,
+            )
+        finally:
+            pool.shutdown(wait=False, cancel_futures=True)
+
+        results: dict[str, AgentCouncilDecision] = {}
+        for fut in done:
+            ctx = future_to_ctx[fut]
+            sym = ctx.symbols[0] if ctx.symbols else "UNKNOWN"
+            try:
+                results[sym] = fut.result()
+            except Exception as exc:
+                logger.warning("AgentCouncilSupervisor: assemble error for %s: %s", sym, exc)
+                results[sym] = AgentCouncilDecision(
+                    trace_id=ctx.trace_id, action="NO_TRADE", confidence=0.0, consensus_score=0.0,
+                    votes=votes_by_symbol.get(sym, []), strategy_proposals=[],
+                    debate_summary="assemble_error",
+                )
+        for fut in not_done:
+            ctx = future_to_ctx[fut]
+            sym = ctx.symbols[0] if ctx.symbols else "UNKNOWN"
+            logger.warning(
+                "AgentCouncilSupervisor: assemble timed out after %ss for %s — stub decision",
+                self._per_agent_timeout_s, sym,
+            )
+            results[sym] = AgentCouncilDecision(
+                trace_id=ctx.trace_id, action="NO_TRADE", confidence=0.0, consensus_score=0.0,
+                votes=votes_by_symbol.get(sym, []), strategy_proposals=[],
+                debate_summary="assemble_timeout",
+            )
+        return results
 
     # ── 5-party debate ────────────────────────────────────────────────────────
 
