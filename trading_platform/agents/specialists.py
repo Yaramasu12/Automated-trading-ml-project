@@ -161,6 +161,8 @@ def _safe_vote(
 
 class NewsMacroAgent:
     name = "NewsMacroAgent"
+    MODEL_ATTR = "fast_model"
+    TASK = "Assess macro/news event risk for the symbols above."
 
     def __init__(self, gateway: LocalModelGateway) -> None:
         self._gw = gateway
@@ -169,15 +171,21 @@ class NewsMacroAgent:
         mkt = _build_market_context(ctx)
         prompt = (
             f"{mkt}\n"
-            "Assess macro/news event risk for the symbols above. "
+            f"{self.TASK} "
             "Output JSON: action, confidence, reasoning, evidence_ids."
         )
-        resp = self._gw.generate(self._gw.fast_model, _SYSTEM_BASE, prompt)
-        return _safe_vote(self.name, resp.get("model_id", self._gw.fast_model), resp, ctx.evidence_ids)
+        model = getattr(self._gw, self.MODEL_ATTR)
+        resp = self._gw.generate(model, _SYSTEM_BASE, prompt)
+        return _safe_vote(self.name, resp.get("model_id", model), resp, ctx.evidence_ids)
 
 
 class QuantResearchAgent:
     name = "QuantResearchAgent"
+    MODEL_ATTR = "primary_model"
+    TASK = (
+        "Analyze feature importance, strategy decay signals, and alpha hypotheses "
+        "given the indicators above."
+    )
 
     def __init__(self, gateway: LocalModelGateway) -> None:
         self._gw = gateway
@@ -186,16 +194,18 @@ class QuantResearchAgent:
         mkt = _build_market_context(ctx)
         prompt = (
             f"{mkt}\n"
-            "Analyze feature importance, strategy decay signals, and alpha hypotheses "
-            "given the indicators above. "
+            f"{self.TASK} "
             "Output JSON: action, confidence, reasoning, evidence_ids."
         )
-        resp = self._gw.generate(self._gw.primary_model, _SYSTEM_BASE, prompt)
-        return _safe_vote(self.name, resp.get("model_id", self._gw.primary_model), resp, ctx.evidence_ids)
+        model = getattr(self._gw, self.MODEL_ATTR)
+        resp = self._gw.generate(model, _SYSTEM_BASE, prompt)
+        return _safe_vote(self.name, resp.get("model_id", model), resp, ctx.evidence_ids)
 
 
 class TrendMomentumAgent:
     name = "TrendMomentumAgent"
+    MODEL_ATTR = "fast_model"
+    TASK = "Assess trend and momentum strength using the momentum and trend_strength indicators above."
 
     def __init__(self, gateway: LocalModelGateway) -> None:
         self._gw = gateway
@@ -204,15 +214,18 @@ class TrendMomentumAgent:
         mkt = _build_market_context(ctx)
         prompt = (
             f"{mkt}\n"
-            "Assess trend and momentum strength using the momentum and trend_strength indicators above. "
+            f"{self.TASK} "
             "Output JSON: action, confidence, reasoning, evidence_ids."
         )
-        resp = self._gw.generate(self._gw.fast_model, _SYSTEM_BASE, prompt)
-        return _safe_vote(self.name, resp.get("model_id", self._gw.fast_model), resp, ctx.evidence_ids)
+        model = getattr(self._gw, self.MODEL_ATTR)
+        resp = self._gw.generate(model, _SYSTEM_BASE, prompt)
+        return _safe_vote(self.name, resp.get("model_id", model), resp, ctx.evidence_ids)
 
 
 class MeanReversionAgent:
     name = "MeanReversionAgent"
+    MODEL_ATTR = "fast_model"
+    TASK = "Assess mean reversion opportunity using rsi_14, bb_width, and realized_volatility above."
 
     def __init__(self, gateway: LocalModelGateway) -> None:
         self._gw = gateway
@@ -221,15 +234,18 @@ class MeanReversionAgent:
         mkt = _build_market_context(ctx)
         prompt = (
             f"{mkt}\n"
-            "Assess mean reversion opportunity using rsi_14, bb_width, and realized_volatility above. "
+            f"{self.TASK} "
             "Output JSON: action, confidence, reasoning, evidence_ids."
         )
-        resp = self._gw.generate(self._gw.fast_model, _SYSTEM_BASE, prompt)
-        return _safe_vote(self.name, resp.get("model_id", self._gw.fast_model), resp, ctx.evidence_ids)
+        model = getattr(self._gw, self.MODEL_ATTR)
+        resp = self._gw.generate(model, _SYSTEM_BASE, prompt)
+        return _safe_vote(self.name, resp.get("model_id", model), resp, ctx.evidence_ids)
 
 
 class BreakoutAgent:
     name = "BreakoutAgent"
+    MODEL_ATTR = "fast_model"
+    TASK = "Detect breakout setups from consolidation ranges using volume_ratio and atr_14 above."
 
     def __init__(self, gateway: LocalModelGateway) -> None:
         self._gw = gateway
@@ -238,15 +254,18 @@ class BreakoutAgent:
         mkt = _build_market_context(ctx)
         prompt = (
             f"{mkt}\n"
-            "Detect breakout setups from consolidation ranges using volume_ratio and atr_14 above. "
+            f"{self.TASK} "
             "Output JSON: action, confidence, reasoning, evidence_ids."
         )
-        resp = self._gw.generate(self._gw.fast_model, _SYSTEM_BASE, prompt)
-        return _safe_vote(self.name, resp.get("model_id", self._gw.fast_model), resp, ctx.evidence_ids)
+        model = getattr(self._gw, self.MODEL_ATTR)
+        resp = self._gw.generate(model, _SYSTEM_BASE, prompt)
+        return _safe_vote(self.name, resp.get("model_id", model), resp, ctx.evidence_ids)
 
 
 class GapEventAgent:
     name = "GapEventAgent"
+    MODEL_ATTR = "fast_model"
+    TASK = "Assess gap fill or gap continuation potential based on overnight events and the indicators above."
 
     def __init__(self, gateway: LocalModelGateway) -> None:
         self._gw = gateway
@@ -255,15 +274,18 @@ class GapEventAgent:
         mkt = _build_market_context(ctx)
         prompt = (
             f"{mkt}\n"
-            "Assess gap fill or gap continuation potential based on overnight events and the indicators above. "
+            f"{self.TASK} "
             "Output JSON: action, confidence, reasoning, evidence_ids."
         )
-        resp = self._gw.generate(self._gw.fast_model, _SYSTEM_BASE, prompt)
-        return _safe_vote(self.name, resp.get("model_id", self._gw.fast_model), resp, ctx.evidence_ids)
+        model = getattr(self._gw, self.MODEL_ATTR)
+        resp = self._gw.generate(model, _SYSTEM_BASE, prompt)
+        return _safe_vote(self.name, resp.get("model_id", model), resp, ctx.evidence_ids)
 
 
 class PairsStatArbAgent:
     name = "PairsStatArbAgent"
+    MODEL_ATTR = "fast_model"
+    TASK = "Identify pairs trading and statistical arbitrage opportunities among the symbols above."
 
     def __init__(self, gateway: LocalModelGateway) -> None:
         self._gw = gateway
@@ -272,11 +294,12 @@ class PairsStatArbAgent:
         mkt = _build_market_context(ctx)
         prompt = (
             f"{mkt}\n"
-            "Identify pairs trading and statistical arbitrage opportunities among the symbols above. "
+            f"{self.TASK} "
             "Output JSON: action, confidence, reasoning, evidence_ids."
         )
-        resp = self._gw.generate(self._gw.fast_model, _SYSTEM_BASE, prompt)
-        return _safe_vote(self.name, resp.get("model_id", self._gw.fast_model), resp, ctx.evidence_ids)
+        model = getattr(self._gw, self.MODEL_ATTR)
+        resp = self._gw.generate(model, _SYSTEM_BASE, prompt)
+        return _safe_vote(self.name, resp.get("model_id", model), resp, ctx.evidence_ids)
 
 
 class OptionsVolatilityAgent:
@@ -313,6 +336,8 @@ class OptionsVolatilityAgent:
 
 class FuturesCarryAgent:
     name = "FuturesCarryAgent"
+    MODEL_ATTR = "fast_model"
+    TASK = "Evaluate futures carry, basis, and roll yield opportunities for the symbols above."
 
     def __init__(self, gateway: LocalModelGateway) -> None:
         self._gw = gateway
@@ -321,15 +346,21 @@ class FuturesCarryAgent:
         mkt = _build_market_context(ctx)
         prompt = (
             f"{mkt}\n"
-            "Evaluate futures carry, basis, and roll yield opportunities for the symbols above. "
+            f"{self.TASK} "
             "Output JSON: action, confidence, reasoning, evidence_ids."
         )
-        resp = self._gw.generate(self._gw.fast_model, _SYSTEM_BASE, prompt)
-        return _safe_vote(self.name, resp.get("model_id", self._gw.fast_model), resp, ctx.evidence_ids)
+        model = getattr(self._gw, self.MODEL_ATTR)
+        resp = self._gw.generate(model, _SYSTEM_BASE, prompt)
+        return _safe_vote(self.name, resp.get("model_id", model), resp, ctx.evidence_ids)
 
 
 class HedgeBuilderAgent:
     name = "HedgeBuilderAgent"
+    MODEL_ATTR = "fast_model"
+    TASK = (
+        "Recommend hedges to reduce tail risk without excessive cost, "
+        "considering the portfolio drawdown and tail_risk_score above."
+    )
 
     def __init__(self, gateway: LocalModelGateway) -> None:
         self._gw = gateway
@@ -338,12 +369,32 @@ class HedgeBuilderAgent:
         mkt = _build_market_context(ctx)
         prompt = (
             f"{mkt}\n"
-            "Recommend hedges to reduce tail risk without excessive cost, "
-            "considering the portfolio drawdown and tail_risk_score above. "
+            f"{self.TASK} "
             "Output JSON: action (HEDGE/HOLD), confidence, reasoning, evidence_ids."
         )
-        resp = self._gw.generate(self._gw.fast_model, _SYSTEM_BASE, prompt)
-        return _safe_vote(self.name, resp.get("model_id", self._gw.fast_model), resp, ctx.evidence_ids)
+        model = getattr(self._gw, self.MODEL_ATTR)
+        resp = self._gw.generate(model, _SYSTEM_BASE, prompt)
+        return _safe_vote(self.name, resp.get("model_id", model), resp, ctx.evidence_ids)
+
+
+# Every specialist that calls the LLM gateway via a single TASK instruction
+# (i.e. every one of the 10 AgentCouncilSupervisor first-wave agents except
+# OptionsVolatilityAgent, which is deterministic -- see its own docstring).
+# Each entry's MODEL_ATTR/TASK are read directly off the class so the batched
+# path (AgentCouncilSupervisor.consult()/_run_many_locked(), via run_batch()
+# below) can never drift from the single-instrument prompt text these classes'
+# own run() methods use.
+BATCHABLE_AGENT_CLASSES: tuple[type, ...] = (
+    TrendMomentumAgent,
+    MeanReversionAgent,
+    BreakoutAgent,
+    GapEventAgent,
+    PairsStatArbAgent,
+    FuturesCarryAgent,
+    HedgeBuilderAgent,
+    NewsMacroAgent,
+    QuantResearchAgent,
+)
 
 
 # ── Evaluation agents (non-vote return types) ─────────────────────────────────

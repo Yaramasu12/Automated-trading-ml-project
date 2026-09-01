@@ -567,7 +567,14 @@ class MasterOrchestrator:
                     portfolio_state=ps,
                     market_regime=state.regime,
                 )
-                council_result = council.run(council_ctx)
+                # consult(), not run(): batches this underlying's LLM specialist
+                # calls together with whatever other underlyings' specialist_crew
+                # nodes are admitted in the same ~2s window (AgentCouncilSupervisor
+                # -- see its consult() docstring for the measured 2026-09-01
+                # problem this solves: even one uncontended call took 62.9s, so
+                # per-underlying fan-out could not fit inside the per-agent budget
+                # regardless of how many underlyings shared the queue).
+                council_result = council.consult(council_ctx)
                 # Extract action and confidence from AgentCouncilDecision dataclass
                 c_action_raw = getattr(council_result, "action", "NO_TRADE")
                 c_conf = float(getattr(council_result, "confidence", crew_confidence) or 0.0)

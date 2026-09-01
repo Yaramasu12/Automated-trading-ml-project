@@ -52,6 +52,11 @@ class _FixedCouncil:
     def run(self, ctx):
         return SimpleNamespace(action=self.action, confidence=self.confidence)
 
+    # _node_specialist_crew calls consult() (batched path), not run(), as of
+    # 2026-09-01 -- see AgentCouncilSupervisor.consult()'s docstring. Same
+    # scripted behavior either way for this deterministic test double.
+    consult = run
+
 
 def _orchestrator(crew, council) -> MasterOrchestrator:
     o = MasterOrchestrator.__new__(MasterOrchestrator)   # skip __init__, no runtime needed

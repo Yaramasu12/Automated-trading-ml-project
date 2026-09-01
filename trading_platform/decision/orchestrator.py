@@ -314,7 +314,11 @@ class DecisionCycleOrchestrator:
                     portfolio_state=portfolio_state,
                     market_regime=regime,
                 )
-                council_decision = self._rt._agent_council.run(ctx)
+                # consult(), not run(): shares a batched LLM dispatch with
+                # whatever other consults (from this or concurrent /high-end/scan
+                # calls, or the live agent's own per-underlying scans) land in
+                # the same ~2s window — see AgentCouncilSupervisor.consult().
+                council_decision = self._rt._agent_council.consult(ctx)
                 result["ai_council"] = council_decision.to_dict()
                 try:
                     publish_agent_vote(self._rt.typed_bus, council_decision.to_dict())

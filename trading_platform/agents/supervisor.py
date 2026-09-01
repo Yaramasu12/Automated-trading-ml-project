@@ -34,7 +34,9 @@ AgentCouncilDecision aggregates all returned evidence_ids.
 
 import concurrent.futures
 import logging
+import os
 import threading
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Callable
 
 from trading_platform.agents.schemas import (
@@ -45,6 +47,8 @@ from trading_platform.agents.schemas import (
     StrategyProposal,
 )
 from trading_platform.agents.specialists import (
+    BATCHABLE_AGENT_CLASSES,
+    DEFAULT_BATCH_SIZE,
     BreakoutAgent,
     ExecutionAnalystAgent,
     FuturesCarryAgent,
@@ -58,6 +62,8 @@ from trading_platform.agents.specialists import (
     QuantResearchAgent,
     RiskCriticAgent,
     TrendMomentumAgent,
+    chunk_contexts,
+    run_batch,
 )
 from trading_platform.agents.voting import aggregate_to_action, compute_consensus, has_veto
 
@@ -72,6 +78,22 @@ _HIGH_CONVICTION_THRESHOLD = 0.80
 
 # Each strategy agent has this many seconds before it receives a stub HOLD vote.
 _PER_AGENT_TIMEOUT_S = 10
+
+# consult()'s batch-collection window: how long to wait, after the first
+# consult() call in a new batch, for other concurrently-scanning underlyings
+# to join the same batched dispatch (see consult()'s docstring). Short enough
+# that no single underlying's decision is meaningfully delayed; long enough
+# that AGENT_SCAN_CONCURRENCY's normal overlap (many underlyings' specialist_
+# crew nodes reaching admission within milliseconds of each other) usually
+# lands in the same window.
+_BATCH_WINDOW_S = float(os.getenv("COUNCIL_BATCH_WINDOW_SECONDS", "2.0"))
+
+
+@dataclass
+class _PendingConsult:
+    ctx: AgentInputContext
+    done: threading.Event = field(default_factory=threading.Event)
+    decision: AgentCouncilDecision | None = None
 
 
 class AgentCouncilSupervisor:
@@ -99,6 +121,8 @@ class AgentCouncilSupervisor:
         confidence_threshold: float = 0.45,
         max_workers: int = 10,
         per_agent_timeout_s: int = _PER_AGENT_TIMEOUT_S,
+        batch_window_s: float = _BATCH_WINDOW_S,
+        max_batch_size: int = DEFAULT_BATCH_SIZE,
     ) -> None:
         self._gw = gateway
         self._trace_store = trace_store
@@ -109,6 +133,13 @@ class AgentCouncilSupervisor:
         # See run()'s docstring: serializes whole consults against each other,
         # not just individual generate() calls.
         self._run_lock = threading.Lock()
+        # See consult()'s docstring: collects concurrently-arriving consults
+        # into one batched dispatch instead of N separate ones.
+        self._batch_window_s = batch_window_s
+        self._max_batch_size = max_batch_size
+        self._batch_lock = threading.Lock()
+        self._pending: list[_PendingConsult] = []
+        self._batch_timer: threading.Timer | None = None
 
         self._news = NewsMacroAgent(gateway)
         self._quant = QuantResearchAgent(gateway)
@@ -184,7 +215,6 @@ class AgentCouncilSupervisor:
         ctx = self._enrich_context_with_rag(ctx)
 
         votes: list[AgentVote] = []
-        proposals: list[StrategyProposal] = []
 
         # ── Step 1: parallel strategy agents with per-agent timeout ───────────
         strategy_tasks: list[tuple[str, Callable[[], AgentVote]]] = [
@@ -253,6 +283,18 @@ class AgentCouncilSupervisor:
                 failure_mode=f"timeout_{self._per_agent_timeout_s}s",
             ))
 
+        return self._assemble_decision(ctx, votes)
+
+    def _assemble_decision(self, ctx: AgentInputContext, votes: list[AgentVote]) -> AgentCouncilDecision:
+        """Steps 2-8: turn a completed vote set into a typed AgentCouncilDecision.
+
+        Extracted from _run_locked() so _run_many_locked() (the batched path
+        -- see consult()'s docstring) can reuse the exact same
+        proposal/risk-critic/PM/execution-analyst/consensus/debate logic
+        after collecting its votes via run_batch() instead of the parallel
+        per-context ThreadPoolExecutor dispatch _run_locked() uses.
+        """
+        proposals: list[StrategyProposal] = []
         # ── Step 2: build strategy proposals from votes ───────────────────────
         for v in votes:
             if v.action in ("BUY", "SELL") and v.confidence >= 0.5:
@@ -359,6 +401,115 @@ class AgentCouncilSupervisor:
         )
         self._write_trace(ctx.trace_id, decision)
         return decision
+
+    # ── Batched multi-underlying entry point ────────────────────────────────
+
+    def consult(self, ctx: AgentInputContext) -> AgentCouncilDecision:
+        """Thread-safe blocking entrypoint for master_orchestrator.py's
+        specialist_crew node (one call per admitted underlying, from
+        whatever worker thread that underlying's asyncio.to_thread landed on).
+
+        Collects concurrently-arriving consults into ONE batched dispatch
+        instead of firing each underlying's 9-agent LLM fan-out separately.
+        This is the fix for the root problem run()'s serialization lock only
+        contained, not solved: even a single, completely uncontended call to
+        the "fast" model measured 62.9s live 2026-09-01 -- with only 4
+        gateway concurrency slots, 9 LLM-calling agents per underlying
+        cannot all finish inside a 120s budget regardless of how many
+        underlyings share the queue. specialists.py's run_batch() (built and
+        unit-tested, but never wired into the live path until now) judges up
+        to _max_batch_size instruments in ONE call per specialist instead of
+        one call per (specialist, underlying) pair -- measured 20 instruments
+        in a single ~40.6s call, all 20 with real verdicts.
+
+        A consult joins the batch currently being collected (or starts a new
+        one) and blocks until that batch's specialist calls complete and its
+        own slice of the result is assembled. Bounded by
+        _per_agent_timeout_s plus a small margin, so a caller can never hang
+        past what the old per-context run() path would have taken.
+        """
+        req = _PendingConsult(ctx=ctx)
+        flush_now = False
+        with self._batch_lock:
+            self._pending.append(req)
+            if len(self._pending) == 1:
+                timer = threading.Timer(self._batch_window_s, self._flush_batch)
+                timer.daemon = True
+                self._batch_timer = timer
+                timer.start()
+            elif len(self._pending) >= self._max_batch_size:
+                flush_now = True
+        if flush_now:
+            self._flush_batch()
+        # Generous margin over the per-agent budget: a consult that joined
+        # right before flush still needs the full batch dispatch to run.
+        req.done.wait(timeout=self._per_agent_timeout_s + self._batch_window_s + 30.0)
+        if req.decision is not None:
+            return req.decision
+        logger.warning(
+            "AgentCouncilSupervisor: consult() for %s did not complete in time — stub decision",
+            ctx.symbols[0] if ctx.symbols else "UNKNOWN",
+        )
+        return AgentCouncilDecision(
+            trace_id=ctx.trace_id, action="NO_TRADE", confidence=0.0, consensus_score=0.0,
+            votes=[], strategy_proposals=[], debate_summary="consult_timeout",
+        )
+
+    def _flush_batch(self) -> None:
+        with self._batch_lock:
+            if self._batch_timer is not None:
+                self._batch_timer.cancel()
+                self._batch_timer = None
+            batch, self._pending = self._pending, []
+        if not batch:
+            return
+        with self._run_lock:  # same serialization guarantee run() gives individual consults
+            decisions = self._run_many_locked([r.ctx for r in batch])
+        for req in batch:
+            sym = req.ctx.symbols[0] if req.ctx.symbols else "UNKNOWN"
+            req.decision = decisions.get(sym)
+            req.done.set()
+
+    def _run_many_locked(self, contexts: list[AgentInputContext]) -> dict[str, AgentCouncilDecision]:
+        """Batched counterpart to _run_locked(): one run_batch() call per
+        specialist across ALL contexts, instead of one call per (specialist,
+        context). Returns {symbol: AgentCouncilDecision}, one per context.
+
+        chunk_contexts() further splits into groups of at most
+        self._max_batch_size, so an unusually large flush (e.g. max_batch_size
+        was hit exactly, plus a straggler) still respects the measured-safe
+        batch size instead of growing unbounded.
+        """
+        contexts = [self._enrich_context_with_rag(c) for c in contexts]
+        votes_by_symbol: dict[str, list[AgentVote]] = {
+            (c.symbols[0] if c.symbols else "UNKNOWN"): [] for c in contexts
+        }
+        for group in chunk_contexts(contexts, self._max_batch_size):
+            for agent_cls in BATCHABLE_AGENT_CLASSES:
+                model = getattr(self._gw, agent_cls.MODEL_ATTR)
+                try:
+                    votes = run_batch(self._gw, model, agent_cls.name, agent_cls.TASK, group)
+                except Exception as exc:
+                    logger.warning("AgentCouncilSupervisor: batch %s error: %s", agent_cls.name, exc)
+                    votes = [
+                        AgentVote(agent_name=agent_cls.name, action="HOLD", confidence=0.0,
+                                 reasoning="batch_error", failure_mode=str(exc)[:100])
+                        for _ in group
+                    ]
+                for ctx, vote in zip(group, votes):
+                    sym = ctx.symbols[0] if ctx.symbols else "UNKNOWN"
+                    votes_by_symbol[sym].append(vote)
+            # OptionsVolatilityAgent is deterministic (no LLM call) — cheap
+            # enough to run per-context even inside a batch.
+            for ctx in group:
+                sym = ctx.symbols[0] if ctx.symbols else "UNKNOWN"
+                votes_by_symbol[sym].append(self._opts_vol.run(ctx))
+
+        return {
+            (ctx.symbols[0] if ctx.symbols else "UNKNOWN"):
+                self._assemble_decision(ctx, votes_by_symbol[ctx.symbols[0] if ctx.symbols else "UNKNOWN"])
+            for ctx in contexts
+        }
 
     # ── 5-party debate ────────────────────────────────────────────────────────
 
