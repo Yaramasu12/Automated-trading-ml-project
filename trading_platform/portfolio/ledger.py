@@ -117,10 +117,20 @@ class PortfolioLedger:
         Callers that need a live mark-to-market should use mark_to_market() instead.
         Cost-basis equity is appropriate for session-start baselines because the
         daily P&L circuit breaker measures today's change, not absolute unrealized P&L.
+
+        quantity must stay SIGNED here (matching Position.market_value's convention),
+        not abs(quantity): a SHORT position already credited its premium to cash at
+        entry, so adding abs(qty)*avg_price*lot_size on top double-counts that premium
+        as if the short were held long. Confirmed live 2026-09-01: a restored PAPER
+        book with 4 short condor legs computed a cost-basis equity ~2.1% above the
+        mark-to-market equity from the very same instant, tripping the portfolio
+        guardian's daily-loss circuit breaker as a false positive on every restart
+        while any short position was open (session_start_equity, set from this
+        property, was inflated relative to the very next mark-to-market read).
         """
         with self._lock:
             cost_basis = sum(
-                abs(pos.quantity) * pos.average_price * pos.instrument.lot_size
+                pos.quantity * pos.average_price * pos.instrument.lot_size
                 for pos in self.positions.values()
                 if pos.quantity != 0
             )
