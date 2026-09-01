@@ -4439,6 +4439,7 @@ class TradingRuntime:
                     "primary": self.settings.local_llm_primary_model,
                     "coordinator": self.settings.local_llm_coordinator_model,
                     "fast": self.settings.local_llm_fast_model,
+                    "secondary": self.settings.local_llm_secondary_model,
                 },
                 "rag": {"enabled": False},
             }

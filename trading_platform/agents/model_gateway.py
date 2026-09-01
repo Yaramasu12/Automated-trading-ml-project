@@ -241,6 +241,7 @@ class LocalModelGateway:
                 "primary": self.primary_model,
                 "coordinator": self.coordinator_model,
                 "fast": self.fast_model,
+                "secondary": self.secondary_model,
             },
             "note": (
                 "Stub mode — deterministic safe responses" if self.runtime == "stub"
