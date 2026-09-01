@@ -1,6 +1,7 @@
 """Tests for the three supervisor gaps: debate, per-agent timeout, RAG evidence_ids."""
 from __future__ import annotations
 
+import threading
 import time
 import unittest
 from unittest.mock import MagicMock, patch
@@ -405,6 +406,59 @@ class TestRAGEvidenceIds(unittest.TestCase):
         self.assertIn(vote.action, {"BUY", "SELL", "HOLD", "REDUCE", "HALT", "HEDGE"})
         # model_id must be a real model name, not "ollama" / "stub"
         self.assertNotEqual(vote.model_id, "stub")
+
+
+class TestRunIsSerializedAcrossConcurrentConsults(unittest.TestCase):
+    """2026-09-01: council admission (_council_admission in
+    master_orchestrator.py) bounds how many consults happen per cycle, but
+    nothing bounded how many ran AT THE SAME INSTANT -- AGENT_SCAN_CONCURRENCY
+    lets many underlyings' scans overlap, and each consult fans out to 10
+    concurrent specialist calls against LocalModelGateway's 4-slot semaphore.
+    Confirmed live: 87% of calls stubbed via concurrency_saturated. run() now
+    holds a process-wide lock for its whole body so overlapping consults from
+    different underlyings queue instead of piling up. This proves the
+    serialization itself (no two run() bodies execute concurrently), not any
+    particular vote outcome."""
+
+    def test_two_concurrent_run_calls_never_overlap(self):
+        sup = AgentCouncilSupervisor(gateway=_stub_gw())
+        active = 0
+        max_active = 0
+        lock = threading.Lock()
+        real_enrich = sup._enrich_context_with_rag
+
+        def tracked_enrich(ctx):
+            nonlocal active, max_active
+            with lock:
+                active += 1
+                max_active = max(max_active, active)
+            try:
+                time.sleep(0.05)  # widen the window a real race would need
+                return real_enrich(ctx)
+            finally:
+                with lock:
+                    active -= 1
+
+        sup._enrich_context_with_rag = tracked_enrich
+
+        results: list[AgentCouncilDecision] = []
+        errors: list[Exception] = []
+
+        def worker(i: int) -> None:
+            try:
+                results.append(sup.run(_make_ctx(trace_id=f"concurrent-{i}")))
+            except Exception as exc:  # pragma: no cover - failure path
+                errors.append(exc)
+
+        threads = [threading.Thread(target=worker, args=(i,)) for i in range(4)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=10)
+
+        self.assertEqual(errors, [])
+        self.assertEqual(len(results), 4)
+        self.assertEqual(max_active, 1, "two run() bodies executed concurrently despite the lock")
 
 
 if __name__ == "__main__":

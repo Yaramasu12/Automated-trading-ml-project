@@ -34,6 +34,7 @@ AgentCouncilDecision aggregates all returned evidence_ids.
 
 import concurrent.futures
 import logging
+import threading
 from typing import TYPE_CHECKING, Callable
 
 from trading_platform.agents.schemas import (
@@ -105,6 +106,9 @@ class AgentCouncilSupervisor:
         self._confidence_threshold = confidence_threshold
         self._max_workers = max_workers
         self._per_agent_timeout_s = per_agent_timeout_s
+        # See run()'s docstring: serializes whole consults against each other,
+        # not just individual generate() calls.
+        self._run_lock = threading.Lock()
 
         self._news = NewsMacroAgent(gateway)
         self._quant = QuantResearchAgent(gateway)
@@ -152,7 +156,31 @@ class AgentCouncilSupervisor:
     # ── Main entry point ──────────────────────────────────────────────────────
 
     def run(self, ctx: AgentInputContext) -> AgentCouncilDecision:
-        """Synchronous entrypoint for non-async callers."""
+        """Synchronous entrypoint for non-async callers.
+
+        Serialized process-wide via self._run_lock. Council admission
+        (master_orchestrator._council_admission) already bounds how many
+        consults happen per cycle (6/300s default), but does nothing to
+        bound how many run AT THE SAME INSTANT: AGENT_SCAN_CONCURRENCY lets
+        many underlyings' scans overlap in wall-clock time, and each
+        admitted consult fans out to 10 concurrent specialist calls on its
+        own. Without this lock, several overlapping consults could fire 60+
+        simultaneous generate() calls at LocalModelGateway's 4-slot
+        semaphore at once -- confirmed live 2026-09-01: 87% of calls
+        stubbed via concurrency_saturated, with per-agent "timed out after
+        120s" log lines far exceeding what a healthy 4-slot/10-agent ratio
+        should produce. Serializing consults bounds peak concurrent demand
+        to one consult's fan-out (10) against the gateway's 4 slots --
+        worse than ideal but a tractable ~3 waves instead of an unbounded
+        pile-up. Safe to serialize: the council is advisory-only
+        (CLAUDE.md) and never gates a trade on its own, so a queued consult
+        delays how quickly its opinion blends into crew_confidence, not any
+        hard risk gate.
+        """
+        with self._run_lock:
+            return self._run_locked(ctx)
+
+    def _run_locked(self, ctx: AgentInputContext) -> AgentCouncilDecision:
         ctx = self._enrich_context_with_rag(ctx)
 
         votes: list[AgentVote] = []

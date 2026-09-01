@@ -468,9 +468,16 @@ class DecisionPipeline:
                                 "Angel One candle rate-limit hit — backing off ALL candle calls 60s"
                             )
                         note_swallowed("pipeline.real_bars_fallback", exc)
+                        # No synthetic data is used here — this raises rather than
+                        # falling through (see MarketDataUnavailable below). The
+                        # message must say so explicitly: it used to read
+                        # "SYNTHETIC-DATA FALLBACK", which was accurate before this
+                        # fail-closed behavior existed but is misleading now that
+                        # every real attempt failing means the underlying is
+                        # skipped, never traded on fabricated bars.
                         logger.warning(
-                            "SYNTHETIC-DATA FALLBACK for %s (%s) — decisions for this symbol are NOT "
-                            "based on the real market this scan", underlying, msg[:120],
+                            "REAL DATA UNAVAILABLE for %s (%s) — skipping this underlying "
+                            "this scan, NOT substituting synthetic bars", underlying, msg[:120],
                         )
                         # Fail closed: history_provider was configured (real data
                         # was expected), and every real attempt failed. Do NOT
@@ -489,8 +496,8 @@ class DecisionPipeline:
                         RuntimeError("candle rate-limit cooldown active"),
                     )
                     logger.warning(
-                        "SYNTHETIC-DATA FALLBACK for %s (rate-limit cooldown active) — decisions "
-                        "for this symbol are NOT based on the real market this scan", underlying,
+                        "REAL DATA UNAVAILABLE for %s (rate-limit cooldown active) — skipping "
+                        "this underlying this scan, NOT substituting synthetic bars", underlying,
                     )
                     raise MarketDataUnavailable(
                         f"real bars unavailable for {underlying}: rate-limit cooldown active"
