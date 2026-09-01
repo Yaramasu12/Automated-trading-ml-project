@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 import os
+import sys
 from dataclasses import dataclass, field
 from datetime import time
 from pathlib import Path
@@ -817,6 +818,20 @@ class Settings:
 
 
 def load_settings() -> Settings:
+    # Nothing in this app's startup path ever called logging.basicConfig(),
+    # so the root logger had no handler and every note_swallowed()/logger.warning()
+    # call from trading_platform code was invisible in `docker logs` regardless
+    # of volume (confirmed 2026-08-31: 1197 swallowed exceptions counted in
+    # /health, 0 corresponding WARNING lines in 34h of container logs) — only
+    # uvicorn's own separately-configured "uvicorn.access" logger was visible.
+    # basicConfig() is a documented no-op if a handler is already attached to
+    # root, so this is safe to call from every load_settings() invocation
+    # (including the many per-test calls) without duplicating handlers.
+    logging.basicConfig(
+        level=logging.WARNING,
+        stream=sys.stdout,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    )
     install_secret_redaction()
     load_local_env_files()
 

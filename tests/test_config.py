@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import os
 import tempfile
 import unittest
@@ -50,6 +51,42 @@ class AnnualTargetPctTests(unittest.TestCase):
         with mock.patch.dict(os.environ, {"ANNUAL_TARGET_PCT": "0.28"}):
             settings = load_settings()
         self.assertEqual(settings.annual_target_pct, 0.28)
+
+
+class LoadSettingsConfiguresLoggingTests(unittest.TestCase):
+    """2026-08-31: nothing in the app's startup path called logging.basicConfig(),
+    so the root logger had no handler and every note_swallowed()/logger.warning()
+    call was invisible in `docker logs` regardless of volume — confirmed live:
+    1197 swallowed exceptions counted in /health, 0 corresponding WARNING lines
+    in 34h of container logs. load_settings() must attach a handler so WARNING+
+    records actually reach a stream."""
+
+    def test_root_logger_gets_a_handler_capable_of_warning(self):
+        root = logging.getLogger()
+        original_handlers = list(root.handlers)
+        original_level = root.level
+        root.handlers = []
+        try:
+            load_settings()
+            self.assertTrue(root.handlers, "load_settings() must attach a handler to the root logger")
+            self.assertTrue(root.isEnabledFor(logging.WARNING))
+        finally:
+            root.handlers = original_handlers
+            root.setLevel(original_level)
+
+    def test_is_idempotent_across_repeated_calls(self):
+        root = logging.getLogger()
+        original_handlers = list(root.handlers)
+        original_level = root.level
+        root.handlers = []
+        try:
+            load_settings()
+            first_count = len(root.handlers)
+            load_settings()
+            self.assertEqual(len(root.handlers), first_count)
+        finally:
+            root.handlers = original_handlers
+            root.setLevel(original_level)
 
 
 if __name__ == "__main__":
