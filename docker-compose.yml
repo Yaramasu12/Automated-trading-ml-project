@@ -163,6 +163,13 @@ services:
       - LOCAL_LLM_BASE_URL=${LOCAL_LLM_BASE_URL:-http://localhost:11434}
       - LOCAL_LLM_PRIMARY_MODEL=${LOCAL_LLM_PRIMARY_MODEL:-gemma4-31b}
       - LOCAL_LLM_FAST_MODEL=${LOCAL_LLM_FAST_MODEL:-gemma4-e4b}
+      # 4th model-pool slot (see config.py's local_llm_secondary_model /
+      # specialists.py's BATCHABLE_AGENT_CLASSES) -- this line was missing
+      # entirely when the setting was first added, so .env's value never
+      # reached the container; Settings' own default-to-fast_model fallback
+      # silently masked the gap (confirmed live 2026-09-01: /ai-council/status
+      # reported secondary == fast instead of the distinct 4th model).
+      - LOCAL_LLM_SECONDARY_MODEL=${LOCAL_LLM_SECONDARY_MODEL:-}
       - LOCAL_LLM_COORDINATOR_MODEL=${LOCAL_LLM_COORDINATOR_MODEL:-gemma4-26b-moe}
       - LOCAL_LLM_EMBEDDING_MODEL=${LOCAL_LLM_EMBEDDING_MODEL:-text-embedding-nomic-embed-text-v1.5}
       - LOCAL_LLM_SENTIMENT_MODEL=${LOCAL_LLM_SENTIMENT_MODEL:-llama-3-8b-instruct-finance-rag}
