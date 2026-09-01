@@ -39,6 +39,21 @@ def _stub_gw(runtime: str = "stub") -> LocalModelGateway:
     return LocalModelGateway(runtime=runtime)
 
 
+class _RespondingGateway:
+    """Minimal LocalModelGateway stand-in that returns a fixed reply dict,
+    for agents that need a specific (possibly malformed) response shape
+    rather than the deterministic stub gateway's canned vote."""
+    fast_model = "fake-fast"
+    primary_model = "fake-primary"
+    coordinator_model = "fake-coordinator"
+
+    def __init__(self, reply: dict) -> None:
+        self._reply = reply
+
+    def generate(self, model, system, prompt, **kw):
+        return dict(self._reply)
+
+
 # ── Gap 1: 5-party debate ─────────────────────────────────────────────────────
 
 class TestDebateRoundSchema(unittest.TestCase):
@@ -362,6 +377,54 @@ class TestRAGEvidenceIds(unittest.TestCase):
         # In stub mode with no RAG the gateway returns [], but ctx ids must appear
         self.assertIn("pre-retrieved-1", vote.evidence_ids)
         self.assertIn("pre-retrieved-2", vote.evidence_ids)
+
+
+class TestSafeVoteToleratesMalformedConfidence(unittest.TestCase):
+    """2026-09-01: a live, uncontended call to google/gemma-4-e4b via LM Studio
+    returned syntactically-valid JSON with confidence="Medium" -- a descriptive
+    string, not a number. The old bare float(response["confidence"]) raised
+    ValueError, which the caller's except Exception then turned into an
+    "agent_error" stub -- discarding a real action + substantive reasoning the
+    model actually produced, purely because of one malformed field. A model
+    failing to follow the confidence(0.0-1.0) instruction is a real,
+    non-hypothetical failure mode, not just theoretical robustness."""
+
+    def test_string_confidence_does_not_raise_and_uses_default(self):
+        gw_response = {"action": "BUY", "confidence": "Medium", "reasoning": "trend looks strong"}
+        vote = _safe_vote("Agent", "gemma4-e4b", gw_response, None)
+        self.assertEqual(vote.action, "BUY")
+        self.assertEqual(vote.confidence, 0.5)
+        self.assertEqual(vote.reasoning, "trend looks strong")
+
+    def test_none_confidence_uses_default(self):
+        gw_response = {"action": "HOLD", "confidence": None, "reasoning": ""}
+        vote = _safe_vote("Agent", "gemma4-e4b", gw_response, None)
+        self.assertEqual(vote.confidence, 0.5)
+
+    def test_out_of_range_confidence_is_clamped(self):
+        gw_response = {"action": "SELL", "confidence": 4.2, "reasoning": ""}
+        vote = _safe_vote("Agent", "gemma4-e4b", gw_response, None)
+        self.assertEqual(vote.confidence, 1.0)
+
+    def test_negative_confidence_is_clamped(self):
+        gw_response = {"action": "SELL", "confidence": -0.3, "reasoning": ""}
+        vote = _safe_vote("Agent", "gemma4-e4b", gw_response, None)
+        self.assertEqual(vote.confidence, 0.0)
+
+    def test_execution_analyst_tolerates_malformed_max_slice(self):
+        from trading_platform.agents.specialists import ExecutionAnalystAgent
+        gw = _RespondingGateway({"preferred_order_type": "LIMIT", "max_slice_size_pct": "a lot",
+                                 "reasoning": "thin book"})
+        advice = ExecutionAnalystAgent(gw).run(_make_ctx())
+        self.assertEqual(advice.max_slice_size_pct, 1.0)
+
+    def test_portfolio_manager_tolerates_malformed_fields(self):
+        from trading_platform.agents.specialists import PortfolioManagerAgent
+        gw = _RespondingGateway({"expected_return_estimate": "high", "max_heat": "n/a",
+                                 "reasoning": "diversify"})
+        proposal = PortfolioManagerAgent(gw).run(_make_ctx(), [])
+        self.assertEqual(proposal.expected_return_estimate, 0.0)
+        self.assertEqual(proposal.max_heat, 0.5)
 
     def test_reversion_agent_merges_ctx_evidence(self):
         gw = _stub_gw()

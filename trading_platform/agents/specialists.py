@@ -42,6 +42,26 @@ _SYSTEM_BASE = (
 _VALID_ACTIONS = frozenset({"BUY", "SELL", "HOLD", "REDUCE", "HALT", "HEDGE"})
 
 
+def _safe_float(value: Any, default: float, lo: float | None = None, hi: float | None = None) -> float:
+    """Coerce a model-returned field to float, defaulting on any failure
+    instead of raising. Confirmed live 2026-09-01: google/gemma-4-e4b
+    returned confidence="Medium" -- a descriptive string, not a number --
+    inside otherwise-valid JSON. The old bare float(response["confidence"])
+    raised ValueError uncaught here, which the caller's try/except then
+    turned into an "agent_error" stub -- discarding an otherwise-usable
+    vote (a real action + substantive reasoning) purely because of one
+    malformed field, indistinguishable from a genuine agent failure."""
+    try:
+        result = float(value)
+    except (TypeError, ValueError):
+        return default
+    if lo is not None:
+        result = max(lo, result)
+    if hi is not None:
+        result = min(hi, result)
+    return result
+
+
 def _build_market_context(ctx: AgentInputContext) -> str:
     """Build a compact market context block from all available ctx fields.
 
@@ -129,7 +149,7 @@ def _safe_vote(
     return AgentVote(
         agent_name=agent_name,
         action=action,
-        confidence=float(response.get("confidence", 0.5)),
+        confidence=_safe_float(response.get("confidence"), 0.5, 0.0, 1.0),
         reasoning=reasoning,
         evidence_ids=merged_ids,
         model_id=model_id,
@@ -397,7 +417,7 @@ class ExecutionAnalystAgent:
         return ExecutionAdvice(
             avoid_windows=list(resp.get("avoid_windows", [])),
             preferred_order_type=pref,
-            max_slice_size_pct=float(resp.get("max_slice_size_pct", 1.0)),
+            max_slice_size_pct=_safe_float(resp.get("max_slice_size_pct"), 1.0, 0.0, 1.0),
             reasoning=str(resp.get("reasoning", ""))[:300],
             model_id=resp.get("model_id", self._gw.fast_model),
         )
@@ -424,8 +444,8 @@ class PortfolioManagerAgent:
         resp = self._gw.generate(self._gw.coordinator_model, system, prompt)
         return PortfolioProposal(
             preferred_basket=list(resp.get("preferred_basket", [])),
-            expected_return_estimate=float(resp.get("expected_return_estimate", 0.0)),
-            max_heat=float(resp.get("max_heat", 0.5)),
+            expected_return_estimate=_safe_float(resp.get("expected_return_estimate"), 0.0),
+            max_heat=_safe_float(resp.get("max_heat"), 0.5, 0.0, 1.0),
             hedge_request=resp.get("hedge_request"),
             target_run_rate_ok=bool(resp.get("target_run_rate_ok", True)),
             reasoning=str(resp.get("reasoning", ""))[:300],
