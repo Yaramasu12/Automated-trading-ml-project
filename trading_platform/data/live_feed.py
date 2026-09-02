@@ -898,10 +898,21 @@ class LiveTickFeed:
     def _on_error(self, ws, error, shard: "_Shard | None" = None) -> None:
         logger.error("LiveTickFeed WebSocket error (shard %d): %s", shard.index if shard else 0, error)
 
-    def _on_close(self, ws, shard: "_Shard | None" = None) -> None:
+    def _on_close(self, ws, code=None, reason=None, shard: "_Shard | None" = None) -> None:
+        # Bound via functools.partial(self._on_close, shard=shard) same as
+        # _on_data/_on_error above -- but unlike those two, this one was
+        # missing the middle positional slot for the library's own close
+        # args (standard websocket-client on_close(ws, code, reason)
+        # convention, matching the raw-websocket _on_close() near the top of
+        # this file). With only (self, ws, shard=None), the library's actual
+        # 2nd positional arg landed in the `shard` slot and collided with
+        # the keyword already bound by partial: "got multiple values for
+        # argument 'shard'" on every single close, confirmed live
+        # 2026-09-02 -- which broke cleanup on every reconnect attempt, not
+        # just an occasional one.
         logger.warning(
-            "LiveTickFeed WebSocket closed (shard %d) [%s] — will reconnect if still running",
-            shard.index if shard else 0, self._connection_id,
+            "LiveTickFeed WebSocket closed (shard %d) [%s] code=%s reason=%s — will reconnect if still running",
+            shard.index if shard else 0, self._connection_id, code, reason,
         )
 
     def _parse(self, message) -> Tick | None:

@@ -194,6 +194,50 @@ class RunOrchestrationTests(unittest.TestCase):
         self.assertEqual(ran_inline, [0])
 
 
+class OnCloseTests(unittest.TestCase):
+    """2026-09-02: confirmed live -- every WebSocket close (including the
+    routine ones during normal reconnects, not just failures) raised
+    'LiveTickFeed._on_close() got multiple values for argument shard'.
+    _on_close's signature was (self, ws, shard=None), missing the middle
+    positional slot _on_data/_on_error both have for the library's own
+    callback args -- so the library's real 2nd positional arg (the close
+    code) landed in the shard slot and collided with functools.partial's
+    keyword-bound shard. This corrupted cleanup on every single reconnect
+    attempt, not an occasional one, and directly caused the observed
+    "failed to reconnect 10 times" cascade."""
+
+    def test_on_close_accepts_library_call_signature_via_partial(self):
+        """Reproduces the exact real call path: shard.ws.on_close =
+        functools.partial(self._on_close, shard=shard), then the
+        websocket-client library invokes it as on_close(ws, code, reason)."""
+        import functools
+
+        feed = LiveTickFeed(_settings())
+        feed._assign_symbols_to_shards(["A"])
+        shard = feed._shards[0]
+        fake_ws = mock.Mock()
+
+        bound_close = functools.partial(feed._on_close, shard=shard)
+        bound_close(fake_ws, 1006, "ping/pong timed out")  # must not raise
+
+    def test_on_close_works_with_no_code_or_reason(self):
+        import functools
+
+        feed = LiveTickFeed(_settings())
+        feed._assign_symbols_to_shards(["A"])
+        shard = feed._shards[0]
+        fake_ws = mock.Mock()
+
+        bound_close = functools.partial(feed._on_close, shard=shard)
+        bound_close(fake_ws)  # must not raise
+
+    def test_on_close_without_shard_defaults_to_index_zero_in_log(self):
+        feed = LiveTickFeed(_settings())
+        with self.assertLogs("trading_platform.data.live_feed", level="WARNING") as captured:
+            feed._on_close(mock.Mock(), 1000, "normal closure")
+        self.assertTrue(any("shard 0" in line for line in captured.output))
+
+
 class SnapshotShardHealthTests(unittest.TestCase):
     def test_snapshot_reports_per_shard_health(self):
         feed = LiveTickFeed(_settings())
