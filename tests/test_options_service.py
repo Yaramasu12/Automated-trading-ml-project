@@ -33,6 +33,7 @@ def _svc() -> OptionsService:
         live_feed=None,
         greeks_calculator=_GreeksCalc(),
         iv_surface_builder=None,
+        instrument_master=None,
     )
 
 

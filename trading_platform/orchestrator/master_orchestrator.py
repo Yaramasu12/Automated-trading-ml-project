@@ -70,6 +70,7 @@ from dataclasses import replace
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
+from trading_platform.data.live_feed import resolve_underlying_reference_tick
 from trading_platform.orchestrator.market_rag import MarketRAG
 from trading_platform.orchestrator.profit_guard import ProfitGuard
 from trading_platform.orchestrator.reflection_engine import ReflectionEngine
@@ -294,7 +295,10 @@ class MasterOrchestrator:
                 return {}
         # Live-tick override on the last bar (mirrors DecisionPipeline.scan).
         try:
-            tick = rt.live_feed.latest_tick(underlying) if rt.live_feed is not None else None
+            tick = (
+                resolve_underlying_reference_tick(rt.live_feed, rt.instrument_master, underlying)
+                if rt.live_feed is not None else None
+            )
             if tick is not None and tick.last_price > 0:
                 from trading_platform.domain.models import MarketBar as _MB
                 last = bars[-1]

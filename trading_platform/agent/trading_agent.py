@@ -32,6 +32,7 @@ from trading_platform.agent.market_hours import (
     now_ist,
     seconds_to_next_open,
 )
+from trading_platform.data.live_feed import resolve_underlying_reference_tick
 from trading_platform.domain.enums import OrderPriority, OrderType, ProductType, Segment
 from trading_platform.domain.models import OrderIntent
 
@@ -768,7 +769,7 @@ class TradingAgent:
         """Best spot/last price for an underlying: live tick → last real bar close."""
         rt = self._runtime
         try:
-            tick = rt.live_feed.latest_tick(underlying)
+            tick = resolve_underlying_reference_tick(rt.live_feed, rt.instrument_master, underlying)
             if tick and getattr(tick, "last_price", 0) and tick.last_price > 0:
                 return float(tick.last_price)
         except Exception:

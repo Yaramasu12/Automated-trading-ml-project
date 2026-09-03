@@ -8,7 +8,9 @@ import unittest
 from types import SimpleNamespace
 from unittest import mock
 
-from trading_platform.data.live_feed import LiveTickFeed
+from datetime import date
+
+from trading_platform.data.live_feed import LiveTickFeed, Tick, resolve_underlying_reference_tick
 
 
 def _settings(max_symbols=3):
@@ -124,6 +126,100 @@ class ReconnectRobustnessTests(unittest.TestCase):
 
         self.assertFalse(feed._running)
         self.assertEqual(fake_ws_instance.connect.call_count, 1)
+
+
+def _tick(symbol: str, price: float) -> Tick:
+    return Tick(
+        symbol=symbol, token="1", exchange="MCX", last_price=price,
+        open=price, high=price, low=price, close=price, volume=0,
+    )
+
+
+class ResolveUnderlyingReferenceTickTests(unittest.TestCase):
+    """2026-09-03: MCX commodities have no cash/spot market -- only futures --
+    so live_feed.latest_tick(bare_underlying_name) always returned None for
+    them, while the front-month future (the same contract select_future()
+    resolves elsewhere) does tick. Confirmed live: this left every MCX
+    options-chain query at spot_price=0 despite real options data being
+    available, and separately hard-blocked every MCX futures entry via
+    pipeline.py's "no_live_tick" gate. 11 call sites across the codebase had
+    each reinvented the same bare-name-only lookup; this is the single
+    shared resolver they now all use instead."""
+
+    def test_returns_bare_name_tick_when_available(self):
+        """NSE indices/equities: the common case, no futures fallback needed."""
+        live_feed = mock.Mock()
+        live_feed.latest_tick.return_value = _tick("NIFTY", 24000.0)
+        instrument_master = mock.Mock()
+
+        tick = resolve_underlying_reference_tick(live_feed, instrument_master, "NIFTY")
+
+        self.assertEqual(tick.last_price, 24000.0)
+        instrument_master.select_future.assert_not_called()
+
+    def test_falls_back_to_front_month_future_for_mcx(self):
+        live_feed = mock.Mock()
+
+        def fake_latest_tick(symbol):
+            if symbol == "CRUDEOIL":
+                return None  # no cash/spot tick -- MCX has none
+            if symbol == "CRUDEOIL21SEP26FUT":
+                return _tick("CRUDEOIL21SEP26FUT", 6543.0)
+            return None
+
+        live_feed.latest_tick.side_effect = fake_latest_tick
+        instrument_master = mock.Mock()
+        instrument_master.select_future.return_value = SimpleNamespace(symbol="CRUDEOIL21SEP26FUT")
+
+        tick = resolve_underlying_reference_tick(
+            live_feed, instrument_master, "CRUDEOIL", as_of=date(2026, 9, 3)
+        )
+
+        self.assertIsNotNone(tick)
+        self.assertEqual(tick.last_price, 6543.0)
+        instrument_master.select_future.assert_called_once_with("CRUDEOIL", date(2026, 9, 3))
+
+    def test_zero_price_tick_also_triggers_fallback(self):
+        """A tick object that exists but carries last_price=0 (e.g. an echoed
+        placeholder) must not be treated as a usable reference price."""
+        live_feed = mock.Mock()
+
+        def fake_latest_tick(symbol):
+            if symbol == "GOLD":
+                return _tick("GOLD", 0.0)
+            if symbol == "GOLD05OCT26FUT":
+                return _tick("GOLD05OCT26FUT", 91234.0)
+            return None
+
+        live_feed.latest_tick.side_effect = fake_latest_tick
+        instrument_master = mock.Mock()
+        instrument_master.select_future.return_value = SimpleNamespace(symbol="GOLD05OCT26FUT")
+
+        tick = resolve_underlying_reference_tick(live_feed, instrument_master, "GOLD")
+
+        self.assertEqual(tick.last_price, 91234.0)
+
+    def test_no_future_contract_returns_none_not_raise(self):
+        """select_future() raises ValueError when no contract is found (its
+        own documented behavior) -- this must degrade to None, never propagate."""
+        live_feed = mock.Mock()
+        live_feed.latest_tick.return_value = None
+        instrument_master = mock.Mock()
+        instrument_master.select_future.side_effect = ValueError("No future contract found")
+
+        tick = resolve_underlying_reference_tick(live_feed, instrument_master, "UNKNOWN")
+
+        self.assertIsNone(tick)
+
+    def test_no_tick_at_all_returns_none(self):
+        live_feed = mock.Mock()
+        live_feed.latest_tick.return_value = None
+        instrument_master = mock.Mock()
+        instrument_master.select_future.return_value = SimpleNamespace(symbol="X01JAN27FUT")
+
+        tick = resolve_underlying_reference_tick(live_feed, instrument_master, "X")
+
+        self.assertIsNone(tick)
 
 
 if __name__ == "__main__":

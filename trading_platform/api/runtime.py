@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 from trading_platform.ai.agents import ModelPerformance, RetrainingAgent, RiskSupervisorAgent
 from trading_platform.ai.feature_store import FeatureStore
 from trading_platform.ai.models import GARCHForecaster, MetaModel, ModelRegistry, RegimeClassifier, SentimentAnalyzer, VolatilityForecaster
-from trading_platform.data.live_feed import LiveTickFeed
+from trading_platform.data.live_feed import LiveTickFeed, resolve_underlying_reference_tick
 from trading_platform.data.persistence import TradingDatabase
 from trading_platform.backtesting.charges import ChargesModel
 from trading_platform.backtesting.engine import BacktestConfig, BacktestEngine
@@ -559,6 +559,7 @@ class TradingRuntime:
             live_feed=self.live_feed,
             greeks_calculator=self.greeks_calculator,
             iv_surface_builder=self.iv_surface_builder,
+            instrument_master=self.instrument_master,
         )
 
     def _build_live_feed_service(self) -> LiveFeedService:
@@ -2868,7 +2869,7 @@ class TradingRuntime:
         if not underlying:
             return None
         try:
-            u_tick = self.live_feed.latest_tick(underlying)
+            u_tick = resolve_underlying_reference_tick(self.live_feed, self.instrument_master, underlying)
         except Exception:
             u_tick = None
         if not (u_tick and getattr(u_tick, "last_price", 0) and u_tick.last_price > 0):
@@ -4075,7 +4076,7 @@ class TradingRuntime:
         """Shared spot-price source for PortfolioGreeksCalculator and
         HistoricalVarCalculator — both need "the underlying's current
         price," not the option's own mark."""
-        tick = self.live_feed.latest_tick(underlying)
+        tick = resolve_underlying_reference_tick(self.live_feed, self.instrument_master, underlying)
         if tick and getattr(tick, "last_price", 0) and tick.last_price > 0:
             return float(tick.last_price)
         return None

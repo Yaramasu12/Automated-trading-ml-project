@@ -44,6 +44,7 @@ from collections import defaultdict
 import polars as pl
 
 from trading_platform.config import Settings
+from trading_platform.data.live_feed import resolve_underlying_reference_tick
 from trading_platform.data.market_adapter import FeedSource
 from trading_platform.derivatives.engine import GreeksCalculator, ImpliedVolatilityCalculator
 from trading_platform.domain.enums import OptionType, Segment
@@ -538,7 +539,7 @@ class OptionsChainCollector:
 
     def _spot_price(self, underlying: str) -> float:
         try:
-            tick = self._rt.live_feed.latest_tick(underlying)
+            tick = resolve_underlying_reference_tick(self._rt.live_feed, self._rt.instrument_master, underlying)
             if tick and getattr(tick, "last_price", 0) and tick.last_price > 0:
                 return float(tick.last_price)
         except Exception as exc:

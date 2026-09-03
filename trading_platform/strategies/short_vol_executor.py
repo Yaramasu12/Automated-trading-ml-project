@@ -26,6 +26,7 @@ from trading_platform.derivatives.engine import (
     ImpliedVolatilityCalculator,
     compute_iv_rank,
 )
+from trading_platform.data.live_feed import resolve_underlying_reference_tick
 from trading_platform.domain.enums import OptionType, Segment, Side
 from trading_platform.neural.vol_forecaster import VolatilityForecaster
 from trading_platform.strategies.short_vol import ShortVolStrategy
@@ -74,7 +75,7 @@ class ShortVolExecutor:
         closes = [b.close for b in bars] if bars else []
         spot = 0.0
         try:
-            tick = self._rt.live_feed.latest_tick(underlying)
+            tick = resolve_underlying_reference_tick(self._rt.live_feed, self._rt.instrument_master, underlying)
             if tick and getattr(tick, "last_price", 0) and tick.last_price > 0:
                 spot = float(tick.last_price)
         except Exception:

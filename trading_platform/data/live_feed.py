@@ -8,10 +8,10 @@ import threading
 import time
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from typing import Callable
 
-from trading_platform.agent.market_hours import is_entry_allowed, is_mcx_entry_allowed
+from trading_platform.agent.market_hours import is_entry_allowed, is_mcx_entry_allowed, now_ist
 from trading_platform.data.feed_staleness import FeedStalenessTracker
 from trading_platform.data.tick_v2 import make_tick_v2
 from trading_platform.streaming.tick_bus import TickBus
@@ -292,6 +292,38 @@ class Tick:
 
 
 TickHandler = Callable[[Tick], None]
+
+
+def resolve_underlying_reference_tick(
+    live_feed: "LiveTickFeed", instrument_master, underlying: str, as_of: date | None = None,
+) -> Tick | None:
+    """Best current tick to use as `underlying`'s REFERENCE/SPOT price for
+    strike selection and options-chain queries -- not a specific option
+    contract's own mark (see api/price_service.py's PriceResolutionService
+    for that, a deliberately separate concern for a different purpose).
+
+    Most underlyings (NSE/BSE indices and equities) have a real cash-market
+    tick under their own bare name, so live_feed.latest_tick(underlying)
+    just works. MCX commodities do not: MCX has no cash/spot market, only
+    futures, so latest_tick() on the bare commodity name (e.g. "CRUDEOIL")
+    always returns None there -- the live feed only ever ticks the specific
+    front-month CONTRACT symbol (e.g. "CRUDEOIL21SEP26FUT"), the same
+    instrument select_future() resolves elsewhere to size a subscription or
+    order. Confirmed live 2026-09-03: this exact gap left every MCX
+    options-chain query at spot_price=0 (191 real calls/191 real puts
+    already present, strike selection silently unusable anyway) -- 11
+    call sites across the codebase each called
+    live_feed.latest_tick(underlying) directly and would all hit the same
+    gap, hence one shared resolver here instead of patching each separately.
+    """
+    tick = live_feed.latest_tick(underlying)
+    if tick is not None and getattr(tick, "last_price", 0):
+        return tick
+    try:
+        future = instrument_master.select_future(underlying, as_of or now_ist().date())
+    except Exception:
+        return None
+    return live_feed.latest_tick(future.symbol)
 
 
 @dataclass

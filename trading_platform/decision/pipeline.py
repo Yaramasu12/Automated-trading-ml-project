@@ -13,6 +13,7 @@ from trading_platform.ai.agents import MarketRegimeAgent, StrategySelectionAgent
 from trading_platform.ai.features import FeatureEngine, FeatureSnapshot
 from trading_platform.ai.models import VolatilityForecast, VolatilityForecaster
 from trading_platform.data.instrument_master import InstrumentMaster
+from trading_platform.data.live_feed import resolve_underlying_reference_tick
 from trading_platform.data.market_data import SyntheticDataProvider
 from trading_platform.domain.enums import ExecutionMode, InstrumentType, OptionType, OrderType, ProductType, Segment
 from trading_platform.domain.models import Instrument, MarketBar, OrderIntent, Signal
@@ -195,7 +196,7 @@ class DecisionPipeline:
         bars = self._fetch_bars(underlying, start, days)
         # Override last bar's price with real live tick (keep bar timestamp unchanged)
         if self.live_feed is not None:
-            tick = self.live_feed.latest_tick(underlying)
+            tick = resolve_underlying_reference_tick(self.live_feed, self.instrument_master, underlying)
             if tick is not None and tick.last_price > 0:
                 last = bars[-1]
                 bars[-1] = MarketBar(
@@ -565,7 +566,7 @@ class DecisionPipeline:
         # the underlying, not the derivative quote).
         if self.live_feed is not None and instrument.instrument_type != InstrumentType.OPTION:
             try:
-                tick = self.live_feed.latest_tick(underlying)
+                tick = resolve_underlying_reference_tick(self.live_feed, self.instrument_master, underlying)
                 if tick is not None:
                     lp = tick.last_price if hasattr(tick, "last_price") else tick.get("last_price", 0)
                     if lp and lp > 0 and signal.price > 0:
@@ -672,7 +673,7 @@ class DecisionPipeline:
         # Prefer live tick price when available — it is always more accurate than any hardcoded value.
         if self.live_feed is not None:
             try:
-                tick = self.live_feed.latest_tick(underlying)
+                tick = resolve_underlying_reference_tick(self.live_feed, self.instrument_master, underlying)
                 if tick is not None:
                     lp = tick.last_price if hasattr(tick, "last_price") else tick.get("last_price", 0)
                     if lp and lp > 0:

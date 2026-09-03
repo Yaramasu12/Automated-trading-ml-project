@@ -16,6 +16,7 @@ from typing import Any
 
 from trading_platform.domain.enums import OptionType
 from trading_platform.agent.market_hours import now_ist
+from trading_platform.data.live_feed import resolve_underlying_reference_tick
 
 
 class OptionsService:
@@ -27,12 +28,14 @@ class OptionsService:
         live_feed: Any,
         greeks_calculator: Any,
         iv_surface_builder: Any,
+        instrument_master: Any,
     ) -> None:
         self.expiry_calendar = expiry_calendar
         self.option_chain_builder = option_chain_builder
         self.live_feed = live_feed
         self.greeks_calculator = greeks_calculator
         self.iv_surface_builder = iv_surface_builder
+        self.instrument_master = instrument_master
 
     def expiries(self, underlying: str) -> dict:
         today = now_ist().date()
@@ -47,7 +50,7 @@ class OptionsService:
     def option_chain(self, underlying: str, expiry: str | None = None, spot_price: float | None = None) -> dict:
         underlying = underlying.upper()
         if spot_price is None:
-            tick = self.live_feed.latest_tick(underlying)
+            tick = resolve_underlying_reference_tick(self.live_feed, self.instrument_master, underlying)
             if tick and tick.last_price > 0:
                 spot_price = tick.last_price
         spot = float(spot_price or 0.0)
@@ -131,7 +134,7 @@ class OptionsService:
         underlying = underlying.upper()
         # Use live feed spot if not provided
         if spot_price is None:
-            tick = self.live_feed.latest_tick(underlying)
+            tick = resolve_underlying_reference_tick(self.live_feed, self.instrument_master, underlying)
             if tick and tick.last_price > 0:
                 spot_price = tick.last_price
         spot = spot_price or 0.0
