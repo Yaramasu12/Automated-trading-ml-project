@@ -10,6 +10,15 @@ __pycache__/
 .mypy_cache/
 .idea/
 .vscode/
+
+# Claude Code personal/local settings — not something to share or commit.
+# Confirmed 2026-09-04: excluded on the host only via a global gitignore
+# Claude Code sets up outside this repo, which the agent-sai-project Docker
+# container's own isolated git config doesn't inherit, so `git status`
+# reported it as untracked from inside the container and tripped the
+# dirty-tree safety check on every run — tracking the exclusion in the repo
+# itself instead of relying on host-only config fixes it for every context.
+.claude/settings.local.json
 node_modules/
 dist/
 build/
