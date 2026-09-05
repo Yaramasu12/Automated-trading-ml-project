@@ -43,6 +43,8 @@ def aggregate_to_action(
     """Convert council vote summary into a final action."""
     if plurality_action == "HALT":
         return "HALT"
+    if plurality_action == "HOLD":
+        return "NO_TRADE"
     if consensus_score < consensus_threshold:
         return "NO_TRADE"
     if confidence_mean < confidence_threshold:
