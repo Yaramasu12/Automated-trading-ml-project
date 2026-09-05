@@ -2,7 +2,7 @@ from __future__ import annotations
 
 """Voting and consensus calculation for the agent council."""
 
-from collections import Counter
+from collections import defaultdict
 from typing import Literal
 
 from trading_platform.agents.schemas import AgentVote
@@ -17,11 +17,11 @@ def compute_consensus(votes: list[AgentVote]) -> tuple[str, float, float]:
     if not votes:
         return "HOLD", 0.0, 0.0
 
-    action_weights: Counter = Counter()
+    action_weights: defaultdict = defaultdict(float)
     for v in votes:
         action_weights[v.action] += v.confidence
 
-    plurality_action = action_weights.most_common(1)[0][0]
+    plurality_action = max(action_weights, key=action_weights.get)
     total_weight = sum(action_weights.values())
     consensus_score = action_weights[plurality_action] / total_weight if total_weight > 0 else 0.0
     confidence_mean = sum(v.confidence for v in votes) / len(votes)
