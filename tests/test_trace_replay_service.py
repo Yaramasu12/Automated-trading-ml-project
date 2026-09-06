@@ -66,6 +66,7 @@ class _FakeJournal:
 
 class _FakeOutcome:
     def recent_labels(self, _n): return []
+    def labels_for_trace(self, _trace_id): return []
 
 
 def _service(trace_dict):

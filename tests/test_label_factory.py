@@ -267,6 +267,19 @@ class TestOutcomeFactoryInspection:
             assert isinstance(item, dict)
             assert "symbol" in item
 
+    def test_labels_for_trace_matches_the_old_filter_pattern(self):
+        # trace_replay_service.py used to do exactly this filter over
+        # recent_labels(5000) — labels_for_trace() must return the same
+        # result, just without converting every label to a dict first.
+        factory = self._fill_factory(5)
+        old_pattern = [lbl for lbl in factory.recent_labels(5000) if lbl.get("trace_id") == "t2"]
+        assert factory.labels_for_trace("t2") == old_pattern
+        assert len(old_pattern) == 1
+
+    def test_labels_for_trace_empty_for_unknown_trace(self):
+        factory = self._fill_factory(3)
+        assert factory.labels_for_trace("no-such-trace") == []
+
 
 class TestOutcomeFactoryThreadSafety:
     def test_concurrent_entries_and_exits(self):

@@ -158,6 +158,35 @@ class TraceStore:
         with self._lock:
             if trace_id in self._traces:
                 return self._traces[trace_id]
+
+        # save()'s own INSERT OR REPLACE keeps a full, always-current mirror
+        # in decision_traces (trace_id TEXT PRIMARY KEY, so this is an
+        # indexed point lookup) — check it before falling back to a file
+        # scan. Found 2026-09-06: this method used to go straight to
+        # scanning every JSONL trace file (decompressing .gz ones) on any
+        # cache miss; with ~1500+ distinct trace_ids requested in one API
+        # call (M6 live-canary-readiness), that turned a single request
+        # into several CPU-bound minutes. The file scan below still runs
+        # for anything somehow missing from the mirror (e.g. a trace
+        # written before it existed) — it is not being removed, just no
+        # longer the first thing tried.
+        try:
+            cur = self._db_conn().execute(
+                "SELECT payload FROM decision_traces WHERE trace_id = ?", (trace_id,)
+            )
+            row = cur.fetchone()
+        except Exception as exc:
+            logger.warning("TraceStore: SQLite lookup failed for %s, falling back to file scan: %s", trace_id, exc)
+            row = None
+        if row is not None:
+            try:
+                t = DecisionTrace.from_dict(json.loads(row[0]))
+                with self._lock:
+                    self._traces[trace_id] = t
+                return t
+            except (json.JSONDecodeError, KeyError, TypeError) as exc:
+                logger.warning("TraceStore: corrupt SQLite payload for %s, falling back to file scan: %s", trace_id, exc)
+
         # Scan newest files and newest rows first. Trace updates are append-only,
         # so the latest matching row is the authoritative replay state.
         for path in self._trace_paths():
@@ -174,6 +203,54 @@ class TraceStore:
             except (OSError, json.JSONDecodeError):
                 continue
         return None
+
+    def backfill_sqlite_mirror(self) -> int:
+        """One-time, idempotent backfill of the SQLite mirror from the JSONL
+        trace files. Found 2026-09-06: get()'s new SQLite-first lookup (see
+        above) found a large historical gap between the two — most of
+        ~1500+ real trace_ids referenced by the paper learning journal
+        simply weren't in decision_traces at all, so every one of them fell
+        straight through to the slow file scan this fix exists to avoid.
+        Root cause unconfirmed (predates the mirror, or a past reset) — not
+        relevant to fixing the gap itself.
+
+        NOT run automatically at construction: a full multi-file scan is
+        exactly the slow operation get() exists to avoid paying repeatedly,
+        so startup must stay fast. Invoke once by hand after deploying this
+        fix (or from a maintenance script); safe to re-run any time — every
+        write is INSERT OR REPLACE, and this is the same source of truth
+        get()'s own file-scan fallback already reads.
+        """
+        conn = self._db_conn()
+        count = 0
+        # Oldest file first, oldest line first within each file, so a
+        # trace_id updated more than once ends up mirrored with its LATEST
+        # state — INSERT OR REPLACE keeps whichever write lands last, same
+        # "latest wins" semantics get()'s own file scan already relies on.
+        for path in reversed(self._trace_paths()):
+            try:
+                lines = self._read_lines(path)
+            except OSError:
+                continue
+            for line in lines:
+                if not line.strip():
+                    continue
+                try:
+                    d = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                trace_id = d.get("trace_id")
+                created_at = d.get("created_at")
+                if not trace_id or not created_at:
+                    continue
+                conn.execute(
+                    "INSERT OR REPLACE INTO decision_traces (trace_id, created_at, payload) VALUES (?, ?, ?)",
+                    (trace_id, created_at, line),
+                )
+                count += 1
+        conn.commit()
+        logger.info("TraceStore: backfilled %d trace row(s) into the SQLite mirror", count)
+        return count
 
     def iter_recent(self, max_traces: int = 100) -> Iterator[dict]:
         """Yield the most recent traces as dicts (newest first)."""

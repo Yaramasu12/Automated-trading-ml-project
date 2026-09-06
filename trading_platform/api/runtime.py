@@ -4313,18 +4313,54 @@ class TradingRuntime:
     def current_regime(self, symbol: str = "NIFTY") -> dict:
         return self._regime_meta_service.current_regime(symbol)
 
+    # /performance/summary (and /api/v1/performance, same code) evaluates
+    # every strategy against the full default scan universe via real
+    # backtests — genuinely heavy (~50-60 symbols x N strategies), not a
+    # bug. Found 2026-09-06 (TradingQA's own continuous checks) timing out
+    # at a 15s client budget every call. Caching just the backtest
+    # evaluation (not the whole response) fixes the repeat-call case
+    # honestly — same numbers, computed once per TTL window — while
+    # execution_quality/goal below stay live every call since they're cheap
+    # and genuinely time-sensitive. The FIRST call in a window is still
+    # slow; there's no way around a real backtest sweep completing at least
+    # once. 1800s (30 min), not a short TTL: TradingQA's own check cycle
+    # runs every 30 min, so a shorter TTL would mean every single check
+    # hits a cold cache and pays the full sweep cost anyway — same reasoning
+    # as policy_service.py's canary-readiness cache.
+    _PERFORMANCE_EVALUATION_CACHE_TTL_SECONDS = 1800
+
+    def _cached_strategy_evaluation(
+        self, start: date, days: int, underlyings: tuple[str, ...],
+        starting_capital: float, max_drawdown: float, strategy_names: tuple[str, ...] | None,
+    ) -> dict:
+        import time as _time
+
+        if not hasattr(self, "_performance_evaluation_cache"):
+            self._performance_evaluation_cache: dict[tuple, tuple[float, dict]] = {}
+        key = (start.isoformat(), days, underlyings, starting_capital, max_drawdown, strategy_names)
+        cached = self._performance_evaluation_cache.get(key)
+        now_ts = _time.monotonic()
+        if cached is not None and (now_ts - cached[0]) < self._PERFORMANCE_EVALUATION_CACHE_TTL_SECONDS:
+            return cached[1]
+        evaluation = self.strategy_evaluator.evaluate(
+            start=start, days=days, underlyings=underlyings, starting_capital=starting_capital,
+            max_drawdown=max_drawdown, strategy_names=strategy_names,
+        ).to_dict()
+        self._performance_evaluation_cache[key] = (now_ts, evaluation)
+        return evaluation
+
     def performance_summary(self, payload: dict | None = None) -> dict:
         payload = payload or {}
         days = int(payload.get("days", 30))
         underlyings = tuple(payload.get("underlyings") or SCAN_UNDERLYINGS)
-        evaluation = self.strategy_evaluator.evaluate(
+        evaluation = self._cached_strategy_evaluation(
             start=date.fromisoformat(str(payload.get("start", "2026-01-01"))),
             days=days,
             underlyings=underlyings,
             starting_capital=float(payload.get("starting_capital", self.settings.initial_capital)),
             max_drawdown=float(payload.get("max_drawdown", self.settings.max_drawdown)),
             strategy_names=tuple(payload["strategy_names"]) if payload.get("strategy_names") else None,
-        ).to_dict()
+        )
         quality_scores = []
         for row in evaluation["leaderboard"]:
             metrics = row["metrics"]

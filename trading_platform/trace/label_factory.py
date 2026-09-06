@@ -312,6 +312,18 @@ class OutcomeFactory:
         with self._lock:
             return [lbl.to_dict() for lbl in itertools.islice(reversed(self._labels), n)][::-1]
 
+    def labels_for_trace(self, trace_id: str) -> list[dict]:
+        """Labels matching one trace_id. Deliberately separate from
+        recent_labels(): a caller that only wants one trace's labels should
+        not pay for converting every label in the buffer (up to maxlen) to a
+        dict just to filter one back out — found 2026-09-06 as the root
+        cause of trace_replay()'s per-call cost turning into an N+1 when
+        called once per trace_id (policy_service.py's live-canary-readiness
+        metrics loop): with hundreds of trace_ids, "convert 5000 then
+        filter" per call became millions of wasted to_dict() conversions."""
+        with self._lock:
+            return [lbl.to_dict() for lbl in self._labels if lbl.trace_id == trace_id]
+
     def count(self) -> int:
         with self._lock:
             return len(self._labels)

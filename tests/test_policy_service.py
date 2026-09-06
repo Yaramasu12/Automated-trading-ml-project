@@ -66,6 +66,40 @@ def test_live_canary_readiness_not_ready_without_evidence():
     assert isinstance(r["blocking_reasons"], list) and r["blocking_reasons"]
 
 
+def test_live_canary_readiness_caches_the_computation(monkeypatch):
+    # Found 2026-09-06: with ~1500+ real trace_ids, this payload's own
+    # computation (one trace_replay() per trace_id) reliably exceeded a 15s
+    # client budget. Repeat calls must reuse the cached result rather than
+    # recomputing every time.
+    svc = _svc()
+    calls = []
+    monkeypatch.setattr(
+        svc, "_compute_live_canary_readiness_payload",
+        lambda: calls.append(1) or {"status": "NOT_READY", "call": len(calls)},
+    )
+
+    first = svc.live_canary_readiness_payload()
+    second = svc.live_canary_readiness_payload()
+
+    assert len(calls) == 1
+    assert first == second == {"status": "NOT_READY", "call": 1}
+
+
+def test_live_canary_readiness_cache_expires_after_ttl(monkeypatch):
+    svc = _svc()
+    calls = []
+    monkeypatch.setattr(
+        svc, "_compute_live_canary_readiness_payload",
+        lambda: calls.append(1) or {"call": len(calls)},
+    )
+    svc._CANARY_READINESS_CACHE_TTL_SECONDS = 0  # expires immediately
+
+    svc.live_canary_readiness_payload()
+    svc.live_canary_readiness_payload()
+
+    assert len(calls) == 2
+
+
 def test_promote_and_rollback_unknown_policy_safe():
     s = _svc()
     assert s.policy_promotion_gate("nope", "live_canary")["approved"] is False

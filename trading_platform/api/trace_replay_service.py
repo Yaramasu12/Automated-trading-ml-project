@@ -209,11 +209,7 @@ class TraceReplayService:
             for event in journal_events
             if event.get("event_type") == "outcome_label_created"
         ]
-        label_candidates = [
-            label
-            for label in self._outcome_factory.recent_labels(5000)
-            if label.get("trace_id") == trace_id
-        ]
+        label_candidates = self._outcome_factory.labels_for_trace(trace_id)
         label_candidates.extend(journal_labels)
         labels_by_key: dict[tuple, dict] = {}
         for label in label_candidates:

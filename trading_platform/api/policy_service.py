@@ -45,6 +45,23 @@ class PolicyService:
     def paper_learning_journal(self):
         return self._journal_getter()
 
+    # Found 2026-09-06 (TradingQA's continuous checks): with ~1500+ distinct
+    # trace_ids in a real paper-trading history, _policy_promotion_metrics()
+    # calls self.trace_replay() once per trace_id — each one several DB
+    # round-trips — and the endpoint reliably exceeded a 15s client budget.
+    # trace_store.get()'s own N+1 (a JSONL file rescan per miss) was the
+    # dominant cost and is now fixed separately (see trace/store.py) with a
+    # one-time SQLite-mirror backfill; the remaining ~12s for ~1500 traces
+    # is genuine per-trace Python object work (DecisionTrace reconstruction,
+    # per-order event decoding), still worth caching rather than paying
+    # every call. 1800s (30 min), NOT a short TTL: TradingQA's own check
+    # cycle runs every 30 min, so a short TTL would mean every single check
+    # hits a cold cache and pays the ~12s cost anyway, defeating the point.
+    # This keeps the cache warm across consecutive check cycles — only the
+    # first call after a container restart (or a >30 min gap) pays it.
+    _CANARY_READINESS_CACHE_TTL_SECONDS = 1800
+    _canary_readiness_cache: tuple[float, dict] | None = None
+
     def live_canary_readiness_payload(self) -> dict:
         """Return M6 readiness: whether live-canary can be considered.
 
@@ -52,6 +69,18 @@ class PolicyService:
         live plumbing can be armed; M6 says whether the paper/shadow evidence is
         clean enough to even consider a live-canary policy.
         """
+        import time as _time
+
+        cached = self._canary_readiness_cache
+        now_ts = _time.monotonic()
+        if cached is not None and (now_ts - cached[0]) < self._CANARY_READINESS_CACHE_TTL_SECONDS:
+            return cached[1]
+
+        payload = self._compute_live_canary_readiness_payload()
+        self._canary_readiness_cache = (now_ts, payload)
+        return payload
+
+    def _compute_live_canary_readiness_payload(self) -> dict:
         trace_ids, journal_days = self._live_canary_evidence_trace_ids()
         metrics = self._policy_promotion_metrics({"trace_ids": trace_ids})
         metrics["paper_trading_days"] = max(metrics["paper_trading_days"], len(journal_days))

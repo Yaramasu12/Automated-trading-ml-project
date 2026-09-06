@@ -217,6 +217,45 @@ class RuntimeTests(unittest.TestCase):
         self.assertIn("metrics", result)
         self.assertIn("selected_strategies", result)
 
+    def test_performance_summary_caches_the_backtest_evaluation(self):
+        # Found 2026-09-06: /performance/summary evaluates every strategy
+        # against the full default scan universe via real backtests every
+        # single call, which is what made it time out under TradingQA's own
+        # 15s check budget. Same-params repeat calls must reuse the cached
+        # evaluation instead of re-running the sweep.
+        runtime = TradingRuntime()
+        payload = {"days": 5, "underlyings": ["NIFTY", "RELIANCE"]}
+        with unittest.mock.patch.object(
+            runtime.strategy_evaluator, "evaluate", wraps=runtime.strategy_evaluator.evaluate,
+        ) as spy:
+            first = runtime.performance_summary(payload)
+            second = runtime.performance_summary(dict(payload))  # a fresh dict, same values
+            self.assertEqual(spy.call_count, 1)
+        self.assertEqual(first["best_strategy"], second["best_strategy"])
+        self.assertEqual(first["strategy_quality_scores"], second["strategy_quality_scores"])
+
+    def test_performance_summary_cache_is_keyed_by_params(self):
+        runtime = TradingRuntime()
+        with unittest.mock.patch.object(
+            runtime.strategy_evaluator, "evaluate", wraps=runtime.strategy_evaluator.evaluate,
+        ) as spy:
+            runtime.performance_summary({"days": 5, "underlyings": ["NIFTY"]})
+            runtime.performance_summary({"days": 5, "underlyings": ["RELIANCE"]})  # different underlyings
+            self.assertEqual(spy.call_count, 2)
+
+    def test_performance_summary_execution_quality_stays_live_across_cached_calls(self):
+        # The cache covers only the expensive backtest evaluation — cheap,
+        # genuinely time-sensitive fields (recent OMS events) must still be
+        # computed fresh every call, not frozen alongside it.
+        runtime = TradingRuntime()
+        payload = {"days": 5, "underlyings": ["NIFTY"]}
+        runtime.performance_summary(payload)
+        with unittest.mock.patch.object(
+            runtime.oms, "recent_events", wraps=runtime.oms.recent_events,
+        ) as spy:
+            runtime.performance_summary(dict(payload))
+            spy.assert_called_once()
+
     def test_retraining_decision_endpoint(self):
         runtime = TradingRuntime()
         result = runtime.retraining_decision(

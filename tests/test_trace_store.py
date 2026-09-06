@@ -165,6 +165,121 @@ class TestTraceStore(unittest.TestCase):
         self.assertEqual(retrieved.metadata["stage"], "ensemble_done")
         self.assertEqual(retrieved.events[-1].event_type, "ensemble_decision")
 
+    def test_get_finds_trace_via_sqlite_mirror_without_any_jsonl_file(self):
+        # Found 2026-09-06: get() on a cache miss used to go straight to
+        # scanning JSONL files, ignoring the SQLite mirror save() already
+        # upserts every trace into (trace_id is that table's PRIMARY KEY, an
+        # indexed lookup). With ~1500+ distinct trace_ids requested in one
+        # real API call (M6 live-canary-readiness), that turned a single
+        # request into several CPU-bound minutes. Deleting the JSONL file
+        # entirely proves this path is the SQLite lookup, not a scan that
+        # happens to still find a file.
+        import glob
+        import os
+
+        db_path = os.path.join(self._tmpdir, "trace_test.db")
+        store = TraceStore(base_dir=self._tmpdir, db_path=db_path)
+        trace_id = new_trace_id()
+        t = DecisionTrace(
+            trace_id=trace_id, created_at=datetime.now(timezone.utc),
+            execution_mode="BACKTEST", metadata={"stage": "done"},
+        )
+        store.save(t)
+
+        for path in glob.glob(os.path.join(self._tmpdir, "traces_*.jsonl")):
+            os.remove(path)
+
+        fresh_store = TraceStore(base_dir=self._tmpdir, db_path=db_path)
+        retrieved = fresh_store.get(trace_id)
+
+        self.assertIsNotNone(retrieved)
+        self.assertEqual(retrieved.trace_id, trace_id)
+        self.assertEqual(retrieved.metadata["stage"], "done")
+
+    def test_backfill_sqlite_mirror_fills_a_gap(self):
+        # Simulates the exact real-world gap found 2026-09-06: traces that
+        # exist only in the JSONL files, not in decision_traces (an unknown
+        # past event, not something this test needs to reproduce). Wiping
+        # the SQLite row after a normal save() recreates that state.
+        import glob
+        import os
+
+        db_path = os.path.join(self._tmpdir, "backfill_test.db")
+        store = TraceStore(base_dir=self._tmpdir, db_path=db_path)
+        trace_ids = []
+        for i in range(3):
+            tid = new_trace_id()
+            trace_ids.append(tid)
+            store.save(DecisionTrace(
+                trace_id=tid, created_at=datetime.now(timezone.utc),
+                execution_mode="BACKTEST", metadata={"i": i},
+            ))
+        store._db_conn().execute("DELETE FROM decision_traces")
+        store._db_conn().commit()
+        store._traces.clear()  # also drop the in-memory cache
+
+        # Confirm the gap actually exists before backfilling.
+        for tid in trace_ids:
+            row = store._db_conn().execute(
+                "SELECT 1 FROM decision_traces WHERE trace_id = ?", (tid,)
+            ).fetchone()
+            self.assertIsNone(row)
+
+        backfilled = store.backfill_sqlite_mirror()
+        self.assertEqual(backfilled, 3)
+
+        # Delete the JSONL files so a fresh store can ONLY find these via SQLite.
+        for path in glob.glob(os.path.join(self._tmpdir, "traces_*.jsonl")):
+            os.remove(path)
+
+        fresh_store = TraceStore(base_dir=self._tmpdir, db_path=db_path)
+        for tid in trace_ids:
+            retrieved = fresh_store.get(tid)
+            self.assertIsNotNone(retrieved, f"{tid} should be findable after backfill")
+            self.assertEqual(retrieved.trace_id, tid)
+
+    def test_backfill_sqlite_mirror_keeps_the_latest_version_of_an_updated_trace(self):
+        import os
+
+        db_path = os.path.join(self._tmpdir, "backfill_latest_test.db")
+        store = TraceStore(base_dir=self._tmpdir, db_path=db_path)
+        trace_id = new_trace_id()
+        t = DecisionTrace(
+            trace_id=trace_id, created_at=datetime.now(timezone.utc),
+            execution_mode="BACKTEST", metadata={"stage": "started"},
+        )
+        store.save(t)
+        t.metadata["stage"] = "ensemble_done"  # a second, later append to the same file
+        store.save(t)
+
+        store._db_conn().execute("DELETE FROM decision_traces")
+        store._db_conn().commit()
+        store.backfill_sqlite_mirror()
+
+        row = store._db_conn().execute(
+            "SELECT payload FROM decision_traces WHERE trace_id = ?", (trace_id,)
+        ).fetchone()
+        self.assertIn('"ensemble_done"', row[0])
+        self.assertNotIn('"started"', row[0])
+
+    def test_get_falls_back_to_file_scan_when_sqlite_lookup_errors(self):
+        # A broken SQLite mirror must not make an otherwise-findable trace
+        # (still on disk in a JSONL file) disappear.
+        from unittest.mock import patch
+
+        trace_id = new_trace_id()
+        t = DecisionTrace(
+            trace_id=trace_id, created_at=datetime.now(timezone.utc), execution_mode="BACKTEST",
+        )
+        self._store.save(t)
+        self._store._traces.clear()  # force a cache miss without a restart
+
+        with patch.object(self._store, "_db_conn", side_effect=RuntimeError("db unavailable")):
+            retrieved = self._store.get(trace_id)
+
+        self.assertIsNotNone(retrieved)
+        self.assertEqual(retrieved.trace_id, trace_id)
+
 
 if __name__ == "__main__":
     unittest.main()
