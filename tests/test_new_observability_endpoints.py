@@ -31,6 +31,19 @@ class ObservabilityEndpointTests(unittest.TestCase):
             self.assertIn("documents_in_memory", body)
             self.assertIn("categories", body)
 
+    def test_target_progress_get_mirrors_post_with_empty_payload(self):
+        """GET /portfolio/target-progress was added alongside the existing
+        POST route — before this, AnnualTargetTracker's live state had no
+        GET route at all, so no GET-only tool (including this platform's own
+        /openapi.json-driven checks) could ever read it. Both routes call
+        the same side-effect-free runtime.target_progress(); the GET route
+        with no payload must return exactly what POST with {} returns."""
+        get_body = self.client.get("/portfolio/target-progress").json()
+        post_body = self.client.post("/portfolio/target-progress", json={}).json()
+        self.assertEqual(get_body, post_body)
+        for key in ("annual_target", "start_capital", "current_equity", "realized_pnl", "allocation_bias"):
+            self.assertIn(key, get_body)
+
     def test_ai_council_skill_eval_returns_200_with_expected_shape(self):
         r = self.client.get("/ai-council/skill-eval")
         self.assertEqual(r.status_code, 200)

@@ -781,6 +781,14 @@ class TradingRuntime:
         strategy_name = intent.signal.strategy_name
         fill_price = getattr(trade, "price", None) or intent.signal.price
         side = intent.signal.side.value
+        # ExitManager tags trigger-based exits with "exit_trigger"; EmergencySquareOff
+        # (EOD/manual/kill-switch square-offs) tags its own reason string as
+        # "square_off_reason" instead — neither path has both, so this is not a
+        # priority order, just picking whichever this fill actually carries.
+        exit_reason: str | None = None
+        if intent.priority != OrderPriority.ENTRY:
+            _sig_meta = intent.signal.metadata
+            exit_reason = _sig_meta.get("exit_trigger") or _sig_meta.get("square_off_reason")
         # Option legs only get a live tick if something already asked for their
         # chain (options_service's chain endpoint) or the agent's scan universe
         # happens to include them — neither is guaranteed for an arbitrary
@@ -841,7 +849,7 @@ class TradingRuntime:
                     )
             except Exception as exc:
                 note_swallowed("trade_feature_vector", exc)
-            _aio.ensure_future(_aio.to_thread(self.db.save_trade, trade, execution_mode=exec_mode, feature_vector=_fv))
+            _aio.ensure_future(_aio.to_thread(self.db.save_trade, trade, execution_mode=exec_mode, feature_vector=_fv, exit_reason=exit_reason))
             mark_prices: dict[str, float] = {}
             for sym in list(self.portfolio.positions.keys()):
                 tick = self.live_feed.latest_tick(sym)

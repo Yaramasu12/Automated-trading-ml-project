@@ -12,7 +12,7 @@ from trading_platform.agent.market_hours import is_entry_allowed, now_ist
 from trading_platform.ai.agents import MarketRegimeAgent, StrategySelectionAgent
 from trading_platform.ai.features import FeatureEngine, FeatureSnapshot
 from trading_platform.ai.models import VolatilityForecast, VolatilityForecaster
-from trading_platform.data.instrument_master import InstrumentMaster
+from trading_platform.data.instrument_master import COMMODITY_UNDERLYINGS, InstrumentMaster
 from trading_platform.data.live_feed import resolve_underlying_reference_tick
 from trading_platform.data.market_data import SyntheticDataProvider
 from trading_platform.domain.enums import ExecutionMode, InstrumentType, OptionType, OrderType, ProductType, Segment
@@ -633,6 +633,16 @@ class DecisionPipeline:
                 return self.instrument_master.select_option(underlying, as_of, bar.close, option_type)
             except ValueError:
                 return self.instrument_master.get(underlying)
+        if underlying in COMMODITY_UNDERLYINGS:
+            # No commodity has a cash/spot listing on this platform — MCX_COMMODITIES
+            # only defines futures contracts for them, so a bare get(underlying) below
+            # would KeyError for every one of them. StrategySelectionAgent.choose()
+            # picks strategies purely by regime (it never looks at the underlying at
+            # all), so a cash-family strategy like mean_reversion/equity_momentum CAN
+            # be selected for GOLD/SILVER/etc. — this was reachable from the live scan
+            # loop, not just backtesting/reporting. Route to the nearest future
+            # instead, same as the INDEX case just below.
+            return self.instrument_master.select_future(underlying, as_of)
         instrument = self.instrument_master.get(underlying)
         if instrument.instrument_type == InstrumentType.INDEX or instrument.segment != Segment.CASH:
             try:

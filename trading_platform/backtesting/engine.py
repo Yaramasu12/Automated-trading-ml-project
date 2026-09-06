@@ -11,7 +11,7 @@ from trading_platform.ai.features import FeatureEngine
 from trading_platform.backtesting.charges import ChargesModel
 from trading_platform.backtesting.metrics import PerformanceMetrics, calculate_metrics, round_trip_pnls
 from trading_platform.broker.simulated import SimulatedBrokerClient
-from trading_platform.data.instrument_master import INDEX_UNDERLYINGS, InstrumentMaster, build_default_universe
+from trading_platform.data.instrument_master import COMMODITY_UNDERLYINGS, INDEX_UNDERLYINGS, InstrumentMaster, build_default_universe
 from trading_platform.data.market_data import SyntheticDataProvider
 from trading_platform.derivatives.engine import ImpliedVolatilityCalculator
 from trading_platform.domain.enums import ExecutionMode, InstrumentType, OptionType, OrderType, ProductType, Segment, Side
@@ -291,9 +291,19 @@ class BacktestEngine:
                     if strategy.family == "futures" and underlying not in INDEX_UNDERLYINGS:
                         continue
 
-                    instrument = self._select_instrument(
-                        strategy_name, underlying, history_bars[-1], bar_date
-                    )
+                    try:
+                        instrument = self._select_instrument(
+                            strategy_name, underlying, history_bars[-1], bar_date
+                        )
+                    except (KeyError, ValueError):
+                        # This strategy's instrument type genuinely doesn't exist for
+                        # this underlying (e.g. an options-family strategy on SILVERMIC,
+                        # a commodity mini-contract with no options market at all — only
+                        # some MCX commodities have one). Confirmed live 2026-09-06: this
+                        # crashed the whole evaluation instead of just skipping the one
+                        # combination that can't ever produce a real trade, exactly like
+                        # every other "doesn't apply here" case in this loop already does.
+                        continue
                     sym = instrument.symbol
 
                     # C4: skip if this exact instrument already entered this bar
@@ -457,6 +467,12 @@ class BacktestEngine:
         if strategy.family == "options":
             option_type = OptionType.CE if bar.close >= bar.open else OptionType.PE
             return self.instrument_master.select_option(underlying, as_of, bar.close, option_type)
+        if underlying in COMMODITY_UNDERLYINGS:
+            # No commodity has a cash/spot listing on this platform — MCX_COMMODITIES
+            # only defines futures contracts for them, so a bare get(underlying) below
+            # would KeyError for every one of them. Route a cash-family strategy's
+            # signal to the nearest future instead, same as the INDEX case just below.
+            return self.instrument_master.select_future(underlying, as_of)
         instrument = self.instrument_master.get(underlying)
         if instrument.instrument_type == InstrumentType.INDEX or instrument.segment != Segment.CASH:
             return self.instrument_master.select_future(underlying, as_of)

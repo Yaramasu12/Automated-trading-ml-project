@@ -44,7 +44,8 @@ CREATE TABLE IF NOT EXISTS trades (
     strategy_name  TEXT        NOT NULL,
     execution_mode TEXT        NOT NULL DEFAULT 'BACKTEST',
     is_test        BOOLEAN     NOT NULL DEFAULT FALSE,
-    feature_vector vector(7)
+    feature_vector vector(7),
+    exit_reason    TEXT
 );
 
 CREATE TABLE IF NOT EXISTS portfolio_snapshots (
@@ -268,7 +269,8 @@ CREATE TABLE IF NOT EXISTS trades (
     strategy_name TEXT NOT NULL,
     execution_mode TEXT NOT NULL DEFAULT 'BACKTEST',
     is_test       INTEGER NOT NULL DEFAULT 0,
-    feature_vector TEXT
+    feature_vector TEXT,
+    exit_reason   TEXT
 );
 CREATE TABLE IF NOT EXISTS portfolio_snapshots (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -548,6 +550,7 @@ class TradingDatabase:
                     + [
                         "ALTER TABLE trades ADD COLUMN IF NOT EXISTS ts TIMESTAMPTZ DEFAULT now()",
                         "ALTER TABLE trades ADD COLUMN IF NOT EXISTS feature_vector vector(7)",
+                        "ALTER TABLE trades ADD COLUMN IF NOT EXISTS exit_reason TEXT",
                     ]
                 )
                 for stmt in statements:
@@ -638,6 +641,7 @@ class TradingDatabase:
             self._sl_ensure_column(cur, "trades", "is_test", "INTEGER NOT NULL DEFAULT 0")
             self._sl_ensure_column(cur, "trades", "timestamp", "TEXT NOT NULL DEFAULT ''")
             self._sl_ensure_column(cur, "trades", "feature_vector", "TEXT")
+            self._sl_ensure_column(cur, "trades", "exit_reason", "TEXT")
 
     @staticmethod
     def _sl_ensure_column(cur, table: str, column: str, definition: str) -> None:
@@ -655,6 +659,7 @@ class TradingDatabase:
         trade,
         execution_mode: str = "BACKTEST",
         feature_vector: list | None = None,
+        exit_reason: str | None = None,
     ) -> None:
         is_test = trade.strategy_name in {"manual_preview", "trace_fill_test"}
         ts = trade.timestamp.isoformat() if hasattr(trade.timestamp, "isoformat") else str(trade.timestamp)
@@ -664,14 +669,14 @@ class TradingDatabase:
                 cur.execute(
                     """INSERT INTO trades
                        (trade_id, order_id, symbol, side, quantity, price, charges,
-                        ts, strategy_name, execution_mode, is_test, feature_vector)
-                       VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::vector)
+                        ts, strategy_name, execution_mode, is_test, feature_vector, exit_reason)
+                       VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::vector,%s)
                        ON CONFLICT (trade_id) DO NOTHING""",
                     (
                         trade.trade_id, trade.order_id, trade.symbol,
                         trade.side.value, trade.quantity, trade.price,
                         trade.charges, ts, trade.strategy_name,
-                        execution_mode, is_test, vec_val,
+                        execution_mode, is_test, vec_val, exit_reason,
                     ),
                 )
         else:
@@ -680,13 +685,13 @@ class TradingDatabase:
                 cur.execute(
                     """INSERT OR IGNORE INTO trades
                        (trade_id, order_id, symbol, side, quantity, price, charges,
-                        timestamp, strategy_name, execution_mode, is_test, feature_vector)
-                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                        timestamp, strategy_name, execution_mode, is_test, feature_vector, exit_reason)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                     (
                         trade.trade_id, trade.order_id, trade.symbol,
                         trade.side.value, trade.quantity, trade.price,
                         trade.charges, ts, trade.strategy_name,
-                        execution_mode, int(is_test), vec_json,
+                        execution_mode, int(is_test), vec_json, exit_reason,
                     ),
                 )
 

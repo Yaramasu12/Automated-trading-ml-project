@@ -34,6 +34,17 @@ MCX_COMMODITIES = {
     "LEAD":       {"token": "MCX-LEAD",       "lot_size": 5000, "base": 190},    # ₹/kg,  5000 kg contract
     "ALUMINIUM":  {"token": "MCX-ALUMINIUM",  "lot_size": 5000, "base": 240},    # ₹/kg,  5000 kg contract
 }
+
+# No commodity here has a cash/spot listing on this platform — only the
+# futures contracts MCX_COMMODITIES describes. A caller resolving one of
+# these underlyings must always go through select_future()/select_option(),
+# never a bare get(underlying) lookup — see backtesting/engine.py and
+# decision/pipeline.py's own _select_instrument() for the two places that
+# distinction matters (found via a bare get("GOLD") KeyError surfaced by
+# TradingQA's check engine: /performance/summary crashed for exactly this
+# reason, since it evaluates every SCAN_UNDERLYINGS entry, commodities
+# included, against every configured strategy).
+COMMODITY_UNDERLYINGS = frozenset(MCX_COMMODITIES.keys())
 from trading_platform.domain.models import Instrument
 
 

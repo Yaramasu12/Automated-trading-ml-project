@@ -386,6 +386,19 @@ def target_progress(payload: dict):
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
+@app.get("/portfolio/target-progress")
+def target_progress_live() -> dict:
+    """Read-only sibling of the POST route above, for a caller (a monitor, a
+    dashboard) that just wants AnnualTargetTracker's current live state and
+    has no reason to override any of its optional inputs. target_progress()
+    already defaults every field from live state when the payload omits it
+    (current_equity from self.portfolio.equity, etc.) and neither it nor
+    AnnualTargetTracker.evaluate() mutate anything — this was reachable
+    before only via POST with a body, which meant no GET-only tool (this
+    platform's own /openapi.json-driven checks included) could ever read it."""
+    return runtime.target_progress({})
+
+
 @app.post("/risk/supervisor-decision")
 def supervisor_decision(payload: dict):
     return runtime.supervisor_decision(payload)
