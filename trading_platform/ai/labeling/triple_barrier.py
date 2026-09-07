@@ -311,11 +311,9 @@ def conformal_prediction(
         (lower_bounds, upper_bounds) arrays
     """
     if len(residuals) < 10:
-        # Not enough calibration data — return neutral intervals
-        width = 0.5
-        return np.full_like(predictions, predictions - width), np.full_like(
-            predictions, predictions + width
-        )
+        # Not enough calibration data — use MAD-based default
+        q_value = float(np.median(np.abs(residuals - np.median(residuals))))
+        return predictions - q_value, predictions + q_value
 
     # Q-value: (1-α) quantile of residuals
     alpha = 1.0 - confidence
