@@ -318,8 +318,18 @@ class MasterOrchestrator:
             from trading_platform.ai.features import FeatureEngine
             snapshot = FeatureEngine().compute(bars)
             try:
+                # Same class of bug fixed in decision/pipeline.py's scan()
+                # 2026-09-07: bars from _fetch_bars() above can be fabricated
+                # (no history_provider configured) rather than raised-on-
+                # failure — bars_were_synthetic() is the one authoritative
+                # signal for that. Persisting a synthetic snapshot here would
+                # corrupt the SAME feature_store the live orchestrator later
+                # reads for neural forecasting, exactly as NIFTY/RELIANCE/
+                # BANKNIFTY's stores were found corrupted by a different
+                # synthetic-bars caller.
                 existing = rt.feature_store.get_features(underlying)
-                if not existing or str(existing.get("date", "")) != today.isoformat():
+                is_synthetic = rt.decision_pipeline.bars_were_synthetic(underlying)
+                if not is_synthetic and (not existing or str(existing.get("date", "")) != today.isoformat()):
                     rt.feature_store.append(underlying, today, snapshot, regime)
             except Exception as exc:
                 logger.debug("feature_store.append failed for %s: %s", underlying, exc)
@@ -679,9 +689,28 @@ class MasterOrchestrator:
                     sum(expected_returns) / len(expected_returns) if expected_returns else 0.0
                 )
                 raw_uncertainty = getattr(bundle, "overall_uncertainty", 0.5)
-                # Cap uncertainty: when no bars available the service returns 1.0 but that
-                # should not veto — treat it as high-but-not-vetoing (0.70)
-                updates["neural_uncertainty"] = min(raw_uncertainty, 0.70) if not bars_map else raw_uncertainty
+                # Cap uncertainty at a high-but-not-vetoing level (0.70) whenever
+                # there's no real analytical basis for it — either no bars were
+                # available, OR bars existed but no forecast was actually
+                # produced. The second case was NOT handled here before —
+                # found 2026-09-07 after confirming live that the orchestrator
+                # had run 1874+ cycles and produced ZERO trade candidates.
+                # serving.py hardcodes overall_uncertainty=1.0 whenever
+                # bundle.forecasts is empty (see that module's aggregate-
+                # uncertainty step), and forecasts IS always empty in this
+                # deployment: no validated return_forecaster model artifact
+                # exists (CLAUDE.md's own honesty-discipline note — AUC≈0.50,
+                # correctly refused deployment, NOT a bug). So every single
+                # cycle computed the maximum possible uncertainty from an
+                # absent model, which always exceeded NEURAL_UNCERTAINTY_VETO
+                # (0.82) and halted before any candidate could be generated —
+                # the entire AI-council-driven path was structurally inert,
+                # not selectively conservative. An empty forecasts list is a
+                # missing-analysis placeholder, not a genuine "extremely
+                # uncertain" conclusion, so it gets the same non-vetoing
+                # treatment as the no-bars case already had.
+                no_real_forecast = not bars_map or not forecasts
+                updates["neural_uncertainty"] = min(raw_uncertainty, 0.70) if no_real_forecast else raw_uncertainty
                 updates["neural_tail_risk"] = (
                     max(getattr(tr, "extreme_move_probability", 0.0) or 0.0 for tr in tail_risks)
                     if tail_risks else 0.0

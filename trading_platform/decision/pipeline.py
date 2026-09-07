@@ -254,8 +254,30 @@ class DecisionPipeline:
         now = datetime.now(timezone.utc)
 
         snapshot = self.portfolio.mark_to_market(now, {underlying: bars[-1].close})
-        # Persist features for ML training / drift detection
-        if self.feature_store is not None:
+        # Persist features for ML training / drift detection.
+        #
+        # Found 2026-09-07 (TradingQA's month-long profit investigation):
+        # NIFTY/RELIANCE/BANKNIFTY's feature_store JSONL files were 94-99%
+        # fabricated data going back 43 days. Root cause: this call was
+        # UNCONDITIONAL — any caller of scan() with no history_provider (the
+        # deliberately-synthetic backtest/demo path — see bars_were_synthetic's
+        # own docstring) still persisted the resulting feature snapshot into
+        # this SAME store the live orchestrator later reads via
+        # feature_store.get_bars() for neural forecasting. shadow_run()'s three
+        # tests in test_runtime.py (a deterministic demo path, seed+start fixed
+        # at "2026-01-01") call exactly this scan() for underlyings=["NIFTY",
+        # "RELIANCE", "BANKNIFTY"] with history_provider forced to None, on a
+        # bare TradingRuntime() using the real, non-isolated FeatureStore —
+        # every pytest run (CI, Agent Sai's hourly local suite) re-appended the
+        # identical frozen synthetic snapshot. Interleaved with the live
+        # container's own genuine entries, get_bars()'s last-60-bar window
+        # alternated between real (~1314) and fake (~100.5) closes, producing
+        # ~1000%+ swing "returns" that saturated MovingAverageForecaster's
+        # uncertainty at 1.0 and permanently tripped NEURAL_UNCERTAINTY_VETO —
+        # the mechanical reason these three underlyings never traded. A
+        # snapshot computed from bars this pipeline itself knows are fake must
+        # never be persisted as if it were real training/inference data.
+        if self.feature_store is not None and not self.bars_were_synthetic(underlying):
             try:
                 self.feature_store.append(underlying, now.date(), features, regime)
             except Exception as exc:

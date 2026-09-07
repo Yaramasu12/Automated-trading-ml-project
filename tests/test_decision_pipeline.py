@@ -203,5 +203,80 @@ class BarsWereSyntheticTests(unittest.TestCase):
         self.assertFalse(pipeline.bars_were_synthetic("NEVER_FETCHED"))
 
 
+class FakeFeatureStore:
+    """Records append() calls without touching disk, so tests can assert
+    whether a scan() persisted a snapshot without needing a real store_dir."""
+
+    def __init__(self) -> None:
+        self.appended: list[tuple] = []
+
+    def append(self, underlying, as_of, features, regime):
+        self.appended.append((underlying, as_of, features, regime))
+
+    def get_features(self, underlying):
+        return {}
+
+
+class ScanFeatureStorePersistenceTests(unittest.TestCase):
+    """Found 2026-09-07: scan() persisted a feature snapshot into the shared
+    feature_store even when the bars it was computed from were fabricated
+    (bars_were_synthetic() True) — no history_provider configured, the
+    deliberately-synthetic backtest/demo path. tests/test_runtime.py's
+    shadow_run tests exercise exactly this combination for underlyings
+    NIFTY/RELIANCE/BANKNIFTY on a bare TradingRuntime() using the real,
+    non-isolated FeatureStore; every pytest run re-appended a frozen
+    synthetic snapshot into the SAME store the live orchestrator reads bars
+    from, eventually saturating MovingAverageForecaster's uncertainty at 1.0
+    for those three underlyings and permanently tripping the neural veto.
+    A snapshot computed from bars the pipeline itself knows are fake must
+    never be persisted as if it were real training/inference data."""
+
+    def test_synthetic_bars_scan_does_not_persist_to_feature_store(self):
+        master = build_default_universe(date(2026, 1, 1))
+        store = FakeFeatureStore()
+        pipeline = DecisionPipeline(
+            master, StrategyFactory(), RiskEngine(), PortfolioLedger(1_000_000),
+            feature_store=store,  # history_provider=None -> synthetic path
+        )
+
+        pipeline.scan(
+            underlying="RELIANCE",
+            start=date(2026, 1, 1),
+            days=30,
+            execution_mode=ExecutionMode.BACKTEST,
+            live_armed=False,
+            kill_switch_active=False,
+            strategy_names=["equity_momentum"],
+        )
+
+        self.assertTrue(pipeline.bars_were_synthetic("RELIANCE"))
+        self.assertEqual(store.appended, [])
+
+    def test_real_bars_scan_still_persists_to_feature_store(self):
+        # Regression guard: the fix must not silence persistence for genuine
+        # real-data scans — only synthetic-bar scans are skipped.
+        master = build_default_universe(date(2026, 1, 1))
+        store = FakeFeatureStore()
+        history = FakeHistoryProvider(min_bars=30)
+        pipeline = DecisionPipeline(
+            master, StrategyFactory(), RiskEngine(), PortfolioLedger(1_000_000),
+            feature_store=store, history_provider=history,
+        )
+
+        pipeline.scan(
+            underlying="RELIANCE",
+            start=date(2026, 1, 1),
+            days=30,
+            execution_mode=ExecutionMode.BACKTEST,
+            live_armed=False,
+            kill_switch_active=False,
+            strategy_names=["equity_momentum"],
+        )
+
+        self.assertFalse(pipeline.bars_were_synthetic("RELIANCE"))
+        self.assertEqual(len(store.appended), 1)
+        self.assertEqual(store.appended[0][0], "RELIANCE")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -2,12 +2,33 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import Mock
 
+from trading_platform.ai.feature_store import FeatureStore
 from trading_platform.api.runtime import TradingRuntime
 from trading_platform.config import Settings, load_settings
 from trading_platform.domain.enums import ExecutionMode
+
+
+def _isolate_feature_store(runtime: TradingRuntime, test: unittest.TestCase) -> None:
+    """Point runtime's feature store at a throwaway temp dir instead of the
+    real data/feature_store/ (which the live Docker deployment bind-mounts
+    and reads from for neural forecasting). Defense in depth alongside the
+    2026-09-07 fix (decision/pipeline.py's scan() now refuses to persist
+    synthetic-bar feature snapshots at all) — shadow_run's deliberately
+    synthetic demo path forced history_provider to None for exactly this
+    kind of call, and every run of this test (CI, Agent Sai's hourly local
+    suite) had been appending fabricated NIFTY/RELIANCE/BANKNIFTY snapshots
+    into the SAME store the live orchestrator reads bars from, for 43+ days,
+    permanently tripping the neural uncertainty veto on those underlyings."""
+    tmp_dir = tempfile.mkdtemp(prefix="trading_qa_feature_store_")
+    test.addCleanup(lambda: __import__("shutil").rmtree(tmp_dir, ignore_errors=True))
+    isolated = FeatureStore(store_dir=Path(tmp_dir))
+    runtime.feature_store = isolated
+    runtime.decision_pipeline.feature_store = isolated
 
 
 class RuntimeTests(unittest.TestCase):
@@ -446,6 +467,7 @@ class RuntimeTests(unittest.TestCase):
 
     def test_shadow_run_executes_only_in_simulated_paper(self):
         runtime = TradingRuntime()
+        _isolate_feature_store(runtime, self)
         runtime.set_execution_mode("PAPER")
         # This exercises the paper order-flow mechanism, not the directional
         # policy. Directional/index-futures opening is blocked by default now
@@ -475,6 +497,7 @@ class RuntimeTests(unittest.TestCase):
 
     def test_monitoring_metrics_tracks_shadow_orders(self):
         runtime = TradingRuntime()
+        _isolate_feature_store(runtime, self)
         before = runtime.monitoring_metrics()
         runtime.set_execution_mode("PAPER")
         # Allow index-futures opening so orders flow (directional gate is off by
@@ -507,6 +530,7 @@ class RuntimeTests(unittest.TestCase):
         from trading_platform.decision.pipeline import MarketDataUnavailable
 
         runtime = TradingRuntime()
+        _isolate_feature_store(runtime, self)
         runtime.set_execution_mode("PAPER")
         import dataclasses as _dc
         runtime.risk_engine.limits = _dc.replace(runtime.risk_engine.limits, block_futures_opening=False)
