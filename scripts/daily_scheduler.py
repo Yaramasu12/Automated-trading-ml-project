@@ -77,12 +77,32 @@ def _is_trading_day(dt: datetime) -> bool:
     return _platform_is_trading_day(dt.date())
 
 
+_MISSED_JOB_GRACE_MINUTES = 10
+
+
 def _next_run(hour: int, minute: int) -> datetime:
-    """Return the next wall-clock datetime (IST) for the given (hour, minute)."""
+    """Return the next wall-clock datetime (IST) for the given (hour, minute).
+
+    A slot that passed VERY recently (within _MISSED_JOB_GRACE_MINUTES)
+    still counts as due today rather than silently deferring a full day.
+    Found 2026-09-07: daily_pnl_report (15:36) sits just 1 minute after
+    stop_feed (15:35), and main()'s own post-job time.sleep(90) cooldown
+    reliably pushes "now" past 15:36 before this function is next called —
+    so `candidate <= now` was always true and daily_pnl_report's slot
+    silently rolled to tomorrow, every single trading day, forever, with no
+    error or log line marking the skip. That's the actual reason
+    trades_db.daily_pnl had zero rows despite the job being correctly
+    registered and its own logic being correct — nothing was ever calling it.
+    The grace window is intentionally short: a job that's been overdue
+    longer than this (e.g. the whole scheduler was down for hours) should
+    still defer to its next real occurrence, not fire late and stale.
+    """
     now = _now_ist()
     candidate = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
     if candidate <= now:
-        candidate += timedelta(days=1)
+        overdue = now - candidate
+        if overdue > timedelta(minutes=_MISSED_JOB_GRACE_MINUTES):
+            candidate += timedelta(days=1)
     # Skip weekends
     while not _is_trading_day(candidate):
         candidate += timedelta(days=1)

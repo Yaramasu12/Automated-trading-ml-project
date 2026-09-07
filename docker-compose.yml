@@ -224,6 +224,15 @@ services:
       - INITIAL_CAPITAL=${INITIAL_CAPITAL:-1000000}
       - MAX_DRAWDOWN=${MAX_DRAWDOWN:-0.10}
       - MAX_DAILY_LOSS=${MAX_DAILY_LOSS:-0.02}
+      # Found 2026-09-07 (TradingQA's investigation into trades_db.daily_pnl
+      # having zero rows): this was missing here, so run_daily_pnl_report()'s
+      # bare TradingDatabase() silently fell back to a local SQLite file
+      # (no DATABASE_URL -> SQLite is TradingDatabase's own documented
+      # default) instead of the real Postgres database trading-api actually
+      # serves /db/daily-pnl from — the job could succeed every single run
+      # and the dashboard would still show zero rows forever, because it was
+      # writing to a database nothing else ever reads.
+      - DATABASE_URL=${DATABASE_URL:-postgresql://trading:trading_secret@timescaledb:5432/trading}
     depends_on:
       trading-api:
         condition: service_healthy

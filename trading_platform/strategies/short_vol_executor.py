@@ -480,6 +480,7 @@ class ShortVolExecutor:
                 "option_type": leg.option_type.value, "side": leg.side.value,
                 "is_wing": leg.is_wing, "price": round(float(premium), 2), "quantity": qty,
                 "priced_from": priced_from, "theoretical": round(float(theo), 2),
+                "lot_size": getattr(inst, "lot_size", 1) or 1,
             })
         out["expiry"] = expiry.isoformat()
 
@@ -502,6 +503,47 @@ class ShortVolExecutor:
             out["reason"] = (
                 f"option chain too narrow at {underlying} {expiry}: {structure} legs "
                 f"collapsed {detail} — need wider strikes"
+            )
+            out["legs"] = []
+            return out
+
+        # SAFETY: net credit must clear a real transaction-cost floor.
+        #
+        # Found 2026-09-07 (TradingQA's own investigation): 35 days of real
+        # paper trades showed EVERY short_vol strategy net negative on a
+        # pure premium-minus-charges basis, before even lot-size scaling —
+        # e.g. one leg traded at Rs 0.19 notional against Rs 47.21 in
+        # charges. Root cause: long_strike_delta=0.05 routinely selects a
+        # protective leg priced in paise, smaller than what it costs just to
+        # place the order. This isn't a market-timing problem, it's
+        # arithmetic: no realized-vol outcome can rescue a structure whose
+        # entry is a guaranteed net loss before the position even moves.
+        #
+        # charges.py's own documented options rate (flat Rs 20/order + 18%
+        # GST, the dominant cost at these premium levels — the percentage-
+        # based STT/exchange/stamp components are near-zero on paise
+        # premiums) gives a real, sourced floor rather than an invented one.
+        # 2x legs accounts for the eventual exit this entry will also need;
+        # requiring 3x that (not just breakeven) leaves room for the
+        # position to actually need to move before max-profit, not just
+        # cover its own cost of entry.
+        FLAT_BROKERAGE_PER_ORDER = 20.0
+        GST_MULTIPLIER = 1.18
+        MIN_NET_CREDIT_CHARGE_MULTIPLE = 3.0
+
+        net_credit = sum(
+            (leg["price"] if leg["side"] == "SELL" else -leg["price"]) * leg["quantity"] * leg["lot_size"]
+            for leg in out["legs"]
+        )
+        round_trip_charge_estimate = 2 * len(out["legs"]) * FLAT_BROKERAGE_PER_ORDER * GST_MULTIPLIER
+        min_required_credit = round_trip_charge_estimate * MIN_NET_CREDIT_CHARGE_MULTIPLE
+        if net_credit < min_required_credit:
+            out["enter"] = False
+            out["reason"] = (
+                f"net credit Rs {net_credit:.2f} does not clear the transaction-cost floor "
+                f"(need >= Rs {min_required_credit:.2f} = {MIN_NET_CREDIT_CHARGE_MULTIPLE}x the "
+                f"~Rs {round_trip_charge_estimate:.2f} estimated round-trip brokerage for "
+                f"{len(out['legs'])} legs) — structure too cheap to be worth the cost of entering it"
             )
             out["legs"] = []
         return out

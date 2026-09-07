@@ -583,7 +583,18 @@ class IvRankGateTests(unittest.TestCase):
             sym = getattr(inst, "symbol", "")
             if sym == "INDIAVIX":
                 return [SimpleNamespace(close=v) for v in (vix_history or [])]
-            return [SimpleNamespace(close=atm_premium)]
+            # Distance-decayed premium, not a flat atm_premium for every strike —
+            # a real short strike (nearer the money) prices meaningfully higher
+            # than its protective wing (further OTM), same as an actual chain.
+            # Flat pricing made every condor's net credit exactly 0 (2 sells and
+            # 2 buys at the identical price cancel), which passed unnoticed until
+            # short_vol_executor.py's net-credit-vs-transaction-cost floor
+            # (added 2026-09-07) started rejecting the resulting 0-credit plans.
+            strike = getattr(inst, "strike", None)
+            if strike is None:
+                return [SimpleNamespace(close=atm_premium)]
+            decay = max(0.1, 1.0 - abs(float(strike) - 24000.0) / 2000.0)
+            return [SimpleNamespace(close=round(atm_premium * decay, 2))]
 
         rt = SimpleNamespace(
             instrument_master=master,
@@ -646,6 +657,28 @@ class IvRankGateTests(unittest.TestCase):
             plan = ex.build("NIFTY")
         self.assertTrue(plan["enter"], plan.get("reason"))
         self.assertGreaterEqual(plan["iv_rank"], 50.0)
+
+    def test_net_credit_below_transaction_cost_floor_refuses_entry(self):
+        # Found 2026-09-07 (TradingQA's own investigation): 35 days of real
+        # paper trades were net negative on premium-minus-charges alone —
+        # this is the regression guard for the fix. Mocking _option_last_price
+        # directly (rather than atm_premium, which also feeds the VRP/IV-rank
+        # gates upstream) isolates JUST the leg-pricing step: every leg prices
+        # at a paise-level premium, matching the real trades that triggered
+        # this, and must be refused rather than silently entered into a
+        # guaranteed loss.
+        ex = self._executor(vix_history=[float(v) for v in range(10, 30)])
+        with mock.patch.object(ex, "_option_last_price", return_value=0.05):
+            plan = ex.build("NIFTY")
+        self.assertFalse(plan["enter"])
+        self.assertIn("transaction-cost floor", plan["reason"])
+        self.assertEqual(plan["legs"], [])
+
+    def test_net_credit_above_transaction_cost_floor_allows_entry(self):
+        ex = self._executor(atm_premium=250.0, vix_history=[float(v) for v in range(10, 30)])
+        plan = ex.build("NIFTY")
+        self.assertTrue(plan["enter"], plan.get("reason"))
+        self.assertEqual(len(plan["legs"]), 4)
 
     def test_iv_rank_history_uses_vix_for_nifty(self):
         ex = self._executor(vix_history=[12.0, 13.0])
