@@ -133,7 +133,15 @@ class ConformalPredictor:
         -------
         ConformalInterval
             Guaranteed (1-α) coverage interval.
+
+        Raises
+        ------
+        ValueError
+            If ``width`` is negative.
         """
+        if width < 0:
+            raise ValueError(f"width must be non-negative, got {width}")
+
         if not self.calibrated:
             logger.warning("Conformal predictor not calibrated — returning wide default")
             return ConformalInterval(
