@@ -3388,6 +3388,54 @@
       "dsr_message": "DSR=1.0000 (threshold >= 0.5), n_trials=4, SR_hat=0.9759, SR_0=0.0657",
       "pbo_message": "PBO=0.6143 (threshold <= 0.4), n_splits=70, n_variants=4",
       "evaluated_at": "2026-09-08T01:20:56+00:00"
+    },
+    {
+      "strategy_name": "long_straddle",
+      "symbol": "NIFTY",
+      "passed": false,
+      "cagr": -0.0395,
+      "sharpe": -0.58,
+      "max_drawdown": 0.3213,
+      "dsr_message": "DSR=0.0000 (threshold >= 0.5)",
+      "pbo_message": "PBO=0.0000 (threshold <= 0.4)",
+      "evaluated_at": "2026-09-08T02:43:55+00:00",
+      "method": "short_vol_backtest.py DSR/PBO/MonteCarloDD/cost_model gates, sd sweep"
+    },
+    {
+      "strategy_name": "long_straddle",
+      "symbol": "BANKNIFTY",
+      "passed": false,
+      "cagr": 0.1519,
+      "sharpe": 0.81,
+      "max_drawdown": 0.5808,
+      "dsr_message": "DSR=1.0000 (pass)",
+      "pbo_message": "PBO=0.0000 (pass)",
+      "evaluated_at": "2026-09-08T02:43:55+00:00",
+      "method": "short_vol_backtest.py DSR/PBO/MonteCarloDD/cost_model gates, sd sweep; FAILED on monte_carlo_dd (58% max DD > 15% limit) despite passing DSR/PBO"
+    },
+    {
+      "strategy_name": "strangle",
+      "symbol": "NIFTY",
+      "passed": false,
+      "cagr": -0.0794,
+      "sharpe": -0.72,
+      "max_drawdown": 0.6255,
+      "dsr_message": "DSR=0.0000 (threshold >= 0.5)",
+      "pbo_message": "PBO=0.0000 (threshold <= 0.4)",
+      "evaluated_at": "2026-09-08T02:43:55+00:00",
+      "method": "short_vol_backtest.py DSR/PBO/MonteCarloDD/cost_model gates, sd sweep"
+    },
+    {
+      "strategy_name": "strangle",
+      "symbol": "BANKNIFTY",
+      "passed": false,
+      "cagr": 1.8012,
+      "sharpe": 0.94,
+      "max_drawdown": 1.0,
+      "dsr_message": "DSR=1.0000 (pass)",
+      "pbo_message": "PBO=0.0714 (pass)",
+      "evaluated_at": "2026-09-08T02:43:55+00:00",
+      "method": "short_vol_backtest.py DSR/PBO/MonteCarloDD/cost_model gates, sd sweep; FAILED on monte_carlo_dd (100% max DD -- wiped to near-zero equity mid-path despite huge average-case return) -- exactly the tail-risk case DSR/PBO alone do not catch"
     }
   ],
   "inherits_futures_trend_verdict_rejected": [
@@ -3406,5 +3454,12 @@
     "iron_condor",
     "calendar_spread",
     "delta_neutral_hedge"
-  ]
+  ],
+  "inherits_short_vol_condor_verdict": [
+    "iron_condor"
+  ],
+  "structurally_excluded_naked_risk": {
+    "short_straddle": "Both legs SELL with no protective wing -- a genuine short straddle is undefined-risk (theoretically unlimited loss on a gap). RiskEngine.block_naked_option_selling is bypassed for ANY multi_leg_group submission (trusts the caller, does not verify leg composition) so the platform would not catch this. Not built; would require an explicit, separate risk-policy decision.",
+    "delta_neutral_hedge": "Normally a continuously-rebalanced portfolio hedge, not a single entry/exit position -- does not fit the entry-exit backtest model the other structures use. Not built."
+  }
 }

@@ -243,7 +243,74 @@ class StructureVariantTests(unittest.TestCase):
                 self.assertGreaterEqual(t.pnl, floor, f"{st} exceeded its defined max loss")
 
 
+class LongVolStructureVariantTests(unittest.TestCase):
+    """long_straddle/strangle (added 2026-09-08): the mirror thesis of
+    condor/put_spread/call_spread — BUY premium when it's cheap rather than
+    sell it when it's rich. These need their own low-VIX fixture (the
+    StructureVariantTests fixture above is deliberately rich, to trigger the
+    SELL-side structures)."""
+
+    def setUp(self):
+        # vol=0.01 daily -> ~16% annualized realized; VIX well below that is
+        # "cheap" by construction, opening the long-vol entry gate.
+        self.bars = _synthetic_series(n=500, seed=31)
+        self.vix = {b.day: 8.0 for b in self.bars}
+
+    def test_long_straddle_and_strangle_have_two_buy_only_legs(self):
+        from trading_platform.strategies.short_vol import ShortVolStrategy
+        st = ShortVolStrategy(min_vrp=0.5)
+        closes = [b.close for b in self.bars]
+        common = dict(spot=closes[-1], vix=8.0, closes=closes,
+                      capital=50_000_000.0, lot_size=50, strike_step=50,
+                      wing_width=300, hold_days=5)
+        for structure in ("long_straddle", "strangle"):
+            d = st.decide(structure=structure, **common)
+            self.assertTrue(d.enter, f"{structure} declined: {d.reason}")
+            self.assertEqual(len(d.legs), 2, structure)
+            self.assertTrue(all(l.side.value == "BUY" for l in d.legs), structure)
+
+    def test_structure_is_recorded_on_every_trade(self):
+        for st in ("long_straddle", "strangle"):
+            res = ShortVolBacktester(underlying="NIFTY", structure=st).run(self.bars, self.vix)
+            for t in res.trades:
+                self.assertEqual(t.structure, st)
+
+    def test_loss_never_exceeds_the_debit_paid(self):
+        """The long-vol equivalent of test_every_structure_stays_defined_risk:
+        max loss on a long-only structure is the premium paid, full stop —
+        confirm the backtest's debit-side P&L branch actually enforces that,
+        not just that decide() constructs BUY-only legs."""
+        for st in ("long_straddle", "strangle"):
+            res = ShortVolBacktester(underlying="NIFTY", structure=st).run(self.bars, self.vix)
+            for t in res.trades:
+                floor = -t.max_loss_points * t.lots * 50 - t.charges - 1e-6
+                self.assertGreaterEqual(t.pnl, floor, f"{st} lost more than its own debit")
+
+    def test_long_vol_and_short_vol_produce_different_results(self):
+        """If long_straddle traded identically to condor on the same rich-VIX
+        path, the is_long_vol branch isn't actually being reached."""
+        rich_vix = {b.day: 22.0 for b in self.bars}
+        condor = ShortVolBacktester(underlying="NIFTY", structure="condor").run(self.bars, rich_vix)
+        straddle = ShortVolBacktester(underlying="NIFTY", structure="long_straddle").run(self.bars, self.vix)
+        if not condor.trades or not straddle.trades:
+            self.skipTest("no trades on this synthetic path")
+        self.assertNotAlmostEqual(condor.final_equity, straddle.final_equity, places=2)
+
+
 class SweepGateTests(unittest.TestCase):
+    def test_sweep_structure_param_actually_reaches_the_backtester(self):
+        """Regression guard: run_sweep() previously never passed `structure`
+        to ShortVolBacktester(), so scripts/validate_longvol_structures.py's
+        (2026-09-08) sweep of long_straddle/strangle would have silently
+        backtested condor 4x instead."""
+        bars = _synthetic_series(n=500, seed=31)
+        vix = {b.day: 8.0 for b in bars}  # cheap -- opens the long-vol gate
+        grid = [{"sd": sd, "min_vrp": 0.0, "kelly_fraction": 0.0} for sd in (1.0, 1.25)]
+        sweep = run_sweep(bars, vix, underlying="NIFTY", structure="long_straddle", grid=grid)
+        for result in sweep:
+            for trade in result.trades:
+                self.assertEqual(trade.structure, "long_straddle")
+
     def test_sweep_gates_run_and_report_every_slot(self):
         bars = _synthetic_series(n=500, seed=21)
         vix = {b.day: 20.0 for b in bars}

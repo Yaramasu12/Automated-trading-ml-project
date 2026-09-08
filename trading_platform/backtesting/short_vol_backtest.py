@@ -317,6 +317,16 @@ class ShortVolBacktester:
             },
             starting_capital=self.starting_capital,
         )
+        # long_straddle/strangle (added 2026-09-08) BUY every leg — no credit
+        # is ever received, so the whole rest of this method's P&L convention
+        # ("credit received minus cost to close, capped loss = wing - credit")
+        # doesn't apply. Branch explicitly rather than trying to force a debit
+        # structure through credit-shaped arithmetic; getting the sign wrong
+        # here would silently misprice every trade in the backtest, exactly
+        # the kind of bug this codebase's own honesty discipline exists to
+        # catch, not commit.
+        is_long_vol = self.structure in ("long_straddle", "strangle")
+
         equity = self.starting_capital
         open_trade: ShortVolTrade | None = None
         open_legs = None
@@ -337,11 +347,24 @@ class ShortVolBacktester:
                 held = i - open_entry_idx
                 dte_left = max(0, self.hold_days - held)
                 t_left = dte_left / TRADING_DAYS
-                close_cost = self._structure_value(
-                    open_legs, bar.close, vix / 100.0, t_left
-                ) + self._leg_spread_cost(open_legs)
-                credit = open_trade.entry_credit_points
-                pnl_points = credit - close_cost
+                structure_value = self._structure_value(open_legs, bar.close, vix / 100.0, t_left)
+                spread = self._leg_spread_cost(open_legs)
+
+                if is_long_vol:
+                    # entry_credit_points holds the DEBIT PAID (positive) for
+                    # a long-vol trade — see the entry branch below. Closing
+                    # a BUY-only structure means SELLING it: _structure_value
+                    # is negative for an all-long book (its own docstring:
+                    # "positive = we pay" to close; buying legs back is what
+                    # costs money, selling them is proceeds), so -structure_value
+                    # is what we actually receive, minus the spread crossed.
+                    debit = open_trade.entry_credit_points
+                    proceeds = -structure_value - spread
+                    pnl_points = proceeds - debit
+                else:
+                    close_cost = structure_value + spread
+                    credit = open_trade.entry_credit_points
+                    pnl_points = credit - close_cost
                 # Mark the OPEN position to market every day. Without this the
                 # equity curve only moved on trade close, leaving ~90% of daily
                 # returns at exactly zero — which collapses the return series'
@@ -353,24 +376,47 @@ class ShortVolBacktester:
                 )
 
                 reason = ""
-                if pnl_points >= self.profit_target_pct * credit:
-                    reason = "profit_target"
-                elif pnl_points <= -self.stop_loss_multiple * credit:
-                    reason = "stop_loss"
-                elif dte_left <= 0:
-                    reason = "expiry"
+                if is_long_vol:
+                    # No stop-loss branch: a long-only structure's max loss is
+                    # already capped at the debit paid by construction (you
+                    # cannot lose more than you spent) — an early stop would
+                    # protect against nothing holding to expiry doesn't
+                    # already bound, and "stop at N x debit" is meaningless
+                    # once N >= 1.
+                    if pnl_points >= self.profit_target_pct * debit:
+                        reason = "profit_target"
+                    elif dte_left <= 0:
+                        reason = "expiry"
+                else:
+                    if pnl_points >= self.profit_target_pct * credit:
+                        reason = "profit_target"
+                    elif pnl_points <= -self.stop_loss_multiple * credit:
+                        reason = "stop_loss"
+                    elif dte_left <= 0:
+                        reason = "expiry"
 
                 if reason:
-                    # Loss is bounded by the wing — a defined-risk structure
-                    # cannot lose more than (wing - credit) per lot.
+                    # Loss is bounded — a defined-risk structure cannot lose
+                    # more than max_loss_points per lot (wing - credit for a
+                    # short structure; the debit itself for a long-only one).
                     pnl_points = max(pnl_points, -open_trade.max_loss_points)
                     qty = open_trade.lots * self.lot_size
-                    charges = self._charges(
-                        open_legs, open_trade.lots, credit, close_cost
-                    )
+                    if is_long_vol:
+                        # _charges()'s own "entry_points"/"exit_points" params
+                        # mean "sell-side turnover"/"buy-side turnover" (its
+                        # STT calc is SELL-side only, matching real NSE
+                        # rules) — for a short structure that's credit/
+                        # close_cost in that order; for a long-only structure
+                        # the SELL happens at CLOSE (proceeds) and the BUY at
+                        # entry (debit), so the two arguments swap accordingly.
+                        charges = self._charges(open_legs, open_trade.lots, proceeds, debit)
+                        exit_points = proceeds
+                    else:
+                        charges = self._charges(open_legs, open_trade.lots, credit, close_cost)
+                        exit_points = close_cost
                     pnl = pnl_points * qty - charges
                     open_trade.exit_day = bar.day
-                    open_trade.exit_debit_points = close_cost
+                    open_trade.exit_debit_points = exit_points
                     open_trade.pnl = pnl
                     open_trade.charges = charges
                     open_trade.exit_reason = reason
@@ -394,22 +440,33 @@ class ShortVolBacktester:
                     structure=self.structure,
                 )
                 if decision.enter and decision.legs and decision.lots > 0:
-                    entry_credit = decision.net_credit - self._leg_spread_cost(decision.legs)
-                    if entry_credit > 0:
+                    if is_long_vol:
+                        # decision.net_credit is negative-by-convention for a
+                        # debit structure (see short_vol.py::decide()) — flip
+                        # sign to get the actual amount paid, then add the
+                        # spread crossed on entry same as the credit side does.
+                        entry_amount = -decision.net_credit + self._leg_spread_cost(decision.legs)
+                    else:
+                        entry_amount = decision.net_credit - self._leg_spread_cost(decision.legs)
+                    if entry_amount > 0:
                         open_trade = ShortVolTrade(
                             entry_day=bar.day,
                             underlying=self.underlying,
                             structure=self.structure,
                             lots=decision.lots,
-                            entry_credit_points=entry_credit,
-                            max_loss_points=self.wing - entry_credit,
+                            # Dual-purpose field: the credit RECEIVED for a
+                            # short structure, or the debit PAID for a long-
+                            # only one — sign convention is always "positive
+                            # = the reference amount for this trade", branched
+                            # on `is_long_vol` everywhere it's read back above.
+                            entry_credit_points=entry_amount,
+                            max_loss_points=entry_amount if is_long_vol else self.wing - entry_amount,
                         )
                         open_legs = decision.legs
                         open_entry_idx = i
                     else:
-                        result.skipped_reasons["credit below spread cost"] = (
-                            result.skipped_reasons.get("credit below spread cost", 0) + 1
-                        )
+                        reason_key = "debit too small vs spread cost" if is_long_vol else "credit below spread cost"
+                        result.skipped_reasons[reason_key] = result.skipped_reasons.get(reason_key, 0) + 1
                 else:
                     key = (decision.reason or "no decision")[:60]
                     result.skipped_reasons[key] = result.skipped_reasons.get(key, 0) + 1
@@ -440,6 +497,7 @@ def run_sweep(
     *,
     underlying: str = "NIFTY",
     starting_capital: float = 1_000_000.0,
+    structure: str = "condor",
     grid: list[dict[str, float]] | None = None,
 ) -> list[ShortVolBacktestResult]:
     """Backtest every parameter combination over the same window."""
@@ -453,6 +511,7 @@ def run_sweep(
         bt = ShortVolBacktester(
             underlying=underlying,
             starting_capital=starting_capital,
+            structure=structure,
             strategy=strategy,
         )
         results.append(bt.run(bars, vix_by_day))

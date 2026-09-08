@@ -84,6 +84,66 @@ class ShortVolTests(unittest.TestCase):
             self.assertLess(small.lots, big.lots)
 
 
+class LongVolStructureTests(unittest.TestCase):
+    """long_straddle/strangle: the mirror thesis of condor/put_spread/
+    call_spread — buy premium when it's CHEAP rather than sell it when it's
+    rich. Found 2026-09-08 investigating why 6 catalogued multi-leg
+    strategies were disabled: MultiLegOrderManager already existed
+    (runtime.submit_multi_leg, proven daily by short_vol's own condor); the
+    actual gap was strike-construction logic for these structures."""
+
+    def setUp(self):
+        self.s = ShortVolStrategy(sd=1.25, wing_width=300, risk_budget=0.05, min_vrp=2.0)
+
+    def test_no_entry_when_premium_rich(self):
+        # realized ~9.5%, VIX 16 -> VRP ~6.5 > max_vrp_for_long_vol (0.0) -> refuse
+        d = self.s.decide(spot=24000, vix=16.0, closes=_flat_closes(daily_vol=0.006),
+                          capital=1_000_000, lot_size=50, structure="long_straddle")
+        self.assertFalse(d.enter)
+        self.assertIn("not cheap enough", d.reason)
+
+    def test_entry_when_premium_cheap(self):
+        # realized ~9.5%, VIX 6 -> VRP ~-3.5 <= 0.0 -> enter
+        d = self.s.decide(spot=24000, vix=6.0, closes=_flat_closes(daily_vol=0.006),
+                          capital=1_000_000, lot_size=50, structure="long_straddle")
+        self.assertTrue(d.enter, d.reason)
+        self.assertEqual(len(d.legs), 2)
+        self.assertTrue(all(l.side == Side.BUY for l in d.legs))
+        self.assertGreaterEqual(d.lots, 1)
+
+    def test_long_straddle_is_defined_risk_and_debit(self):
+        d = self.s.decide(spot=24000, vix=6.0, closes=_flat_closes(daily_vol=0.006),
+                          capital=1_000_000, lot_size=50, structure="long_straddle")
+        self.assertTrue(d.enter, d.reason)
+        # net_credit is negative by convention -- a DEBIT was paid, not received.
+        self.assertLess(d.net_credit, 0)
+        # max loss is exactly the premium paid (no wing to subtract, no naked leg).
+        self.assertAlmostEqual(d.max_loss, -d.net_credit, places=6)
+        # same (ATM) strike for both legs.
+        strikes = {l.strike for l in d.legs}
+        self.assertEqual(len(strikes), 1)
+
+    def test_strangle_uses_two_different_otm_strikes(self):
+        d = self.s.decide(spot=24000, vix=6.0, closes=_flat_closes(daily_vol=0.006),
+                          capital=1_000_000, lot_size=50, structure="strangle")
+        self.assertTrue(d.enter, d.reason)
+        self.assertEqual(len(d.legs), 2)
+        self.assertTrue(all(l.side == Side.BUY for l in d.legs))
+        call_leg = next(l for l in d.legs if l.option_type == OptionType.CE)
+        put_leg = next(l for l in d.legs if l.option_type == OptionType.PE)
+        self.assertGreater(call_leg.strike, 24000)   # OTM call above spot
+        self.assertLess(put_leg.strike, 24000)       # OTM put below spot
+        self.assertLess(d.net_credit, 0)             # debit, not credit
+
+    def test_no_leg_is_ever_naked_short(self):
+        for structure in ("long_straddle", "strangle"):
+            d = self.s.decide(spot=24000, vix=6.0, closes=_flat_closes(daily_vol=0.006),
+                              capital=1_000_000, lot_size=50, structure=structure)
+            if d.enter:
+                self.assertTrue(all(l.side == Side.BUY for l in d.legs),
+                                 f"{structure} produced a SELL leg — would be naked/undefined risk")
+
+
 def _option(underlying="NIFTY", strike=24000.0, ot=OptionType.CE, expiry=None):
     return Instrument(
         symbol=f"{underlying}{int(strike)}{ot.value}", name=underlying,
@@ -697,6 +757,59 @@ class IvRankGateTests(unittest.TestCase):
     def test_iv_rank_history_empty_when_collector_absent(self):
         ex = ShortVolExecutor(SimpleNamespace())
         self.assertEqual(ex._iv_rank_history("BANKNIFTY"), [])
+
+
+class LongVolExecutorBuildTests(IvRankGateTests):
+    """build()'s long_straddle/strangle path. Found 2026-09-08: the existing
+    wing-safety check and credit-floor check were both written for a
+    SELL-side structure — as written, either would refuse EVERY long-vol
+    build() call regardless of real economics (no SELL leg to look up for
+    the wing check; net_credit always negative for the floor check), so both
+    needed an explicit debit-side branch (see short_vol_executor.py's own
+    comment on the fix)."""
+
+    def test_enters_when_premium_is_cheap(self):
+        # High realized vol (from daily_vol=0.02, ~32% annualized) against a
+        # moderate atm_premium (IV ~15% per test_gate_declines_when_rank_
+        # below_threshold's own "atm_premium=250 -> IV~18.8%" note, scaled
+        # down) -> VRP clearly negative -> long-vol entry gate should open.
+        ex = self._executor(atm_premium=180.0, closes=_flat_closes(daily_vol=0.02))
+        plan = ex.build("NIFTY", structure="long_straddle")
+        self.assertTrue(plan["enter"], plan.get("reason"))
+        self.assertEqual(len(plan["legs"]), 2)
+        self.assertTrue(all(l["side"] == "BUY" for l in plan["legs"]))
+
+    def test_refuses_when_premium_is_rich(self):
+        # Default atm_premium=250 (IV ~18.8%) against the default _flat_closes
+        # (~9.5% realized) -> VRP clearly positive/rich -> long-vol refuses.
+        ex = self._executor(atm_premium=250.0)
+        plan = ex.build("NIFTY", structure="long_straddle")
+        self.assertFalse(plan["enter"])
+        self.assertIn("not cheap enough", plan["reason"])
+
+    def test_strangle_uses_two_distinct_otm_strikes(self):
+        ex = self._executor(atm_premium=180.0, closes=_flat_closes(daily_vol=0.02))
+        plan = ex.build("NIFTY", structure="strangle")
+        self.assertTrue(plan["enter"], plan.get("reason"))
+        strikes = {l["strike"] for l in plan["legs"]}
+        self.assertEqual(len(strikes), 2)
+        self.assertTrue(all(l["side"] == "BUY" for l in plan["legs"]))
+
+    def test_tiny_debit_refused_by_transaction_cost_floor(self):
+        # Mocking _option_last_price to a degenerate 0.05 also breaks the
+        # ATM-IV computation itself (same as the pre-existing credit-floor
+        # test's own setup) -- supply vix_history so build() falls back to
+        # VIX-based IV (~10%) rather than failing on "could not compute
+        # implied vol" before ever reaching the check under test.
+        ex = self._executor(
+            atm_premium=180.0, closes=_flat_closes(daily_vol=0.02),
+            vix_history=[float(v) for v in range(5, 15)],
+        )
+        with mock.patch.object(ex, "_option_last_price", return_value=0.05):
+            plan = ex.build("NIFTY", structure="long_straddle")
+        self.assertFalse(plan["enter"])
+        self.assertIn("charges would dominate", plan["reason"])
+        self.assertEqual(plan["legs"], [])
 
 
 class SyntheticDataFailClosedTests(IvRankGateTests):

@@ -74,6 +74,11 @@ class ShortVolStrategy:
         self.wing_width = wing_width if wing_width is not None else float(os.getenv("SHORTVOL_WING", "300"))
         self.risk_budget = risk_budget if risk_budget is not None else float(os.getenv("SHORTVOL_RISK", "0.05"))
         self.min_vrp = min_vrp if min_vrp is not None else float(os.getenv("SHORTVOL_MIN_VRP", "2.0"))
+        # long_straddle/strangle's entry bar (mirror of min_vrp — see decide()'s
+        # own comment on why these want CHEAP, not rich, premium). Default 0.0:
+        # only enter when implied vol is at or below the reference/forecast
+        # vol, i.e. no premium is being overpaid just to buy optionality.
+        self.max_vrp_for_long_vol = float(os.getenv("SHORTVOL_MAX_VRP_LONG", "0.0"))
         self.strike_step = strike_step
         self.hold_days = hold_days
         # Fractional Kelly multiplier (0 = disable Kelly, fall back to risk_budget).
@@ -108,6 +113,24 @@ class ShortVolStrategy:
             return 0.0
         z = self.sd * (vix / ref)
         return max(0.0, min(0.999, self._norm_cdf(z)))
+
+    def breakeven_probability(
+        self, spot: float, breakeven_up: float, breakeven_down: float, T: float, ref_vol_pct: float,
+    ) -> float:
+        """P(the underlying ends up BEYOND either breakeven at expiry) — the
+        win condition for a long straddle/strangle: profitable only if the
+        move is large enough to clear the premium paid on one side. Same
+        price-space normal approximation this file already uses elsewhere
+        (move = spot * vol * sqrt(T), z-scores in raw price-move units) for
+        consistency, not a different/more precise model — this whole
+        structure family is an unvalidated hypothesis (see decide()'s own
+        comment), so a fancier probability model would be false precision."""
+        ref_move = spot * (ref_vol_pct / 100.0) * math.sqrt(max(T, 1e-9))
+        if ref_move <= 0:
+            return 0.0
+        z_up = (breakeven_up - spot) / ref_move
+        z_down = (spot - breakeven_down) / ref_move
+        return max(0.0, min(0.999, (1.0 - self._norm_cdf(z_up)) + self._norm_cdf(-z_down)))
 
     def kelly_lots(self, *, credit: float, max_loss: float, win_prob: float,
                    capital: float, lot_size: int, risk_cap_lots: int) -> int:
@@ -227,7 +250,28 @@ class ShortVolStrategy:
         vrp = self.vrp(vix, closes, forecast_vol)
         if spot <= 0 or vix <= 0:
             return ShortVolDecision(False, "no spot/vix", vrp)
-        if vrp < self.min_vrp:
+        struct = (structure or "condor").lower()
+        is_long_vol = struct in ("long_straddle", "strangle")
+        # long_straddle/strangle are the MIRROR thesis of condor/put_spread/
+        # call_spread: those sell premium and want it RICH (vrp >= min_vrp);
+        # these BUY premium and want it CHEAP (vrp <= a low/negative bar) --
+        # implied vol has not priced in enough for the risk. Unlike condor's
+        # own thesis (established by scripts/research_vol_premium.py BEFORE
+        # this strategy existed — a real, researched ~76% VRP edge), this is
+        # a plausible but UNVALIDATED hypothesis: the DSR/PBO backtest gates
+        # decide whether it survives, exactly as they did for trend-following
+        # (rejected) and the 5 single-leg strategies validated 2026-09-08
+        # (all rejected). Found 2026-09-08 investigating why 6 catalogued
+        # multi-leg strategies were disabled.
+        if is_long_vol:
+            if vrp > self.max_vrp_for_long_vol:
+                return ShortVolDecision(
+                    False,
+                    f"vrp {vrp:.1f} > max {self.max_vrp_for_long_vol:.1f} for long-vol entry "
+                    f"(premium not cheap enough to buy)",
+                    vrp,
+                )
+        elif vrp < self.min_vrp:
             return ShortVolDecision(False, f"vrp {vrp:.1f} < min {self.min_vrp:.1f} (premium not rich)", vrp)
 
         iv = vix / 100.0
@@ -248,7 +292,6 @@ class ShortVolStrategy:
         put_wing = put_short - wing
 
         ref_vol = forecast_vol or self.expected_realized(closes)
-        struct = (structure or "condor").lower()
         if struct == "put_spread":
             # Bull put spread — harvests the DOWNSIDE skew/crash-risk premium (OTM
             # index puts are systematically overpriced). One-sided: wins unless the
@@ -272,6 +315,40 @@ class ShortVolStrategy:
                 CondorLegSpec(OptionType.CE, float(call_wing), Side.BUY, True),
             )
             label = f"call-spread {call_short:.0f}/{call_wing:.0f}"
+        elif struct == "long_straddle":
+            # BUY both legs at the SAME (ATM) strike — defined risk (max loss
+            # = premium paid, no short leg at all so block_naked_option_selling
+            # never applies here regardless of multi_leg_group metadata).
+            # Profits only if the move exceeds the combined premium either way.
+            atm_strike = round(spot / step) * step
+            call_premium = self._bs(spot, atm_strike, T, iv, True)
+            put_premium = self._bs(spot, atm_strike, T, iv, False)
+            debit = call_premium + put_premium
+            win_prob = self.breakeven_probability(
+                spot, atm_strike + debit, atm_strike - debit, T, ref_vol,
+            )
+            legs = (
+                CondorLegSpec(OptionType.CE, float(atm_strike), Side.BUY, False),
+                CondorLegSpec(OptionType.PE, float(atm_strike), Side.BUY, False),
+            )
+            label = f"long-straddle {atm_strike:.0f}"
+        elif struct == "strangle":
+            # BUY an OTM call and an OTM put — same defined-risk shape as
+            # long_straddle, cheaper premium but needs a bigger move to pay
+            # off. Reuses the existing OTM short-strike calc as the OTM long
+            # strike (same "how far OTM" distance the condor's own short legs
+            # use, just bought instead of sold).
+            call_premium = self._bs(spot, call_short, T, iv, True)
+            put_premium = self._bs(spot, put_short, T, iv, False)
+            debit = call_premium + put_premium
+            win_prob = self.breakeven_probability(
+                spot, call_short + debit, put_short - debit, T, ref_vol,
+            )
+            legs = (
+                CondorLegSpec(OptionType.CE, float(call_short), Side.BUY, False),
+                CondorLegSpec(OptionType.PE, float(put_short), Side.BUY, False),
+            )
+            label = f"strangle {put_short:.0f}/{call_short:.0f}"
         else:
             # Symmetric iron condor — harvests the (two-sided) volatility premium.
             credit = (
@@ -287,9 +364,18 @@ class ShortVolStrategy:
             )
             label = f"condor {put_wing:.0f}/{put_short:.0f}-{call_short:.0f}/{call_wing:.0f}"
 
-        max_loss = wing - credit
-        if credit <= 0 or max_loss <= 0:
-            return ShortVolDecision(False, "no net credit / non-positive risk", vrp)
+        if is_long_vol:
+            # `debit` was computed in the long_straddle/strangle branch above.
+            # No wing/short leg exists, so there is nothing to subtract:
+            # max loss IS the premium paid, full stop, if it expires worthless.
+            if debit <= 0:
+                return ShortVolDecision(False, "non-positive premium — cannot price entry", vrp)
+            max_loss = debit
+            credit = -debit   # negative on purpose: signals a net DEBIT, not a credit received
+        else:
+            max_loss = wing - credit
+            if credit <= 0 or max_loss <= 0:
+                return ShortVolDecision(False, "no net credit / non-positive risk", vrp)
 
         # Risk-budget cap (fixed-fractional): never risk more than risk_budget of
         # capital on one position. Hard ceiling on any sizing method.
@@ -298,7 +384,14 @@ class ShortVolStrategy:
             return ShortVolDecision(False, "risk budget too small for one lot", vrp)
 
         # Kelly sizing (capped by the risk budget): size grows with the real edge.
-        if self.kelly_fraction > 0:
+        # Skipped for long-vol structures: kelly_lots()'s f*=p-q/b formula
+        # assumes a roughly-binary win/loss payoff (right for a defined-risk
+        # CREDIT spread), not the asymmetric, unbounded-upside payoff a long
+        # straddle/strangle actually has. An unvalidated hypothesis should not
+        # also carry an unvalidated position-sizing formula — the same
+        # fixed-fractional risk-budget cap used as the ceiling for every
+        # structure is the sizing method here, not just the cap.
+        if self.kelly_fraction > 0 and not is_long_vol:
             lots = self.kelly_lots(
                 credit=credit, max_loss=max_loss, win_prob=win_prob,
                 capital=capital, lot_size=lot_size, risk_cap_lots=risk_cap_lots,
@@ -308,10 +401,14 @@ class ShortVolStrategy:
             lots, sizing = risk_cap_lots, "risk_budget"
         if lots < 1:
             return ShortVolDecision(
-                False, f"kelly size < 1 lot (p_win {win_prob:.2f}, edge too thin)", vrp)
+                False, f"{sizing} size < 1 lot (p_win {win_prob:.2f}, edge too thin)", vrp)
 
+        vrp_summary = (
+            f"VRP {vrp:.1f}<={self.max_vrp_for_long_vol:.1f}" if is_long_vol
+            else f"VRP {vrp:.1f}>={self.min_vrp:.1f}"
+        )
         return ShortVolDecision(
             True,
-            f"VRP {vrp:.1f}>={self.min_vrp:.1f}; {label} x{lots} [{sizing}]",
+            f"{vrp_summary}; {label} x{lots} [{sizing}]",
             vrp, legs=legs, lots=lots, net_credit=round(credit, 2), max_loss=round(max_loss, 2),
         )

@@ -38,6 +38,14 @@ logger = logging.getLogger(__name__)
 # every other index uses its OWN ATM implied vol (see _atm_iv_and_lot).
 _INDIA_VIX_TOKEN = "99926017"
 
+# Transaction-cost-floor constants shared by build()'s credit-side (condor/
+# put_spread/call_spread) and debit-side (long_straddle/strangle) checks —
+# see either check's own comment for the reasoning. charges.py's own
+# documented options rate: flat Rs 20/order + 18% GST.
+_FLAT_BROKERAGE_PER_ORDER = 20.0
+_GST_MULTIPLIER = 1.18
+_MIN_PREMIUM_CHARGE_MULTIPLE = 3.0
+
 
 def _env_flag(name: str, default: bool) -> bool:
     return os.getenv(name, str(default)).strip().lower() in {"1", "true", "yes", "on"}
@@ -484,6 +492,32 @@ class ShortVolExecutor:
             })
         out["expiry"] = expiry.isoformat()
 
+        # long_straddle/strangle are pure BUY-only structures (see
+        # short_vol.py::decide()) — no short leg, no wing, so the two SAFETY
+        # checks below (both written for a SELL-side credit structure) don't
+        # apply as written: the wing check would always fail (no SELL leg
+        # exists to look up) and the credit-floor check would always fail
+        # (every leg is a debit, so net_credit is always negative). Use the
+        # same transaction-cost-floor SPIRIT, flipped for a debit: the
+        # premium paid must be large enough that round-trip charges don't
+        # dominate the position, rather than a net credit large enough to
+        # clear them.
+        if structure in ("long_straddle", "strangle"):
+            debit = sum(leg["price"] * leg["quantity"] * leg["lot_size"] for leg in out["legs"])
+            round_trip_charge_estimate = (
+                2 * len(out["legs"]) * _FLAT_BROKERAGE_PER_ORDER * _GST_MULTIPLIER
+            )
+            min_required_debit = round_trip_charge_estimate * _MIN_PREMIUM_CHARGE_MULTIPLE
+            if debit < min_required_debit:
+                out["enter"] = False
+                out["reason"] = (
+                    f"debit Rs {debit:.2f} is too small relative to the ~Rs {round_trip_charge_estimate:.2f} "
+                    f"estimated round-trip brokerage for {len(out['legs'])} legs — charges would "
+                    f"dominate any realistic outcome"
+                )
+                out["legs"] = []
+            return out
+
         # SAFETY: defined-risk structures need the wing strictly beyond the short
         # (real protection). A too-narrow chain snaps short and wing to the same
         # strike, collapsing into unprotected/zero-width risk — never execute that.
@@ -527,21 +561,17 @@ class ShortVolExecutor:
         # requiring 3x that (not just breakeven) leaves room for the
         # position to actually need to move before max-profit, not just
         # cover its own cost of entry.
-        FLAT_BROKERAGE_PER_ORDER = 20.0
-        GST_MULTIPLIER = 1.18
-        MIN_NET_CREDIT_CHARGE_MULTIPLE = 3.0
-
         net_credit = sum(
             (leg["price"] if leg["side"] == "SELL" else -leg["price"]) * leg["quantity"] * leg["lot_size"]
             for leg in out["legs"]
         )
-        round_trip_charge_estimate = 2 * len(out["legs"]) * FLAT_BROKERAGE_PER_ORDER * GST_MULTIPLIER
-        min_required_credit = round_trip_charge_estimate * MIN_NET_CREDIT_CHARGE_MULTIPLE
+        round_trip_charge_estimate = 2 * len(out["legs"]) * _FLAT_BROKERAGE_PER_ORDER * _GST_MULTIPLIER
+        min_required_credit = round_trip_charge_estimate * _MIN_PREMIUM_CHARGE_MULTIPLE
         if net_credit < min_required_credit:
             out["enter"] = False
             out["reason"] = (
                 f"net credit Rs {net_credit:.2f} does not clear the transaction-cost floor "
-                f"(need >= Rs {min_required_credit:.2f} = {MIN_NET_CREDIT_CHARGE_MULTIPLE}x the "
+                f"(need >= Rs {min_required_credit:.2f} = {_MIN_PREMIUM_CHARGE_MULTIPLE}x the "
                 f"~Rs {round_trip_charge_estimate:.2f} estimated round-trip brokerage for "
                 f"{len(out['legs'])} legs) — structure too cheap to be worth the cost of entering it"
             )
@@ -641,9 +671,17 @@ class ShortVolExecutor:
     def structures(self) -> list[str]:
         """Which defined-risk structures to run: condor (symmetric vol premium)
         and/or put_spread (downside skew premium). One structure per (underlying,
-        expiry) — they don't stack, to avoid concentrating downside risk."""
+        expiry) — they don't stack, to avoid concentrating downside risk.
+
+        long_straddle/strangle (added 2026-09-08) are listed as VALID so an
+        operator can opt in, but are NOT in the default — they are an
+        unvalidated hypothesis (see short_vol.py::decide()'s own comment)
+        pending the same DSR/PBO backtest gate every other strategy in this
+        codebase must clear before earning live capital. Never enable them
+        here without that verdict passing first.
+        """
         raw = os.getenv("SHORTVOL_STRUCTURES", "condor")
-        valid = {"condor", "put_spread", "call_spread"}
+        valid = {"condor", "put_spread", "call_spread", "long_straddle", "strangle"}
         out = [s.strip().lower() for s in raw.split(",") if s.strip().lower() in valid]
         return out or ["condor"]
 
