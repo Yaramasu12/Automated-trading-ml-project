@@ -1247,6 +1247,14 @@ class TradingRuntime:
         if snapshot:
             self.portfolio.cash = snapshot["cash"]
             self.portfolio.peak_equity = max(self.portfolio.peak_equity, snapshot["equity"])
+            # Found 2026-09-08: load_positions() below only restores OPEN
+            # positions ("WHERE quantity != 0"), so a fully-closed position's
+            # realized_pnl was silently lost from PortfolioLedger.realized_pnl
+            # on every restart before this line existed — see that field's
+            # own comment in portfolio/ledger.py. The persisted snapshot
+            # already has the correct cumulative figure; restore it directly,
+            # the same way `cash` is on the line above.
+            self.portfolio.realized_pnl = snapshot.get("realized_pnl", 0.0) or 0.0
 
         from trading_platform.domain.models import Position
         for pos_data in self.db.load_positions(execution_mode=exec_mode):

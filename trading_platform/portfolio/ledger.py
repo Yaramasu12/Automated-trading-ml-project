@@ -29,6 +29,13 @@ class PortfolioLedger:
         self.trades: collections.deque[Trade] = collections.deque(maxlen=10_000)
         self.equity_curve: list[tuple[datetime, float]] = []
         self.peak_equity = initial_capital
+        # Running total realized P&L across ALL closed trades ever, ledger-
+        # wide -- NOT derived from summing position.realized_pnl (see
+        # mark_to_market's own comment on why that undercounts after a
+        # restart). Persisted in portfolio_snapshots.realized_pnl and
+        # restored directly in runtime.py's restore_state(), the same way
+        # `cash` already is.
+        self.realized_pnl = 0.0
         # Protects trades list, positions dict, cash, and peak_equity against
         # concurrent mutation from broker-callback threads and the asyncio loop.
         self._lock = threading.Lock()
@@ -51,7 +58,26 @@ class PortfolioLedger:
             return PortfolioSnapshot(
                 cash=self.cash,
                 equity=equity,
-                realized_pnl=sum(position.realized_pnl for position in self.positions.values()),
+                # Found 2026-09-08 (TradingQA's own investigation): summing
+                # position.realized_pnl across self.positions.values() looked
+                # right but silently undercounted after ANY restart, because
+                # restore_state() repopulates self.positions only from
+                # load_positions()'s "WHERE quantity != 0" query -- a fully
+                # CLOSED position (the common case: entry, then exit) is
+                # never re-inserted, so its accumulated realized_pnl vanished
+                # from this sum forever after the next restart, even though
+                # `cash` (restored directly from the persisted snapshot, not
+                # reconstructed from position objects) correctly kept the
+                # loss. Confirmed live: /portfolio/positions reported
+                # realized_pnl=0.0 while equity was already Rs 12,641 below
+                # start_capital -- AnnualTargetTracker's /portfolio/
+                # target-progress (current_equity - start_capital, no
+                # per-position dependency) had the right number the whole
+                # time. self.realized_pnl is the fix: a ledger-wide running
+                # total, incremented in apply_fill() the same instant a
+                # position's own counter is, and restored directly from the
+                # persisted snapshot in runtime.py, exactly like `cash`.
+                realized_pnl=self.realized_pnl,
                 unrealized_pnl=unrealized,
                 drawdown=drawdown,
                 peak_equity=self.peak_equity,
@@ -87,6 +113,7 @@ class PortfolioLedger:
                 closing_quantity = min(abs(existing_quantity), abs(signed_quantity))
                 realized = closing_quantity * (fill_price - position.average_price) * (1 if existing_quantity > 0 else -1) * lot_size
                 position.realized_pnl += realized  # charges already deducted from cash
+                self.realized_pnl += realized      # ledger-wide total — survives this position later closing/resetting
                 remaining = existing_quantity + signed_quantity
                 position.quantity = remaining
                 if remaining == 0:
