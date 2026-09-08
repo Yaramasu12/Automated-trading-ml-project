@@ -16,9 +16,12 @@ from trading_platform.backtesting.short_vol_backtest import DailyBar
 from trading_platform.domain.enums import Side
 from trading_platform.domain.models import Signal
 from trading_platform.research.strategy_validator import (
+    build_synthetic_option_premium_bars,
     load_market_bars_csv,
     make_exposure_fn,
+    make_option_exposure_fn,
     to_daily_bars,
+    validate_option_strategy,
     validate_strategy,
 )
 
@@ -201,6 +204,97 @@ class ValidateStrategyEndToEndTests(unittest.TestCase):
 
         self.assertEqual(record.strategy_name, "mean_reversion")
         self.assertEqual(record.symbol, "RELIANCE")
+        self.assertIsInstance(record.passed, bool)
+        self.assertIsInstance(record.cagr, float)
+        self.assertGreaterEqual(record.max_drawdown, 0.0)
+        self.assertLessEqual(record.max_drawdown, 1.0)
+
+
+class BuildSyntheticOptionPremiumBarsTests(unittest.TestCase):
+    def test_produces_positive_aligned_premium_series(self):
+        market_bars = _trending_up_bars(30)
+
+        premium_bars = build_synthetic_option_premium_bars(market_bars)
+
+        self.assertEqual(len(premium_bars), len(market_bars))
+        for mb, pb in zip(market_bars, premium_bars):
+            self.assertEqual(mb.timestamp.date(), pb.day)
+        self.assertTrue(all(p.close > 0 for p in premium_bars))
+        # First 20 entries (below FeatureEngine's own minimum) are backfilled
+        # with the first computable value, not left at the 0.0 placeholder.
+        self.assertTrue(all(p.close == premium_bars[0].close for p in premium_bars[:20]))
+
+
+class MakeOptionExposureFnTests(unittest.TestCase):
+    def test_enters_and_exits_on_premium_stop(self):
+        from trading_platform.domain.enums import Side as _Side
+
+        market_bars = _trending_up_bars(30)
+        # Controlled premium series, independent of the real pricing formula:
+        # flat at 10.0 throughout except one day crashing -45% (past the
+        # strategy's 35% stop) right after entry, to force a deterministic exit.
+        premium_bars = [DailyBar(day=b.timestamp.date(), close=10.0) for b in market_bars]
+        entry_idx = 25
+        premium_bars[entry_idx + 1] = DailyBar(day=premium_bars[entry_idx + 1].day, close=5.5)
+
+        def side_effect(instrument, bars, now):
+            if len(bars) - 1 == entry_idx:
+                return Signal("defined_risk_option_spread", instrument.symbol, _Side.BUY,
+                              0.7, 10.0, "test", now)
+            return None
+
+        with mock.patch(
+            "trading_platform.strategies.derivatives.DefinedRiskOptionSpreadStrategy.generate_signal",
+            side_effect=side_effect,
+        ):
+            exposure_fn = make_option_exposure_fn("defined_risk_option_spread", "TEST", market_bars)
+            exposures = exposure_fn(premium_bars, {"stop_target_scale": 1.0})
+
+        self.assertEqual(exposures[entry_idx], 1.0)
+        self.assertEqual(exposures[entry_idx + 1], 0.0, "45% premium crash should have triggered the 35% stop")
+
+    def test_never_enters_before_warmup_even_with_a_real_signal(self):
+        from trading_platform.domain.enums import Side as _Side
+
+        market_bars = _trending_up_bars(30)
+        premium_bars = [DailyBar(day=b.timestamp.date(), close=10.0) for b in market_bars]
+
+        with mock.patch(
+            "trading_platform.strategies.derivatives.DefinedRiskOptionSpreadStrategy.generate_signal",
+            return_value=Signal("defined_risk_option_spread", "TEST", _Side.BUY, 0.7, 10.0, "test",
+                                 datetime.now(timezone.utc)),
+        ):
+            exposure_fn = make_option_exposure_fn("defined_risk_option_spread", "TEST", market_bars)
+            exposures = exposure_fn(premium_bars, {})
+
+        self.assertTrue(all(e == 0.0 for e in exposures[:20]))
+
+    def test_no_signal_ever_stays_flat(self):
+        market_bars = _trending_up_bars(30)
+        premium_bars = [DailyBar(day=b.timestamp.date(), close=10.0) for b in market_bars]
+
+        with mock.patch(
+            "trading_platform.strategies.derivatives.DefinedRiskOptionSpreadStrategy.generate_signal",
+            return_value=None,
+        ):
+            exposure_fn = make_option_exposure_fn("defined_risk_option_spread", "TEST", market_bars)
+            exposures = exposure_fn(premium_bars, {})
+
+        self.assertTrue(all(e == 0.0 for e in exposures))
+
+
+class ValidateOptionStrategyEndToEndTests(unittest.TestCase):
+    """Same spirit as ValidateStrategyEndToEndTests -- runs the full real
+    pipeline, asserts well-formedness rather than a fixed PASS/FAIL."""
+
+    def test_defined_risk_option_spread_on_real_reliance_history_runs_end_to_end(self):
+        csv_path = Path("data/historical/RELIANCE__ONE_DAY_deep.csv")
+        if not csv_path.exists():
+            self.skipTest("real historical CSV not present in this checkout")
+
+        record = validate_option_strategy("defined_risk_option_spread", "RELIANCE", csv_path)
+
+        self.assertEqual(record.strategy_name, "defined_risk_option_spread")
         self.assertIsInstance(record.passed, bool)
         self.assertIsInstance(record.cagr, float)
         self.assertGreaterEqual(record.max_drawdown, 0.0)
