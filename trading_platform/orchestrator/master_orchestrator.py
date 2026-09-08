@@ -179,6 +179,7 @@ class MasterOrchestrator:
             ("specialist_crew",     self._node_specialist_crew),
             ("neural_forecast",     self._node_neural_forecast),
             ("risk_critic",         self._node_risk_critic),
+            ("strategy_selection",  self._node_strategy_selection),
             ("profit_guard",        self._node_profit_guard),
             ("consensus_fusion",    self._node_consensus_fusion),
             ("goal_governor",       self._node_goal_governor),
@@ -189,9 +190,11 @@ class MasterOrchestrator:
         # market_intelligence is here because it does blocking Angel One candle
         # I/O + rate-limit sleeps; run on the event loop it starved the API and
         # tick feed (health checks spiking to ~7s). Threading it keeps the loop
-        # responsive during scans.
+        # responsive during scans. strategy_selection also does a (usually
+        # cached, see DecisionPipeline._fetch_bars) candle fetch + RiskEngine
+        # evaluation, so it goes in the same bucket.
         _HEAVY_NODES = frozenset(
-            {"market_intelligence", "specialist_crew", "neural_forecast"}
+            {"market_intelligence", "specialist_crew", "neural_forecast", "strategy_selection"}
         )
 
         for node_name, node_fn in pipeline:
@@ -796,6 +799,117 @@ class MasterOrchestrator:
 
         return NodeResult(updates=updates)
 
+    # ── Node 5b: Strategy Selection ────────────────────────────────────────────
+
+    def _node_strategy_selection(self, state: OrchestratorState) -> NodeResult:
+        """Construct a REAL order from strategies/factory.py's catalog,
+        restricted to strategies that have cleared
+        scripts/validate_dormant_strategies.py's DSR/PBO/Monte-Carlo gates —
+        never an unvalidated strategy, however attractive its raw signal
+        looks in isolation.
+
+        Found 2026-09-08: this orchestrator's execution_plan node never used
+        the 19-strategy catalog at all — confirmed against real trade
+        history (GET /db/trades: every one of 172 trades ever recorded is
+        short_vol_condor/short_vol_exit/exit_manager:expiry, zero from any
+        other catalogued strategy or from this orchestrator's own prior
+        generic "orchestrator_<regime>" candidate). Wiring the catalog in
+        directly would have reintroduced fake edge if it used strategies
+        nobody had ever backtested, so validation (strategy_validator.py)
+        had to come first — see data/strategy_validation_registry.json for
+        the current accept/reject state per strategy.
+
+        Deliberately additive: when no accepted strategy applies (the
+        common case right now — the first validation pass accepted none),
+        state is untouched and execution_plan's prior behavior is exactly
+        what it was before this node existed.
+        """
+        from datetime import timedelta as _td
+
+        from trading_platform.ai.agents import StrategySelectionAgent
+        from trading_platform.ai.features import FeatureEngine
+        from trading_platform.domain.enums import ExecutionMode as _ExecMode
+        from trading_platform.research.strategy_validator import load_accepted_strategies
+
+        updates: dict[str, Any] = {}
+        try:
+            accepted = load_accepted_strategies()
+        except Exception as exc:
+            note_swallowed("orchestrator.strategy_selection_registry", exc)
+            return NodeResult(updates=updates)
+        if not accepted:
+            return NodeResult(updates=updates)
+
+        candidate_names = [
+            name for name in StrategySelectionAgent().choose(state.regime, state.underlying)
+            if name in accepted
+        ]
+        if not candidate_names:
+            return NodeResult(updates=updates)
+
+        rt = self._runtime
+        try:
+            today = datetime.now(timezone.utc).astimezone(_IST).date()
+            bars = rt.decision_pipeline._fetch_bars(state.underlying, today - _td(days=60), 30)
+        except Exception as exc:
+            note_swallowed("orchestrator.strategy_selection_bars", exc)
+            return NodeResult(updates=updates)
+        # Same discipline as _ensure_market_features and decision/pipeline.py's
+        # scan(): never act on bars the pipeline itself knows are fabricated.
+        if not bars or rt.decision_pipeline.bars_were_synthetic(state.underlying):
+            return NodeResult(updates=updates)
+
+        now = datetime.now(timezone.utc)
+        try:
+            snapshot = rt.portfolio.mark_to_market(now, {state.underlying: bars[-1].close})
+        except Exception as exc:
+            note_swallowed("orchestrator.strategy_selection_snapshot", exc)
+            return NodeResult(updates=updates)
+
+        try:
+            features = FeatureEngine().compute(bars)
+        except Exception:
+            features = None
+
+        try:
+            execution_mode = _ExecMode(state.execution_mode)
+        except ValueError:
+            execution_mode = _ExecMode.PAPER
+
+        for strategy_name in candidate_names:
+            try:
+                candidate = rt.decision_pipeline._candidate(
+                    underlying=state.underlying,
+                    strategy_name=strategy_name,
+                    bars=bars,
+                    now=now,
+                    snapshot=snapshot,
+                    execution_mode=execution_mode,
+                    live_armed=rt.live_armed,
+                    kill_switch_active=rt.kill_switch_active,
+                    features=features,
+                )
+            except Exception as exc:
+                note_swallowed("orchestrator.strategy_selection_candidate", exc)
+                continue
+            if candidate.signal is None or candidate.quantity <= 0:
+                continue
+            if candidate.risk_decision is None or not candidate.risk_decision.approved:
+                continue
+            updates["selected_strategy"] = strategy_name
+            updates["selected_strategy_order"] = {
+                "strategy_name": strategy_name,
+                "symbol": candidate.instrument.symbol,
+                "side": candidate.signal.side.value,
+                "confidence": candidate.signal.confidence,
+                "price": candidate.signal.price,
+                "reason": candidate.signal.reason,
+                "quantity": candidate.quantity,
+            }
+            break
+
+        return NodeResult(updates=updates)
+
     # ── Node 6: Profit Guard ───────────────────────────────────────────────────
 
     def _node_profit_guard(self, state: OrchestratorState) -> NodeResult:
@@ -996,10 +1110,63 @@ class MasterOrchestrator:
     # ── Node 9: Execution Plan ─────────────────────────────────────────────────
 
     def _node_execution_plan(self, state: OrchestratorState) -> NodeResult:
-        """Generate typed order candidates from the final orchestrated state."""
+        """Generate typed order candidates from the final orchestrated state.
+
+        Prefers a REAL, validated-strategy order (state.selected_strategy_order,
+        populated by _node_strategy_selection when one of strategies/
+        factory.py's catalogued strategies both cleared its own DSR/PBO
+        validation AND produced a risk-approved signal this cycle) over the
+        generic "orchestrator_<regime>" fabrication this node used
+        exclusively before 2026-09-08 — see _node_strategy_selection's
+        docstring for why that fabrication was itself the root cause of 18
+        of 19 catalogued strategies never trading in this deployment's
+        history. Falls back to the original generic candidate whenever no
+        validated strategy applies (still the common case today), so this
+        change is purely additive.
+        """
+        multiplier = state.position_size_multiplier
+
+        if state.selected_strategy_order:
+            order = state.selected_strategy_order
+            candidates = [{
+                "symbol": order["symbol"],
+                "underlying": state.underlying,
+                "side": order["side"],
+                "strategy_name": order["strategy_name"],
+                "confidence": order["confidence"],
+                "position_size_multiplier": multiplier,
+                "quantity": order["quantity"],
+                "signal": {
+                    "side": order["side"],
+                    "confidence": order["confidence"],
+                    "price": order["price"],
+                    "reason": order["reason"],
+                },
+                "orchestrator_metadata": {
+                    "trace_id": state.trace_id,
+                    "regime": state.regime,
+                    "underlying": state.underlying,
+                    "selected_strategy": order["strategy_name"],
+                    "crew_action": state.crew_action,
+                    "crew_consensus": state.crew_consensus,
+                    "neural_direction_prob": state.neural_direction_prob,
+                    "neural_direction_probability": state.neural_direction_prob,
+                    "fusion_score": state.fusion_score,
+                    "expected_value": state.profit_gate.expected_value if state.profit_gate else 0.0,
+                    "kelly_fraction": state.profit_gate.kelly_fraction if state.profit_gate else 0.0,
+                    "rag_win_rate": state.rag_win_rate,
+                    "market_features": state.market_features,
+                },
+            }]
+            logger.info(
+                "ExecutionPlan: 1 candidate for %s via VALIDATED strategy=%s side=%s EV=%.4f",
+                state.underlying, order["strategy_name"], order["side"],
+                state.profit_gate.expected_value if state.profit_gate else 0.0,
+            )
+            return NodeResult(updates={"order_candidates": candidates})
+
         candidates: list[dict] = []
         action = state.fusion_action.upper()
-        multiplier = state.position_size_multiplier
 
         symbols_to_trade = state.symbol_universe[:5]   # cap at 5 symbols per cycle
 

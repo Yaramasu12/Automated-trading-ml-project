@@ -99,6 +99,18 @@ class OrchestratorState:
     daily_loss_pct: float = 0.0
     consecutive_losses: int = 0
 
+    # ── Node 5b: Strategy Selection (added 2026-09-08) ────────────────────────
+    # Reconnects the live orchestrator to strategies/factory.py's 19
+    # catalogued Strategy classes, which _node_execution_plan() previously
+    # never touched at all (see MasterOrchestrator._node_strategy_selection's
+    # own docstring). Populated only when a strategy that has cleared
+    # scripts/validate_dormant_strategies.py's DSR/PBO gates produces a real,
+    # risk-approved signal for this underlying+regime; empty otherwise, in
+    # which case execution_plan's prior generic-candidate behavior is
+    # unchanged — purely additive, never a source of regression.
+    selected_strategy: str = ""
+    selected_strategy_order: dict[str, Any] | None = None
+
     # ── Node 6: Profit Guard (EV/Kelly/Sharpe) ────────────────────────────────
     profit_gate: ProfitGateResult | None = None
 
