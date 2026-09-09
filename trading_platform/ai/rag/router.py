@@ -10,6 +10,7 @@ Per §8 (REDESIGN_PROMPT): Route queries by complexity:
 from __future__ import annotations
 
 import logging
+import re
 from enum import Enum
 from typing import Any
 
@@ -68,7 +69,6 @@ class AdaptiveRouter:
             score += 0.1
 
         # Named entity count (tickers, dates)
-        import re
         tickers = re.findall(r'\b[A-Z]{2,5}\b', query)
         score += min(len(tickers) * 0.05, 0.2)
 
