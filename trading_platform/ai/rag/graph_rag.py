@@ -201,8 +201,9 @@ class KnowledgeGraph:
                     self.add_node(KGNode(id=event, label="event", properties={"source": "news"}))
                     count += 1
 
-            # Add edges
-            for rel in item.get("relations", []):
+            # Add edges (guard against missing/None relations)
+            relations = item.get("relations") or []
+            for rel in relations:
                 src, tgt = rel.get("from", ""), rel.get("to", "")
                 if src and tgt and src != tgt:
                     # Check if edge exists
