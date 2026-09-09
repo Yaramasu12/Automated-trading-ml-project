@@ -27,6 +27,11 @@ class AdaptiveRouter:
     """Routes queries to appropriate RAG path based on complexity."""
 
     def __init__(self, complexity_threshold: float = 0.5) -> None:
+        if (
+            not isinstance(complexity_threshold, (int, float))
+            or not 0.0 <= complexity_threshold <= 1.0
+        ):
+            raise ValueError("complexity_threshold must be within 0.0-1.0")
         self._threshold = complexity_threshold
 
     def route(self, query: str) -> QueryComplexity:
