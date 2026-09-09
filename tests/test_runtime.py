@@ -277,6 +277,49 @@ class RuntimeTests(unittest.TestCase):
             runtime.performance_summary(dict(payload))
             spy.assert_called_once()
 
+    def test_performance_summary_cold_start_does_not_block_past_budget(self):
+        # Found 2026-09-09: a cold cache (first call ever, or first call
+        # after a container restart) ran the full sweep inline with nothing
+        # to fall back to, blocking past TradingQA's 15s check budget and
+        # surfacing as "request failed -- Read timed out" on
+        # /performance/summary and /api/v1/performance. A slow first
+        # evaluation must now return a fast, honest empty-leaderboard
+        # placeholder instead of hanging.
+        import time
+        runtime = TradingRuntime()
+        runtime._PERFORMANCE_EVALUATION_COLD_START_BUDGET_SECONDS = 0.2
+
+        def _slow(*args, **kwargs):
+            time.sleep(2.0)
+            return unittest.mock.MagicMock(to_dict=lambda: {
+                "leaderboard": [{
+                    "strategy_name": "sv", "score": 1.0, "rejected_orders": 0,
+                    "metrics": {"profit_factor": 1.2, "sharpe_like": 0.5,
+                                "max_drawdown": 0.05, "win_rate": 0.6},
+                }],
+                "best_strategy": "sv",
+            })
+
+        payload = {"days": 5, "underlyings": ["NIFTY"]}
+        with unittest.mock.patch.object(
+            runtime.strategy_evaluator, "evaluate", side_effect=_slow,
+        ):
+            started = time.monotonic()
+            result = runtime.performance_summary(dict(payload))
+            elapsed = time.monotonic() - started
+
+        self.assertLess(elapsed, 1.0, f"cold start blocked for {elapsed:.2f}s instead of returning within budget")
+        self.assertEqual(result["strategy_quality_scores"], [])
+        self.assertIsNone(result["best_strategy"])
+
+        # The slow background evaluation eventually lands; a later call with
+        # the same params picks up the real (now cached) result.
+        deadline = time.monotonic() + 3.0
+        while not runtime._performance_evaluation_cache and time.monotonic() < deadline:
+            time.sleep(0.02)
+        final = runtime.performance_summary(dict(payload))
+        self.assertEqual(final["best_strategy"], "sv")
+
     def test_retraining_decision_endpoint(self):
         runtime = TradingRuntime()
         result = runtime.retraining_decision(

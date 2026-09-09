@@ -15,6 +15,7 @@ import math
 from datetime import datetime, timezone
 from typing import Any, Callable
 
+from trading_platform.logging_safety import note_swallowed
 from trading_platform.rl.policies import PolicyRecord
 
 # Promotion ladder + terminal states (moved with the policy methods from runtime).
@@ -61,6 +62,22 @@ class PolicyService:
     # first call after a container restart (or a >30 min gap) pays it.
     _CANARY_READINESS_CACHE_TTL_SECONDS = 1800
     _canary_readiness_cache: tuple[float, dict] | None = None
+    # Found 2026-09-09 alongside the identical bug in runtime.py's
+    # _cached_strategy_evaluation: a cold cache (first call ever, or first
+    # call after a restart) ran the full computation inline with nothing to
+    # fall back to, blocking past TradingQA's 15s budget and surfacing as
+    # "request failed — Read timed out" on /live/canary-readiness. Fixed the
+    # same way: a stale cache entry (any age) is served immediately while a
+    # background thread refreshes it; only a true first-ever call waits, and
+    # only up to a small bounded budget, before returning an honest
+    # NOT_READY placeholder. Both real callers (arm_live, the final
+    # execution gate) already do `.get("can_consider_live_canary", False)` —
+    # fail-closed by construction — so a placeholder that's simply
+    # NOT_READY/False is exactly as safe as "not yet evaluated" should be:
+    # it can never be mistaken for permission to go live.
+    _CANARY_READINESS_COLD_START_BUDGET_SECONDS = 3.0
+    _canary_readiness_inflight: object = None  # threading.Thread | None, set lazily
+    _canary_readiness_lock: object = None      # threading.Lock, set lazily
 
     def live_canary_readiness_payload(self) -> dict:
         """Return M6 readiness: whether live-canary can be considered.
@@ -69,16 +86,53 @@ class PolicyService:
         live plumbing can be armed; M6 says whether the paper/shadow evidence is
         clean enough to even consider a live-canary policy.
         """
+        import threading
         import time as _time
+
+        if self._canary_readiness_lock is None:
+            self._canary_readiness_lock = threading.Lock()
 
         cached = self._canary_readiness_cache
         now_ts = _time.monotonic()
         if cached is not None and (now_ts - cached[0]) < self._CANARY_READINESS_CACHE_TTL_SECONDS:
             return cached[1]
 
-        payload = self._compute_live_canary_readiness_payload()
-        self._canary_readiness_cache = (now_ts, payload)
-        return payload
+        def _compute_and_cache() -> None:
+            try:
+                result = self._compute_live_canary_readiness_payload()
+                self._canary_readiness_cache = (_time.monotonic(), result)
+            except Exception as exc:
+                note_swallowed("policy_service.live_canary_readiness.background_refresh", exc)
+            finally:
+                with self._canary_readiness_lock:
+                    self._canary_readiness_inflight = None
+
+        with self._canary_readiness_lock:
+            thread = self._canary_readiness_inflight
+            if thread is None:
+                thread = threading.Thread(
+                    target=_compute_and_cache, name="canary-readiness-refresh", daemon=True,
+                )
+                self._canary_readiness_inflight = thread
+                thread.start()
+
+        if cached is not None:
+            return cached[1]
+
+        # join() (not just waiting on a completion flag) so a fast finish
+        # also guarantees the thread's own resources — e.g. any DB
+        # connections it touched — are fully released before this call
+        # returns, not just "logically done".
+        thread.join(timeout=self._CANARY_READINESS_COLD_START_BUDGET_SECONDS)
+        fresh = self._canary_readiness_cache
+        if fresh is not None:
+            return fresh[1]
+        return {
+            "can_consider_live_canary": False,
+            "status": "NOT_READY",
+            "blocking_reasons": ["still_computing_readiness"],
+            "evaluated_at": datetime.now(timezone.utc).isoformat(),
+        }
 
     def _compute_live_canary_readiness_payload(self) -> dict:
         trace_ids, journal_days = self._live_canary_evidence_trace_ids()

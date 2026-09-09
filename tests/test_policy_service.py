@@ -86,6 +86,13 @@ def test_live_canary_readiness_caches_the_computation(monkeypatch):
 
 
 def test_live_canary_readiness_cache_expires_after_ttl(monkeypatch):
+    # Changed 2026-09-09 alongside the cold-start timeout fix: an expired
+    # entry is now served stale immediately while a background thread
+    # refreshes it (never blocks the caller), rather than recomputing
+    # synchronously inline. The recompute still happens -- just off the
+    # request path -- so it's asserted by polling for the background
+    # thread's side effect instead of by call-count-on-return.
+    import time
     svc = _svc()
     calls = []
     monkeypatch.setattr(
@@ -94,10 +101,50 @@ def test_live_canary_readiness_cache_expires_after_ttl(monkeypatch):
     )
     svc._CANARY_READINESS_CACHE_TTL_SECONDS = 0  # expires immediately
 
-    svc.live_canary_readiness_payload()
-    svc.live_canary_readiness_payload()
+    first = svc.live_canary_readiness_payload()  # cold start: waits for it
+    assert first == {"call": 1}
 
-    assert len(calls) == 2
+    second = svc.live_canary_readiness_payload()  # "expired" (TTL=0): stale, non-blocking
+    assert second == {"call": 1}, "expired entry must be served stale, not block for the recompute"
+
+    deadline = time.monotonic() + 2.0
+    while len(calls) < 2 and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert len(calls) == 2, "background refresh did not complete in time"
+
+
+def test_live_canary_readiness_cold_start_does_not_block_past_budget():
+    # Found 2026-09-09: a cold cache (first call ever, or first call after a
+    # restart) used to run the full computation inline with no fallback,
+    # blocking past TradingQA's 15s check budget and surfacing as a hard
+    # "request failed -- Read timed out". A slow first computation must now
+    # return a fast, honest NOT_READY placeholder instead of hanging.
+    import time
+    svc = _svc()
+    svc._CANARY_READINESS_COLD_START_BUDGET_SECONDS = 0.2
+
+    def _slow():
+        time.sleep(2.0)
+        return {"status": "READY", "can_consider_live_canary": True}
+
+    import unittest.mock
+    with unittest.mock.patch.object(svc, "_compute_live_canary_readiness_payload", side_effect=_slow):
+        started = time.monotonic()
+        result = svc.live_canary_readiness_payload()
+        elapsed = time.monotonic() - started
+
+    assert elapsed < 1.0, f"cold start blocked for {elapsed:.2f}s instead of returning within budget"
+    assert result["can_consider_live_canary"] is False
+    assert result["status"] == "NOT_READY"
+    assert "still_computing_readiness" in result["blocking_reasons"]
+
+    # The slow background computation eventually lands; a subsequent call
+    # picks up the real (now cached) result.
+    deadline = time.monotonic() + 3.0
+    while svc._canary_readiness_cache is None and time.monotonic() < deadline:
+        time.sleep(0.02)
+    final = svc.live_canary_readiness_payload()
+    assert final["can_consider_live_canary"] is True
 
 
 def test_promote_and_rollback_unknown_policy_safe():

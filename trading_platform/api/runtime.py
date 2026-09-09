@@ -4337,25 +4337,88 @@ class TradingRuntime:
     # as policy_service.py's canary-readiness cache.
     _PERFORMANCE_EVALUATION_CACHE_TTL_SECONDS = 1800
 
+    # Found 2026-09-09 (TradingQA + Agent Sai's own failed attempt at this —
+    # the real fix lives in api/runtime.py, a protected path Agent Sai
+    # refuses to touch, so the item just sat "no changes made" every hour):
+    # a COLD cache (first call ever, or first call after a container
+    # restart) had no fallback at all — it ran the full sweep inline and
+    # simply blocked past the client's 15s budget, surfacing as a hard
+    # "request failed — Read timed out" on /performance/summary,
+    # /api/v1/performance. The TTL-cache above already made every call
+    # AFTER the first one fast; this fixes the first one too, using the
+    # same "stale-but-fast beats blocking" idiom already used for prices
+    # (see /portfolio/positions' price_source="sticky"/price_is_stale):
+    # a stale cache entry (however old) is always returned immediately
+    # while a background thread refreshes it for next time; only a true
+    # first-ever call (nothing cached yet) waits, and only up to a small
+    # bounded budget, before returning an honest "still computing" shape
+    # instead of hanging — the leaderboard is simply empty until the
+    # background sweep finishes, which performance_summary() already
+    # handles gracefully (empty quality_scores, best_strategy=None).
+    _PERFORMANCE_EVALUATION_COLD_START_BUDGET_SECONDS = 3.0
+
     def _cached_strategy_evaluation(
         self, start: date, days: int, underlyings: tuple[str, ...],
         starting_capital: float, max_drawdown: float, strategy_names: tuple[str, ...] | None,
     ) -> dict:
+        import threading
         import time as _time
 
         if not hasattr(self, "_performance_evaluation_cache"):
             self._performance_evaluation_cache: dict[tuple, tuple[float, dict]] = {}
+        if not hasattr(self, "_performance_evaluation_inflight"):
+            self._performance_evaluation_inflight: dict[tuple, threading.Thread] = {}
+        if not hasattr(self, "_performance_evaluation_lock"):
+            self._performance_evaluation_lock = threading.Lock()
+
         key = (start.isoformat(), days, underlyings, starting_capital, max_drawdown, strategy_names)
         cached = self._performance_evaluation_cache.get(key)
         now_ts = _time.monotonic()
         if cached is not None and (now_ts - cached[0]) < self._PERFORMANCE_EVALUATION_CACHE_TTL_SECONDS:
             return cached[1]
-        evaluation = self.strategy_evaluator.evaluate(
-            start=start, days=days, underlyings=underlyings, starting_capital=starting_capital,
-            max_drawdown=max_drawdown, strategy_names=strategy_names,
-        ).to_dict()
-        self._performance_evaluation_cache[key] = (now_ts, evaluation)
-        return evaluation
+
+        def _compute_and_cache() -> None:
+            try:
+                result = self.strategy_evaluator.evaluate(
+                    start=start, days=days, underlyings=underlyings, starting_capital=starting_capital,
+                    max_drawdown=max_drawdown, strategy_names=strategy_names,
+                ).to_dict()
+                self._performance_evaluation_cache[key] = (_time.monotonic(), result)
+            except Exception as exc:
+                note_swallowed("runtime._cached_strategy_evaluation.background_refresh", exc)
+            finally:
+                with self._performance_evaluation_lock:
+                    self._performance_evaluation_inflight.pop(key, None)
+
+        with self._performance_evaluation_lock:
+            thread = self._performance_evaluation_inflight.get(key)
+            if thread is None:
+                thread = threading.Thread(
+                    target=_compute_and_cache, name="perf-eval-refresh", daemon=True,
+                )
+                self._performance_evaluation_inflight[key] = thread
+                thread.start()
+
+        if cached is not None:
+            # Stale beats blocking: serve last-known data now, refresh runs
+            # in the background for the next call.
+            return cached[1]
+
+        # True cold start — nothing cached yet. Give the background sweep a
+        # short bounded chance to land a real answer before falling back to
+        # an honest "still computing" empty leaderboard. join() (not just
+        # waiting on a completion flag) so a fast finish also guarantees the
+        # thread's own resources — e.g. any DB connections it touched — are
+        # fully released before this call returns, not just "logically done".
+        thread.join(timeout=self._PERFORMANCE_EVALUATION_COLD_START_BUDGET_SECONDS)
+        fresh = self._performance_evaluation_cache.get(key)
+        if fresh is not None:
+            return fresh[1]
+        return {
+            "start": start.isoformat(), "days": days, "underlyings": list(underlyings),
+            "leaderboard": [], "best_strategy": None,
+            "evaluation_status": "warming_up",
+        }
 
     def performance_summary(self, payload: dict | None = None) -> dict:
         payload = payload or {}

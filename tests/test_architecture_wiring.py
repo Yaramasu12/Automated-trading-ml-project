@@ -15,7 +15,19 @@ from trading_platform.trace.learning_journal import PaperLearningJournal
 
 class ArchitectureWiringTests(unittest.TestCase):
     def _isolated_runtime(self) -> TradingRuntime:
-        tmp = tempfile.TemporaryDirectory()
+        # ignore_cleanup_errors: live_canary_readiness_payload() (2026-09-09
+        # fix) now runs its first-ever computation on a background thread so
+        # a cold cache can't block the caller past a client timeout budget.
+        # That thread reads paper_learning_journal.db via a check_same_
+        # thread=False connection -- functionally fine (SQLite's own
+        # serialized mode), but on Windows the OS can hold the file's
+        # handle open for a beat after the thread's Python-level join()
+        # already returned, occasionally racing this temp dir's teardown
+        # ("WinError 32" / a stale directory-entry cache reporting
+        # NotADirectoryError). Doesn't happen on Linux/Docker (the actual
+        # deploy target) and isn't a correctness issue -- best-effort
+        # cleanup here rather than a flaky test failure.
+        tmp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         self.addCleanup(tmp.cleanup)
         runtime = TradingRuntime()
         runtime.paper_learning_journal = PaperLearningJournal(Path(tmp.name) / "paper_learning_journal.db")
