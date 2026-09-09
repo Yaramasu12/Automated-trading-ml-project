@@ -137,11 +137,13 @@ class KnowledgeGraph:
         if G is None:
             return []
 
-        peers = []
+        peers: list[dict[str, Any]] = []
+        seen: set[str] = set()
         # Find nodes that share incoming edges with ticker
         for pred in nx.predecessors(G, ticker):
             for succ in nx.successors(G, pred):
-                if succ != ticker and succ not in [p["node"] for p in peers]:
+                if succ != ticker and succ not in seen:
+                    seen.add(succ)
                     peers.append({
                         "peer": succ,
                         "via_node": pred,
