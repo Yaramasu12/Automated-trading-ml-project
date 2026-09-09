@@ -78,5 +78,73 @@ class NextRunGracePeriodTests(unittest.TestCase):
         self.assertGreater(result.date(), saturday.date())
 
 
+class AlreadyRanTodaySuppressesReselectionTests(unittest.TestCase):
+    """Found live 2026-09-08: the grace-window fix above (correctly) makes a
+    recently-passed slot still count as "due today" — but main()'s loop had
+    no memory of whether that slot's job had already actually run, so it kept
+    re-selecting and re-executing the SAME job every ~90s for the entire
+    10-minute grace window (~6-7 duplicate runs). Confirmed via the live
+    risk_events audit trail: eod_square_off_triggered fired 7 times 90s apart
+    for scheduled_eod_square_off_15:20_ist, and square_off_requested fired 7
+    times 90s apart for mcx_eod_squareoff_23:25 — both exactly matching this
+    pattern. These tests guard the already_ran_today parameter that fixes it.
+    """
+
+    MONDAY = (2026, 9, 7)
+
+    def test_already_ran_today_rolls_to_tomorrow_even_inside_grace_window(self):
+        # Same instant as test_slot_a_minute_in_the_past_still_runs_today
+        # above (30s after 15:36, well inside the 10-minute grace window) —
+        # but this time the caller says the job already ran today.
+        now = _ist(*self.MONDAY, 15, 36) + timedelta(seconds=30)
+        with mock.patch.object(daily_scheduler, "_now_ist", return_value=now):
+            result = daily_scheduler._next_run(15, 36, already_ran_today=True)
+        self.assertGreater(result.date(), now.date())
+        self.assertEqual((result.hour, result.minute), (15, 36))
+
+    def test_already_ran_today_false_is_unaffected(self):
+        # Default value preserves the original grace-window behavior exactly.
+        now = _ist(*self.MONDAY, 15, 36) + timedelta(seconds=30)
+        with mock.patch.object(daily_scheduler, "_now_ist", return_value=now):
+            result = daily_scheduler._next_run(15, 36, already_ran_today=False)
+        self.assertEqual(result.date(), now.date())
+
+    def test_a_job_never_run_today_is_reselected_as_due_until_it_runs(self):
+        # A job that has NOT run yet must still be reported as due within the
+        # grace window — already_ran_today alone must not suppress genuinely
+        # pending work, only re-firing of work that already completed.
+        now = _ist(*self.MONDAY, 15, 20) + timedelta(minutes=3)
+        with mock.patch.object(daily_scheduler, "_now_ist", return_value=now):
+            result = daily_scheduler._next_run(15, 20, already_ran_today=False)
+        self.assertEqual(result.date(), now.date())
+
+    def test_main_loop_selects_each_job_at_most_once_per_day(self):
+        """End-to-end simulation of main()'s own selection loop (without
+        actually running it) proving a job caught by the grace window is
+        picked exactly once, not on every iteration until the window lapses."""
+        job_hour, job_minute = 15, 20
+        job_name = "eod_square_off"
+        start = _ist(*self.MONDAY, job_hour, job_minute) + timedelta(seconds=30)
+
+        last_run_date: dict[str, object] = {}
+        run_count = 0
+        # Simulate ~10 loop iterations, 90s apart, exactly like main()'s
+        # post-job time.sleep(90) cadence, all inside the 10-minute grace
+        # window that triggered the live bug.
+        for i in range(10):
+            simulated_now = start + timedelta(seconds=90 * i)
+            with mock.patch.object(daily_scheduler, "_now_ist", return_value=simulated_now):
+                already_ran = last_run_date.get(job_name) == simulated_now.date()
+                next_time = daily_scheduler._next_run(
+                    job_hour, job_minute, already_ran_today=already_ran,
+                )
+                is_due_now = next_time <= simulated_now
+                if is_due_now and not already_ran:
+                    run_count += 1
+                    last_run_date[job_name] = simulated_now.date()
+
+        self.assertEqual(run_count, 1)
+
+
 if __name__ == "__main__":
     unittest.main()

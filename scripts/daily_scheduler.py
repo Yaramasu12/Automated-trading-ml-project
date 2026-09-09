@@ -26,7 +26,7 @@ import sys
 import time
 import urllib.error
 import urllib.request
-from datetime import datetime, timezone, timedelta, time as dtime
+from datetime import date, datetime, timezone, timedelta, time as dtime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -80,7 +80,7 @@ def _is_trading_day(dt: datetime) -> bool:
 _MISSED_JOB_GRACE_MINUTES = 10
 
 
-def _next_run(hour: int, minute: int) -> datetime:
+def _next_run(hour: int, minute: int, *, already_ran_today: bool = False) -> datetime:
     """Return the next wall-clock datetime (IST) for the given (hour, minute).
 
     A slot that passed VERY recently (within _MISSED_JOB_GRACE_MINUTES)
@@ -96,12 +96,27 @@ def _next_run(hour: int, minute: int) -> datetime:
     The grace window is intentionally short: a job that's been overdue
     longer than this (e.g. the whole scheduler was down for hours) should
     still defer to its next real occurrence, not fire late and stale.
+
+    `already_ran_today`: found 2026-09-08 live — that fix alone reintroduced
+    a WORSE bug. main()'s loop recomputes _next_run() for every job on every
+    iteration with no memory of what already ran; a job caught by the grace
+    window kept being reported as "due" on every subsequent ~90s loop tick
+    until the window itself expired, so it fired again and again — observed
+    live as eod_square_off and mcx_eod_square_off each re-triggering roughly
+    every 90s for ~10 minutes straight (~6-7 duplicate runs), visible as
+    repeated eod_square_off_triggered/square_off_requested risk events.
+    exclude_segments=["OPTIONS"] meant no short_vol position was actually
+    touched, but the retry storm itself was real. Callers must track which
+    calendar date each job last actually ran and pass already_ran_today=True
+    once it has — that forces the slot to roll to tomorrow immediately,
+    regardless of how much grace window remains, so a job the loop already
+    executed for today can never be selected as "next due" again today.
     """
     now = _now_ist()
     candidate = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
     if candidate <= now:
         overdue = now - candidate
-        if overdue > timedelta(minutes=_MISSED_JOB_GRACE_MINUTES):
+        if already_ran_today or overdue > timedelta(minutes=_MISSED_JOB_GRACE_MINUTES):
             candidate += timedelta(days=1)
     # Skip weekends
     while not _is_trading_day(candidate):
@@ -614,11 +629,20 @@ def main() -> None:
     logger.info("Daily scheduler starting — will run on trading days (Mon-Fri)")
     logger.info("Jobs: %s", [f"{h:02d}:{m:02d} IST → {name}" for h, m, name in _JOBS])
 
+    # Found live 2026-09-08: without this, a job caught by _next_run()'s grace
+    # window kept being reported as "due" on every ~90s loop iteration until
+    # the window itself expired, so it re-ran ~6-7 times in a row (observed:
+    # eod_square_off and mcx_eod_square_off each fired every ~90s for ~10
+    # minutes straight). Tracks the last calendar date (IST) each job actually
+    # completed, so a job already run today is never selected as "next due"
+    # again today, no matter how much grace window remains.
+    last_run_date: dict[str, date] = {}
+
     while True:
         # Find the soonest upcoming job
         now = _now_ist()
         upcoming = [
-            (_next_run(h, m), name)
+            (_next_run(h, m, already_ran_today=(last_run_date.get(name) == now.date())), name)
             for h, m, name in _JOBS
         ]
         upcoming.sort(key=lambda x: x[0])
@@ -636,6 +660,7 @@ def main() -> None:
         try:
             _JOB_FNS[next_name]()
         finally:
+            last_run_date[next_name] = _now_ist().date()
             _checkpoint_sqlite_wal()
 
         # Brief pause so we don't re-trigger the same minute
