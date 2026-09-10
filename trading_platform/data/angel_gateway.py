@@ -92,6 +92,8 @@ class ShardPool:
         Assign *symbols* across shards round-robin.
         Returns the list of shards that now hold subscriptions.
         """
+        if not symbols:
+            return []
         async with self._lock:
             assigned: list[WSShard] = []
             for sym in symbols:
