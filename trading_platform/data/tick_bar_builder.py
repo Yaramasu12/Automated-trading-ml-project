@@ -311,6 +311,14 @@ class TickBarBuilder:
 
     async def _publish_bar(self, bar: Bar) -> None:
         """Publish completed bar to Redis Streams and TimescaleDB."""
+        if bar.timestamp <= 0:
+            logger.warning(
+                "Skipping publish of bar with zero timestamp: symbol=%s interval=%s",
+                bar.symbol,
+                bar.interval,
+            )
+            return
+
         # Publish to tick bus for downstream consumers
         await self._tick_bus.publish_bar(bar)
 
