@@ -137,6 +137,11 @@ class ShortVolPortfolioBacktester:
         self.underlyings = underlyings or ["NIFTY", "BANKNIFTY", "FINNIFTY"]
         self.starting_capital = starting_capital
         self.slots_per_underlying = slots_per_underlying
+        if not (0.0 < max_portfolio_risk_pct < 1.0):
+            raise ValueError(
+                f"max_portfolio_risk_pct must be strictly between 0 and 1, "
+                f"got {max_portfolio_risk_pct!r}"
+            )
         self.max_portfolio_risk_pct = max_portfolio_risk_pct
         self.continuous_entry = continuous_entry
         self.hold_days = hold_days

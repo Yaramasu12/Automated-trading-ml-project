@@ -89,6 +89,10 @@ class TickV2:
     correlation_id: Optional[str] = None
     staleness_reason: Optional[str] = None
 
+    def __post_init__(self) -> None:
+        if self.price <= Decimal("0"):
+            raise ValueError(f"TickV2 price must be > 0, got {self.price}")
+
     # --- helpers ---
 
     @property

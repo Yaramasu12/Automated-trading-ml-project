@@ -189,7 +189,7 @@ def generate_triple_barrier_labels(
                 pnl_pct = (entry_price - exit_price) / entry_price
 
         # Sample-unique weight (de-bias overlapping labels)
-        weight = _compute_sample_unique_weight(i, entry_indices, config.max_overlap)
+        weight = _compute_sample_unique_weight(i, entry_indices, config.max_overlap, config.t_threshold)
 
         # Build feature dict
         feat_dict = {}
@@ -221,6 +221,7 @@ def _compute_sample_unique_weight(
     entry_idx: int,
     entry_indices: NDArray[np.int64],
     max_overlap: float = 0.5,
+    t_threshold: int = 50,
 ) -> float:
     """
     Compute sample-unique weight per López de Prado (2018) §6.1.2.
@@ -238,7 +239,7 @@ def _compute_sample_unique_weight(
         if other_idx == entry_idx:
             continue
         # Check overlap: |other - entry| < t_threshold
-        if abs(other_idx - entry_idx) < 50:  # Using fixed t_threshold for simplicity
+        if abs(other_idx - entry_idx) < t_threshold:
             overlap_count += 1
 
     # Apply weight
@@ -311,11 +312,9 @@ def conformal_prediction(
         (lower_bounds, upper_bounds) arrays
     """
     if len(residuals) < 10:
-        # Not enough calibration data — return neutral intervals
-        width = 0.5
-        return np.full_like(predictions, predictions - width), np.full_like(
-            predictions, predictions + width
-        )
+        # Not enough calibration data — use MAD-based default
+        q_value = float(np.median(np.abs(residuals - np.median(residuals))))
+        return predictions - q_value, predictions + q_value
 
     # Q-value: (1-α) quantile of residuals
     alpha = 1.0 - confidence

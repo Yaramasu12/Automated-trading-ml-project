@@ -59,6 +59,8 @@ class OptionLeg:
             raise ValueError(f"reference_premium must be ≥ 0, got {self.reference_premium}")
         if self.lot_size is not None and self.lot_size <= 0:
             raise ValueError(f"lot_size must be > 0, got {self.lot_size}")
+        if self.min_open_interest is not None and self.min_open_interest <= 0:
+            raise ValueError(f"min_open_interest must be > 0, got {self.min_open_interest}")
 
     @property
     def is_short(self) -> bool:
@@ -279,7 +281,10 @@ class OptionStrategyPlan:
         for leg in self.legs:
             if leg.lot_size is not None:
                 return leg.lot_size
-        return 1
+        raise ValueError(
+            f"OptionStrategyPlan '{self.strategy_name}' has no leg with a "
+            f"defined lot_size; cannot determine effective lot size"
+        )
 
     # ── Serialisation ─────────────────────────────────────────────────
 

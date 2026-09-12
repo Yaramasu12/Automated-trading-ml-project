@@ -101,6 +101,12 @@ def polars_to_timescale(
 
         if upsert:
             cols = conflict_columns or ["symbol", "timestamp"]
+            df_cols = set(df.columns)
+            missing = [c for c in cols if c not in df_cols]
+            if missing:
+                raise ValueError(
+                    f"conflict_columns {missing} not found in DataFrame columns {list(df.columns)}"
+                )
             _upsert_arrow_table(conn, schema, table_name, table, cols)
         else:
             _insert_arrow_table(conn, schema, table_name, table)

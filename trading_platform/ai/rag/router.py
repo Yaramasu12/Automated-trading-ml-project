@@ -10,6 +10,7 @@ Per §8 (REDESIGN_PROMPT): Route queries by complexity:
 from __future__ import annotations
 
 import logging
+import re
 from enum import Enum
 from typing import Any
 
@@ -26,6 +27,11 @@ class AdaptiveRouter:
     """Routes queries to appropriate RAG path based on complexity."""
 
     def __init__(self, complexity_threshold: float = 0.5) -> None:
+        if (
+            not isinstance(complexity_threshold, (int, float))
+            or not 0.0 <= complexity_threshold <= 1.0
+        ):
+            raise ValueError("complexity_threshold must be within 0.0-1.0")
         self._threshold = complexity_threshold
 
     def route(self, query: str) -> QueryComplexity:
@@ -68,7 +74,6 @@ class AdaptiveRouter:
             score += 0.1
 
         # Named entity count (tickers, dates)
-        import re
         tickers = re.findall(r'\b[A-Z]{2,5}\b', query)
         score += min(len(tickers) * 0.05, 0.2)
 

@@ -76,6 +76,8 @@ class DepthSnapshot:
         """
         bid_total = sum(b.qty for b in self.bids)
         ask_total = sum(a.qty for a in self.asks)
+        if bid_total < 0 or ask_total < 0:
+            return None
         total = bid_total + ask_total
         if total == 0:
             return None

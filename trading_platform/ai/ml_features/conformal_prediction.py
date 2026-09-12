@@ -133,7 +133,15 @@ class ConformalPredictor:
         -------
         ConformalInterval
             Guaranteed (1-α) coverage interval.
+
+        Raises
+        ------
+        ValueError
+            If ``width`` is negative.
         """
+        if width < 0:
+            raise ValueError(f"width must be non-negative, got {width}")
+
         if not self.calibrated:
             logger.warning("Conformal predictor not calibrated — returning wide default")
             return ConformalInterval(
@@ -195,8 +203,8 @@ class ConformalPredictor:
 
         # Size scaling: inversely proportional to width
         # Narrow interval → full size; wide interval → reduced size
-        max_width = max(abs(point_pred) * 2, 1e-6)
-        size_scaling = float(np.clip(1.0 - (interval.width / max_width), 0.05, 1.0))
+        reference_width = max(abs(point_pred) * 2, 1e-6)
+        size_scaling = float(np.clip(1.0 - (interval.width / reference_width), 0.05, 1.0))
 
         # Apply min_conviction threshold
         if conviction < min_conviction:

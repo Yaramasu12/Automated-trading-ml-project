@@ -81,7 +81,7 @@ def is_trading_day(d: date | None = None) -> bool:
 
 
 def market_status(dt: datetime | None = None) -> str:
-    now = dt or now_ist()
+    now = to_ist(dt) if dt is not None else now_ist()
     if not is_trading_day(now.date()):
         return "CLOSED"
     t = now.time()
