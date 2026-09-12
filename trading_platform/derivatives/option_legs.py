@@ -59,6 +59,8 @@ class OptionLeg:
             raise ValueError(f"reference_premium must be ≥ 0, got {self.reference_premium}")
         if self.lot_size is not None and self.lot_size <= 0:
             raise ValueError(f"lot_size must be > 0, got {self.lot_size}")
+        if self.min_open_interest is not None and self.min_open_interest <= 0:
+            raise ValueError(f"min_open_interest must be > 0, got {self.min_open_interest}")
 
     @property
     def is_short(self) -> bool:
