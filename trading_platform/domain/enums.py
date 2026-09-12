@@ -102,6 +102,7 @@ class OrderStatus(str, Enum):
     PARTIALLY_FILLED = "PARTIALLY_FILLED"
     REJECTED = "REJECTED"
     CANCELLED = "CANCELLED"
+    UNKNOWN = "UNKNOWN"
 
 
 class OrderPriority(IntEnum):
