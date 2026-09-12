@@ -10,6 +10,7 @@ class ExecutionMode(str, Enum):
     LIVE = "LIVE"
     LIVE_MANUAL_APPROVAL = "LIVE_MANUAL_APPROVAL"
     LIVE_AUTO_LIMITED = "LIVE_AUTO_LIMITED"
+    UNKNOWN = "UNKNOWN"
 
 
 class StrategyState(str, Enum):
