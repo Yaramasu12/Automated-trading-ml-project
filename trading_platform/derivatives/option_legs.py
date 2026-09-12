@@ -281,7 +281,10 @@ class OptionStrategyPlan:
         for leg in self.legs:
             if leg.lot_size is not None:
                 return leg.lot_size
-        return 1
+        raise ValueError(
+            f"OptionStrategyPlan '{self.strategy_name}' has no leg with a "
+            f"defined lot_size; cannot determine effective lot size"
+        )
 
     # ── Serialisation ─────────────────────────────────────────────────
 
