@@ -3,10 +3,11 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import logging
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 
-from trading_platform.api.auth import require_auth, verify_token
+from trading_platform.api.auth import _auth_disabled, require_auth, verify_token
 from trading_platform.api.runtime import TradingRuntime
 from trading_platform.api.schemas import (
     AccountStatusResponse,
@@ -45,6 +46,28 @@ except ImportError as exc:  # pragma: no cover - exercised only without optional
 
 runtime = TradingRuntime()
 _settings = load_settings()
+
+# audit_results/2026-09-13/AUDIT_REPORT.md finding #2 (high): the deployed
+# container had API_AUTH_REQUIRED=false with no API_AUTH_TOKEN configured --
+# an intentional, documented "development only" bypass (see auth.py's own
+# docstring) that was silently running on a container with real trading
+# positions, reachable on every host network interface
+# (docker-compose.yml's `0.0.0.0:8100:8000` publish). require_auth()/
+# verify_token() themselves are already correct (an explicit
+# API_AUTH_REQUIRED=true with an empty token correctly fails closed with
+# 503) — the gap was that NOTHING made the insecure bypass observable. This
+# does not change behavior; it makes an already-dangerous configuration
+# impossible to run unnoticed.
+if _auth_disabled(_settings):
+    logging.getLogger(__name__).critical(
+        "SECURITY: API_AUTH_REQUIRED=false and API_AUTH_TOKEN unset — the control "
+        "plane is running WITHOUT AUTHENTICATION. Every mutating endpoint (kill "
+        "switch, execution mode, order placement, live arming) is reachable by "
+        "anyone who can route to this host on any published interface. This is "
+        "documented as development-only (trading_platform/api/auth.py). Set "
+        "API_AUTH_REQUIRED=true and a real API_AUTH_TOKEN before running with "
+        "real capital or on any network beyond localhost."
+    )
 
 def _ws_snapshot_content(authed: bool) -> dict:
     """Dashboard snapshot body, mirroring REST auth: fields whose REST

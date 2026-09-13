@@ -504,6 +504,19 @@ class RuntimeTests(unittest.TestCase):
         self.assertFalse(status["read_only_available"])
         self.assertFalse(status["live_orders_possible"])
 
+    def test_account_status_reports_whether_auth_is_actually_enabled(self):
+        # audit_results/2026-09-13/AUDIT_REPORT.md finding #2 (high): the
+        # deployed container ran with auth disabled and nothing surfaced
+        # that fact anywhere an operator would see it.
+        from dataclasses import replace as _replace
+        runtime = TradingRuntime()
+
+        runtime.settings = _replace(runtime.settings, api_auth_required=False, api_auth_token="")
+        self.assertFalse(runtime.account_status()["api_auth_enabled"])
+
+        runtime.settings = _replace(runtime.settings, api_auth_required=True, api_auth_token="a-real-secret")
+        self.assertTrue(runtime.account_status()["api_auth_enabled"])
+
     def test_account_snapshot_requires_credentials(self):
         from unittest.mock import patch, PropertyMock
         runtime = TradingRuntime()

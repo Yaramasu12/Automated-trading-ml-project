@@ -1681,6 +1681,15 @@ class TradingRuntime:
         }
 
     def account_status(self) -> dict:
+        # audit_results/2026-09-13/AUDIT_REPORT.md finding #2 (high): whether
+        # the control plane is running with auth enabled was not visible
+        # anywhere an operator would see it (only a startup log line — see
+        # api/app.py). This endpoint is itself unauthenticated, but that
+        # doesn't change the actual exposure: anyone probing without a
+        # token already discovers auth is off on the very first mutating
+        # call they try; naming it here is for the legitimate operator's
+        # own visibility, not new information for an attacker.
+        from trading_platform.api.auth import _auth_disabled
         return {
             "broker": self.settings.broker,
             "angel_one_configured": self.settings.angel_one_configured,
@@ -1688,6 +1697,7 @@ class TradingRuntime:
             "live_orders_possible": self._can_submit_live_orders(),
             "live_armed": self.live_armed,
             "kill_switch_active": self.kill_switch_active,
+            "api_auth_enabled": not _auth_disabled(self.settings),
         }
 
     def account_snapshot(self) -> dict:
