@@ -1,0 +1,223 @@
+{
+  "forged_close_execution": {
+    "response": {
+      "enqueued": true,
+      "approval_required": false,
+      "event_id": "evt_20260913144537_000002",
+      "trace_id": "order-1a09b3b1d90-5bf6d9c2",
+      "idempotency_key": "543cab5d8489414ca3a7ca2fe522198e"
+    },
+    "actual_fills": 1,
+    "position_quantity": 1000,
+    "kill_switch_active": true
+  },
+  "lot_multiplier_metrics": {
+    "lot_size": 50,
+    "price_change": 10,
+    "lots": 1,
+    "actual_ledger_pnl": 500,
+    "round_trip_pnls_output": [
+      10.0
+    ]
+  },
+  "shortvol_fixed_parameter_runs": [
+    {
+      "underlying": "NIFTY",
+      "params": {
+        "sd": 1.25,
+        "wing": 300.0,
+        "min_vrp": 2.0,
+        "risk_budget": 0.05,
+        "kelly_fraction": 0.3,
+        "hold_days": 5.0,
+        "profit_target_pct": 0.5,
+        "stop_loss_multiple": 1.5,
+        "spread_points": 1.0
+      },
+      "trades": 181,
+      "wins": 155,
+      "win_rate": 0.856353591160221,
+      "net_pnl": 178809.76,
+      "total_charges": 6447.02,
+      "final_equity": 1178809.76,
+      "skipped_reasons": {
+        "kelly(p=0.86) size < 1 lot (p_win 0.86, edge too thin)": 13,
+        "kelly(p=0.88) size < 1 lot (p_win 0.88, edge too thin)": 10,
+        "kelly(p=0.90) size < 1 lot (p_win 0.90, edge too thin)": 8,
+        "kelly(p=0.87) size < 1 lot (p_win 0.87, edge too thin)": 8,
+        "kelly(p=0.89) size < 1 lot (p_win 0.89, edge too thin)": 7,
+        "vrp 0.5 < min 2.0 (premium not rich)": 5
+      },
+      "spread_points_per_leg_per_side": 1.0,
+      "first": "2019-03-11",
+      "last": "2026-08-07",
+      "bars": 1837,
+      "data_type": "Cached underlying/VIX; model-derived option premiums, fixed default strategy."
+    },
+    {
+      "underlying": "NIFTY",
+      "params": {
+        "sd": 1.25,
+        "wing": 300.0,
+        "min_vrp": 2.0,
+        "risk_budget": 0.05,
+        "kelly_fraction": 0.3,
+        "hold_days": 5.0,
+        "profit_target_pct": 0.5,
+        "stop_loss_multiple": 1.5,
+        "spread_points": 2.0
+      },
+      "trades": 177,
+      "wins": 145,
+      "win_rate": 0.8192090395480226,
+      "net_pnl": -52873.21,
+      "total_charges": 5101.55,
+      "final_equity": 947126.79,
+      "skipped_reasons": {
+        "kelly(p=0.86) size < 1 lot (p_win 0.86, edge too thin)": 13,
+        "kelly(p=0.88) size < 1 lot (p_win 0.88, edge too thin)": 10,
+        "kelly(p=0.87) size < 1 lot (p_win 0.87, edge too thin)": 9,
+        "kelly(p=0.89) size < 1 lot (p_win 0.89, edge too thin)": 9,
+        "kelly(p=0.90) size < 1 lot (p_win 0.90, edge too thin)": 7,
+        "vrp 0.5 < min 2.0 (premium not rich)": 5
+      },
+      "spread_points_per_leg_per_side": 2.0,
+      "first": "2019-03-11",
+      "last": "2026-08-07",
+      "bars": 1837,
+      "data_type": "Cached underlying/VIX; model-derived option premiums, fixed default strategy."
+    },
+    {
+      "underlying": "BANKNIFTY",
+      "params": {
+        "sd": 1.25,
+        "wing": 700.0,
+        "min_vrp": 2.0,
+        "risk_budget": 0.05,
+        "kelly_fraction": 0.3,
+        "hold_days": 5.0,
+        "profit_target_pct": 0.5,
+        "stop_loss_multiple": 1.5,
+        "spread_points": 1.0
+      },
+      "trades": 56,
+      "wins": 44,
+      "win_rate": 0.7857142857142857,
+      "net_pnl": -17551.73,
+      "total_charges": 2329.94,
+      "final_equity": 982448.27,
+      "skipped_reasons": {
+        "kelly(p=0.88) size < 1 lot (p_win 0.88, edge too thin)": 13,
+        "kelly(p=0.87) size < 1 lot (p_win 0.87, edge too thin)": 9,
+        "kelly(p=0.86) size < 1 lot (p_win 0.86, edge too thin)": 7,
+        "vrp 1.3 < min 2.0 (premium not rich)": 7,
+        "vrp 0.5 < min 2.0 (premium not rich)": 7,
+        "kelly(p=0.85) size < 1 lot (p_win 0.85, edge too thin)": 7
+      },
+      "spread_points_per_leg_per_side": 1.0,
+      "first": "2019-03-11",
+      "last": "2026-08-07",
+      "bars": 1837,
+      "data_type": "Cached underlying/VIX; model-derived option premiums, fixed default strategy."
+    },
+    {
+      "underlying": "BANKNIFTY",
+      "params": {
+        "sd": 1.25,
+        "wing": 700.0,
+        "min_vrp": 2.0,
+        "risk_budget": 0.05,
+        "kelly_fraction": 0.3,
+        "hold_days": 5.0,
+        "profit_target_pct": 0.5,
+        "stop_loss_multiple": 1.5,
+        "spread_points": 2.0
+      },
+      "trades": 56,
+      "wins": 42,
+      "win_rate": 0.75,
+      "net_pnl": -18856.4,
+      "total_charges": 2242.07,
+      "final_equity": 981143.6,
+      "skipped_reasons": {
+        "kelly(p=0.88) size < 1 lot (p_win 0.88, edge too thin)": 13,
+        "kelly(p=0.87) size < 1 lot (p_win 0.87, edge too thin)": 9,
+        "kelly(p=0.86) size < 1 lot (p_win 0.86, edge too thin)": 7,
+        "vrp 1.3 < min 2.0 (premium not rich)": 7,
+        "vrp 0.5 < min 2.0 (premium not rich)": 7,
+        "kelly(p=0.85) size < 1 lot (p_win 0.85, edge too thin)": 7
+      },
+      "spread_points_per_leg_per_side": 2.0,
+      "first": "2019-03-11",
+      "last": "2026-08-07",
+      "bars": 1837,
+      "data_type": "Cached underlying/VIX; model-derived option premiums, fixed default strategy."
+    },
+    {
+      "underlying": "FINNIFTY",
+      "params": {
+        "sd": 1.25,
+        "wing": 300.0,
+        "min_vrp": 2.0,
+        "risk_budget": 0.05,
+        "kelly_fraction": 0.3,
+        "hold_days": 5.0,
+        "profit_target_pct": 0.5,
+        "stop_loss_multiple": 1.5,
+        "spread_points": 1.0
+      },
+      "trades": 64,
+      "wins": 47,
+      "win_rate": 0.734375,
+      "net_pnl": -151395.09,
+      "total_charges": 2648.23,
+      "final_equity": 848604.91,
+      "skipped_reasons": {
+        "kelly(p=0.87) size < 1 lot (p_win 0.87, edge too thin)": 13,
+        "kelly(p=0.88) size < 1 lot (p_win 0.88, edge too thin)": 10,
+        "vrp 0.9 < min 2.0 (premium not rich)": 7,
+        "vrp 1.7 < min 2.0 (premium not rich)": 7,
+        "kelly(p=0.85) size < 1 lot (p_win 0.85, edge too thin)": 7,
+        "vrp 0.3 < min 2.0 (premium not rich)": 6
+      },
+      "spread_points_per_leg_per_side": 1.0,
+      "first": "2019-03-11",
+      "last": "2026-08-07",
+      "bars": 1820,
+      "data_type": "Cached underlying/VIX; model-derived option premiums, fixed default strategy."
+    },
+    {
+      "underlying": "FINNIFTY",
+      "params": {
+        "sd": 1.25,
+        "wing": 300.0,
+        "min_vrp": 2.0,
+        "risk_budget": 0.05,
+        "kelly_fraction": 0.3,
+        "hold_days": 5.0,
+        "profit_target_pct": 0.5,
+        "stop_loss_multiple": 1.5,
+        "spread_points": 2.0
+      },
+      "trades": 64,
+      "wins": 43,
+      "win_rate": 0.671875,
+      "net_pnl": -190459.74,
+      "total_charges": 2454.27,
+      "final_equity": 809540.26,
+      "skipped_reasons": {
+        "kelly(p=0.87) size < 1 lot (p_win 0.87, edge too thin)": 13,
+        "kelly(p=0.88) size < 1 lot (p_win 0.88, edge too thin)": 10,
+        "vrp 0.9 < min 2.0 (premium not rich)": 7,
+        "vrp 1.7 < min 2.0 (premium not rich)": 7,
+        "kelly(p=0.85) size < 1 lot (p_win 0.85, edge too thin)": 7,
+        "vrp 0.3 < min 2.0 (premium not rich)": 6
+      },
+      "spread_points_per_leg_per_side": 2.0,
+      "first": "2019-03-11",
+      "last": "2026-08-07",
+      "bars": 1820,
+      "data_type": "Cached underlying/VIX; model-derived option premiums, fixed default strategy."
+    }
+  ]
+}

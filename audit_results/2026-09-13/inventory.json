@@ -1,0 +1,3753 @@
+{
+  "source": [
+    {
+      "path": "trading_platform\\__init__.py",
+      "lines": 4,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "trading_platform\\agent\\__init__.py",
+      "lines": 0,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "trading_platform\\agent\\market_hours.py",
+      "lines": 174,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "trading_platform\\agent\\trading_agent.py",
+      "lines": 1162,
+      "bare_pass_handlers": [
+        775,
+        781,
+        798,
+        1138,
+        283,
+        214,
+        987,
+        1081
+      ]
+    },
+    {
+      "path": "trading_platform\\agents\\__init__.py",
+      "lines": 25,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "trading_platform\\agents\\model_gateway.py",
+      "lines": 588,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "trading_platform\\agents\\schemas.py",
+      "lines": 234,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "trading_platform\\agents\\specialists.py",
+      "lines": 656,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "trading_platform\\agents\\supervisor.py",
+      "lines": 756,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "trading_platform\\agents\\vector_memory.py",
+      "lines": 717,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "trading_platform\\agents\\voting.py",
+      "lines": 58,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "trading_platform\\ai\\__init__.py",
+      "lines": 36,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "trading_platform\\ai\\agents.py",
+      "lines": 155,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "trading_platform\\ai\\feature_store.py",
+      "lines": 217,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "trading_platform\\ai\\features.py",
+      "lines": 113,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "trading_platform\\ai\\guardrails.py",
+      "lines": 91,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "trading_platform\\ai\\labeling\\triple_barrier.py",
+      "lines": 362,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "trading_platform\\ai\\llm_agents\\__init__.py",
+      "lines": 22,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "trading_platform\\ai\\llm_agents\\base.py",
+      "lines": 438,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "trading_platform\\ai\\llm_agents\\compliance.py",
+      "lines": 464,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "trading_platform\\ai\\llm_agents\\copilot.py",
+      "lines": 446,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "trading_platform\\ai\\llm_agents\\journalist.py",
+      "lines": 365,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "trading_platform\\ai\\llm_agents\\regime.py",
+      "lines": 286,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "trading_platform\\ai\\llm_agents\\veto.py",
+      "lines": 299,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "trading_platform\\ai\\meta_labeler.py",
+      "lines": 302,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "trading_platform\\ai\\ml_features\\conformal_prediction.py",
+      "lines": 301,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "trading_platform\\ai\\ml_features\\fractional_diff.py",
+      "lines": 227,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "trading_platform\\ai\\ml_features\\intraday_extractor.py",
+      "lines": 576,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "trading_platform\\ai\\ml_features\\meta_labeling.py",
+      "lines": 542,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "trading_platform\\ai\\models.py",
+      "lines": 726,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "trading_platform\\ai\\rag\\__init__.py",
+      "lines": 46,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "trading_platform\\ai\\rag\\eval.py",
+      "lines": 537,
+      "bare_pass_handlers": [
+        211
+      ]
+    },
+    {
+      "path": "trading_platform\\ai\\rag\\graph_rag.py",
+      "lines": 221,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "trading_platform\\ai\\rag\\ingestion.py",
+      "lines": 816,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "trading_platform\\ai\\rag\\router.py",
+      "lines": 132,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "trading_platform\\api\\__init__.py",
+      "lines": 4,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "trading_platform\\api\\ai_capabilities.py",
+      "lines": 200,
+      "bare_pass_handlers": [
+        97,
+        104,
+        134
+      ]
+    },
+    {
+      "path": "trading_platform\\api\\app.py",
+      "lines": 1415,
+      "bare_pass_handlers": [
+        1038
+      ]
+    },
+    {
+      "path": "trading_platform\\api\\auth.py",
+      "lines": 84,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "trading_platform\\api\\db_query_service.py",
+      "lines": 32,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "trading_platform\\api\\live_feed_service.py",
+      "lines": 185,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "trading_platform\\api\\model_research_service.py",
+      "lines": 161,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "trading_platform\\api\\news_service.py",
+      "lines": 45,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "trading_platform\\api\\options_service.py",
+      "lines": 254,
+      "bare_pass_handlers": [
+        164
+      ]
+    },
+    {
+      "path": "trading_platform\\api\\policy_service.py",
+      "lines": 592,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "trading_platform\\api\\price_service.py",
+      "lines": 119,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "trading_platform\\api\\regime_meta_service.py",
+      "lines": 107,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "trading_platform\\api\\runtime.py",
+      "lines": 4980,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "trading_platform\\api\\schemas.py",
+      "lines": 286,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "trading_platform\\api\\strategy_promotion_service.py",
+      "lines": 298,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "trading_platform\\api\\trace_replay_service.py",
+      "lines": 308,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "trading_platform\\backtesting\\__init__.py",
+      "lines": 11,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "trading_platform\\backtesting\\charges.py",
+      "lines": 137,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "trading_platform\\backtesting\\engine.py",
+      "lines": 568,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "trading_platform\\backtesting\\evaluator.py",
+      "lines": 508,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "trading_platform\\backtesting\\metrics.py",
+      "lines": 107,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "trading_platform\\backtesting\\short_vol_backtest.py",
+      "lines": 578,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "trading_platform\\backtesting\\short_vol_portfolio.py",
+      "lines": 301,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "trading_platform\\backtesting\\trend_backtest.py",
+      "lines": 241,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "trading_platform\\broker\\__init__.py",
+      "lines": 13,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "trading_platform\\broker\\angel_one.py",
+      "lines": 247,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "trading_platform\\broker\\base.py",
+      "lines": 49,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "trading_platform\\broker\\capability_registry.py",
+      "lines": 89,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "trading_platform\\broker\\simulated.py",
+      "lines": 208,
+      "bare_pass_handlers": [
+        79
+      ]
+    },
+    {
+      "path": "trading_platform\\config.py",
+      "lines": 894,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "trading_platform\\data\\__init__.py",
+      "lines": 17,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "trading_platform\\data\\angel_gateway.py",
+      "lines": 298,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "trading_platform\\data\\angel_one_history.py",
+      "lines": 136,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "trading_platform\\data\\angel_one_instruments.py",
+      "lines": 230,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "trading_platform\\data\\depth.py",
+      "lines": 139,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "trading_platform\\data\\feature_store.py",
+      "lines": 391,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "trading_platform\\data\\feed_staleness.py",
+      "lines": 210,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "trading_platform\\data\\instrument_master.py",
+      "lines": 436,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "trading_platform\\data\\live_feed.py",
+      "lines": 989,
+      "bare_pass_handlers": [
+        500
+      ]
+    },
+    {
+      "path": "trading_platform\\data\\market_adapter.py",
+      "lines": 182,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "trading_platform\\data\\market_data.py",
+      "lines": 126,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "trading_platform\\data\\options_chain_collector.py",
+      "lines": 739,
+      "bare_pass_handlers": [
+        278
+      ]
+    },
+    {
+      "path": "trading_platform\\data\\persistence.py",
+      "lines": 1681,
+      "bare_pass_handlers": [
+        1669
+      ]
+    },
+    {
+      "path": "trading_platform\\data\\research.py",
+      "lines": 315,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "trading_platform\\data\\tick_bar_builder.py",
+      "lines": 440,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "trading_platform\\data\\tick_v2.py",
+      "lines": 274,
+      "bare_pass_handlers": [
+        158
+      ]
+    },
+    {
+      "path": "trading_platform\\data\\upstox_feed.py",
+      "lines": 630,
+      "bare_pass_handlers": [
+        196,
+        214,
+        600,
+        162
+      ]
+    },
+    {
+      "path": "trading_platform\\decision\\__init__.py",
+      "lines": 3,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "trading_platform\\decision\\orchestrator.py",
+      "lines": 519,
+      "bare_pass_handlers": [
+        441,
+        325,
+        360,
+        185,
+        355
+      ]
+    },
+    {
+      "path": "trading_platform\\decision\\pipeline.py",
+      "lines": 720,
+      "bare_pass_handlers": [
+        672
+      ]
+    },
+    {
+      "path": "trading_platform\\decision_fusion\\__init__.py",
+      "lines": 5,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "trading_platform\\decision_fusion\\fusion.py",
+      "lines": 170,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "trading_platform\\decision_fusion\\goal_governor.py",
+      "lines": 143,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "trading_platform\\decision_fusion\\schemas.py",
+      "lines": 80,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "trading_platform\\derivatives\\__init__.py",
+      "lines": 22,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "trading_platform\\derivatives\\engine.py",
+      "lines": 476,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "trading_platform\\derivatives\\multi_leg_builder.py",
+      "lines": 496,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "trading_platform\\derivatives\\option_legs.py",
+      "lines": 374,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "trading_platform\\derivatives\\test_option_legs.py",
+      "lines": 53,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "trading_platform\\domain\\__init__.py",
+      "lines": 42,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "trading_platform\\domain\\enums.py",
+      "lines": 119,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "trading_platform\\domain\\models.py",
+      "lines": 165,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "trading_platform\\event_bus.py",
+      "lines": 75,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "trading_platform\\execution\\__init__.py",
+      "lines": 23,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "trading_platform\\execution\\emergency_square_off.py",
+      "lines": 183,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "trading_platform\\execution\\fill_processor.py",
+      "lines": 70,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "trading_platform\\execution\\final_gate.py",
+      "lines": 55,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "trading_platform\\execution\\lock_manager.py",
+      "lines": 36,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "trading_platform\\execution\\multi_leg_manager.py",
+      "lines": 198,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "trading_platform\\execution\\oms_store.py",
+      "lines": 297,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "trading_platform\\execution\\order_pricing.py",
+      "lines": 45,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "trading_platform\\execution\\rate_limiter.py",
+      "lines": 37,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "trading_platform\\execution\\reconciliation.py",
+      "lines": 240,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "trading_platform\\execution\\reconciliation_service.py",
+      "lines": 664,
+      "bare_pass_handlers": [
+        160
+      ]
+    },
+    {
+      "path": "trading_platform\\execution\\router.py",
+      "lines": 94,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "trading_platform\\execution\\scheduler.py",
+      "lines": 966,
+      "bare_pass_handlers": [
+        262,
+        268
+      ]
+    },
+    {
+      "path": "trading_platform\\execution\\tca.py",
+      "lines": 457,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "trading_platform\\execution\\token_automator.py",
+      "lines": 328,
+      "bare_pass_handlers": [
+        114
+      ]
+    },
+    {
+      "path": "trading_platform\\exit\\__init__.py",
+      "lines": 4,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "trading_platform\\exit\\exit_manager.py",
+      "lines": 292,
+      "bare_pass_handlers": [
+        154
+      ]
+    },
+    {
+      "path": "trading_platform\\exit\\exit_plan.py",
+      "lines": 186,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "trading_platform\\goal\\__init__.py",
+      "lines": 4,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "trading_platform\\goal\\governance.py",
+      "lines": 135,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "trading_platform\\goal\\scaling.py",
+      "lines": 61,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "trading_platform\\governance\\__init__.py",
+      "lines": 19,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "trading_platform\\governance\\audit_trail.py",
+      "lines": 0,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "trading_platform\\governance\\data_lineage.py",
+      "lines": 0,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "trading_platform\\governance\\eval_harness.py",
+      "lines": 114,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "trading_platform\\governance\\live_readiness.py",
+      "lines": 339,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "trading_platform\\governance\\model_registry.py",
+      "lines": 0,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "trading_platform\\governance\\model_risk.py",
+      "lines": 0,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "trading_platform\\governance\\red_team.py",
+      "lines": 0,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "trading_platform\\governance\\regulatory_compliance.py",
+      "lines": 383,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "trading_platform\\logging_safety.py",
+      "lines": 169,
+      "bare_pass_handlers": [
+        104,
+        151,
+        157
+      ]
+    },
+    {
+      "path": "trading_platform\\mcp\\__init__.py",
+      "lines": 0,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "trading_platform\\mcp\\server.py",
+      "lines": 98,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "trading_platform\\monitoring\\__init__.py",
+      "lines": 3,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "trading_platform\\monitoring\\drift_monitor.py",
+      "lines": 526,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "trading_platform\\monitoring\\metrics.py",
+      "lines": 227,
+      "bare_pass_handlers": [
+        226
+      ]
+    },
+    {
+      "path": "trading_platform\\neural\\__init__.py",
+      "lines": 19,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "trading_platform\\neural\\calibration.py",
+      "lines": 57,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "trading_platform\\neural\\forecasting.py",
+      "lines": 97,
+      "bare_pass_handlers": [
+        89
+      ]
+    },
+    {
+      "path": "trading_platform\\neural\\foundation_rv.py",
+      "lines": 588,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "trading_platform\\neural\\graph_model.py",
+      "lines": 85,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "trading_platform\\neural\\har_rv.py",
+      "lines": 441,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "trading_platform\\neural\\intraday_forecaster.py",
+      "lines": 431,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "trading_platform\\neural\\return_forecaster.py",
+      "lines": 398,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "trading_platform\\neural\\schemas.py",
+      "lines": 131,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "trading_platform\\neural\\sentiment.py",
+      "lines": 40,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "trading_platform\\neural\\serving.py",
+      "lines": 642,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "trading_platform\\neural\\tensor_features.py",
+      "lines": 75,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "trading_platform\\neural\\vol_forecaster.py",
+      "lines": 104,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "trading_platform\\neural\\volatility.py",
+      "lines": 133,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "trading_platform\\news\\__init__.py",
+      "lines": 4,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "trading_platform\\news\\calendar.py",
+      "lines": 108,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "trading_platform\\news\\feed.py",
+      "lines": 107,
+      "bare_pass_handlers": [
+        105
+      ]
+    },
+    {
+      "path": "trading_platform\\news\\intelligence.py",
+      "lines": 406,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "trading_platform\\orchestrator\\__init__.py",
+      "lines": 14,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "trading_platform\\orchestrator\\market_rag.py",
+      "lines": 521,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "trading_platform\\orchestrator\\master_orchestrator.py",
+      "lines": 1254,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "trading_platform\\orchestrator\\profit_guard.py",
+      "lines": 362,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "trading_platform\\orchestrator\\reflection_engine.py",
+      "lines": 343,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "trading_platform\\orchestrator\\specialist_crew.py",
+      "lines": 429,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "trading_platform\\orchestrator\\state.py",
+      "lines": 186,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "trading_platform\\portfolio\\__init__.py",
+      "lines": 4,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "trading_platform\\portfolio\\greeks.py",
+      "lines": 495,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "trading_platform\\portfolio\\ledger.py",
+      "lines": 169,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "trading_platform\\portfolio\\target.py",
+      "lines": 63,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "trading_platform\\research\\__init__.py",
+      "lines": 5,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "trading_platform\\research\\cross_sectional.py",
+      "lines": 297,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "trading_platform\\research\\hypothesis_harness.py",
+      "lines": 337,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "trading_platform\\research\\llm_researcher.py",
+      "lines": 383,
+      "bare_pass_handlers": [
+        204
+      ]
+    },
+    {
+      "path": "trading_platform\\research\\strategy_validator.py",
+      "lines": 517,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "trading_platform\\risk\\__init__.py",
+      "lines": 19,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "trading_platform\\risk\\capital_protection.py",
+      "lines": 147,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "trading_platform\\risk\\change_point_detection.py",
+      "lines": 333,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "trading_platform\\risk\\compliance.py",
+      "lines": 109,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "trading_platform\\risk\\engine.py",
+      "lines": 170,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "trading_platform\\risk\\event_risk.py",
+      "lines": 98,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "trading_platform\\risk\\historical_var.py",
+      "lines": 171,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "trading_platform\\risk\\manual_approval.py",
+      "lines": 110,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "trading_platform\\risk\\portfolio_greeks.py",
+      "lines": 168,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "trading_platform\\rl\\__init__.py",
+      "lines": 5,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "trading_platform\\rl\\env.py",
+      "lines": 210,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "trading_platform\\rl\\evaluator.py",
+      "lines": 76,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "trading_platform\\rl\\policies.py",
+      "lines": 127,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "trading_platform\\rl\\trainer.py",
+      "lines": 96,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "trading_platform\\runtime.py",
+      "lines": 226,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "trading_platform\\strategies\\__init__.py",
+      "lines": 5,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "trading_platform\\strategies\\base.py",
+      "lines": 67,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "trading_platform\\strategies\\derivatives.py",
+      "lines": 356,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "trading_platform\\strategies\\equity.py",
+      "lines": 120,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "trading_platform\\strategies\\factory.py",
+      "lines": 72,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "trading_platform\\strategies\\protocol.py",
+      "lines": 218,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "trading_platform\\strategies\\short_vol.py",
+      "lines": 414,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "trading_platform\\strategies\\short_vol_core.py",
+      "lines": 485,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "trading_platform\\strategies\\short_vol_executor.py",
+      "lines": 868,
+      "bare_pass_handlers": [
+        89
+      ]
+    },
+    {
+      "path": "trading_platform\\strategies\\short_vol_variants.py",
+      "lines": 592,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "trading_platform\\strategies\\strategy_engine.py",
+      "lines": 469,
+      "bare_pass_handlers": [
+        186
+      ]
+    },
+    {
+      "path": "trading_platform\\strategies\\svi_surface.py",
+      "lines": 592,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "trading_platform\\streaming\\__init__.py",
+      "lines": 32,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "trading_platform\\streaming\\tick_bus.py",
+      "lines": 344,
+      "bare_pass_handlers": [
+        219
+      ]
+    },
+    {
+      "path": "trading_platform\\streaming\\topics.py",
+      "lines": 271,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "trading_platform\\tenancy\\broker_session.py",
+      "lines": 325,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "trading_platform\\tenancy\\portfolio_ledger.py",
+      "lines": 508,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "trading_platform\\trace\\__init__.py",
+      "lines": 6,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "trading_platform\\trace\\ids.py",
+      "lines": 15,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "trading_platform\\trace\\label_factory.py",
+      "lines": 358,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "trading_platform\\trace\\learning_journal.py",
+      "lines": 250,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "trading_platform\\trace\\models.py",
+      "lines": 93,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "trading_platform\\trace\\store.py",
+      "lines": 331,
+      "bare_pass_handlers": [
+        287
+      ]
+    },
+    {
+      "path": "trading_platform\\validation\\__init__.py",
+      "lines": 49,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "trading_platform\\validation\\cpcv.py",
+      "lines": 578,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "trading_platform\\validation\\gates.py",
+      "lines": 562,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "trading_platform\\validation\\mlflow_registry.py",
+      "lines": 706,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "trading_platform\\validation\\monte_carlo.py",
+      "lines": 142,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "trading_platform\\validation\\postmortem.py",
+      "lines": 95,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "trading_platform\\validation\\promotion.py",
+      "lines": 139,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "trading_platform\\validation\\purged_walk_forward.py",
+      "lines": 154,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "trading_platform\\validation\\tournament.py",
+      "lines": 119,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "scripts\\backtest_short_vol.py",
+      "lines": 217,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "scripts\\daily_scheduler.py",
+      "lines": 671,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "scripts\\fetch_daily_universe.py",
+      "lines": 123,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "scripts\\research_classic_momentum.py",
+      "lines": 261,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "scripts\\research_commodity_carry.py",
+      "lines": 214,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "scripts\\research_commodity_pairs.py",
+      "lines": 154,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "scripts\\research_cross_sectional.py",
+      "lines": 271,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "scripts\\research_gap_backtest.py",
+      "lines": 203,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "scripts\\research_gap_calendar_volume.py",
+      "lines": 262,
+      "bare_pass_handlers": [
+        256
+      ]
+    },
+    {
+      "path": "scripts\\research_index_basis.py",
+      "lines": 119,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "scripts\\research_intraday_backtest.py",
+      "lines": 178,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "scripts\\research_intraday_commodity_trend.py",
+      "lines": 119,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "scripts\\research_intraday_edge.py",
+      "lines": 305,
+      "bare_pass_handlers": [
+        299
+      ]
+    },
+    {
+      "path": "scripts\\research_intraday_vwap_pinning.py",
+      "lines": 173,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "scripts\\research_lowvol_reversal.py",
+      "lines": 198,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "scripts\\research_sector_rotation.py",
+      "lines": 156,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "scripts\\research_turn_of_month.py",
+      "lines": 187,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "scripts\\research_usdinr_overlay.py",
+      "lines": 126,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "scripts\\research_vol_premium.py",
+      "lines": 120,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "scripts\\run_backtest.py",
+      "lines": 14,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "scripts\\run_council_skill_eval.py",
+      "lines": 54,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "scripts\\run_llm_research_session.py",
+      "lines": 83,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "scripts\\run_mcp_implementation.py",
+      "lines": 136,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "scripts\\run_rag_eval.py",
+      "lines": 109,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "scripts\\run_short_vol_gates.py",
+      "lines": 95,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "scripts\\run_vector_memory_qdrant_tests_impl.py",
+      "lines": 152,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "scripts\\scheduled_research_session.py",
+      "lines": 159,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "scripts\\train_intraday_forecaster.py",
+      "lines": 272,
+      "bare_pass_handlers": [
+        157
+      ]
+    },
+    {
+      "path": "scripts\\train_return_forecaster.py",
+      "lines": 285,
+      "bare_pass_handlers": [
+        183
+      ]
+    },
+    {
+      "path": "scripts\\validate_dormant_strategies.py",
+      "lines": 176,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "scripts\\validate_longvol_structures.py",
+      "lines": 80,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "tests\\conftest.py",
+      "lines": 53,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "tests\\test_agent_council.py",
+      "lines": 129,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "tests\\test_agent_uses_ist_clock.py",
+      "lines": 70,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "tests\\test_ai_agents.py",
+      "lines": 81,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "tests\\test_ai_capabilities.py",
+      "lines": 83,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "tests\\test_ai_guardrails.py",
+      "lines": 88,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "tests\\test_ai_models.py",
+      "lines": 57,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "tests\\test_angel_one_broker.py",
+      "lines": 147,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "tests\\test_angel_one_data.py",
+      "lines": 221,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "tests\\test_api_schemas.py",
+      "lines": 179,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "tests\\test_architecture_wiring.py",
+      "lines": 517,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "tests\\test_audit_fixes.py",
+      "lines": 605,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "tests\\test_backtesting.py",
+      "lines": 110,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "tests\\test_batch_specialists.py",
+      "lines": 181,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "tests\\test_blocking_fixes.py",
+      "lines": 447,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "tests\\test_config.py",
+      "lines": 117,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "tests\\test_council_admission.py",
+      "lines": 98,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "tests\\test_council_advisory_only.py",
+      "lines": 134,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "tests\\test_council_batching.py",
+      "lines": 196,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "tests\\test_council_skill_eval.py",
+      "lines": 122,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "tests\\test_daily_scheduler.py",
+      "lines": 150,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "tests\\test_db_news_services.py",
+      "lines": 52,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "tests\\test_decision_fusion.py",
+      "lines": 145,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "tests\\test_decision_pipeline.py",
+      "lines": 282,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "tests\\test_derivatives_engine.py",
+      "lines": 159,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "tests\\test_diagnostic_report_fixes.py",
+      "lines": 211,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "tests\\test_emergency_square_off.py",
+      "lines": 95,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "tests\\test_ensure_market_features.py",
+      "lines": 95,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "tests\\test_eod_square_off_filter.py",
+      "lines": 69,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "tests\\test_execution_router.py",
+      "lines": 38,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "tests\\test_exit_profit_taking.py",
+      "lines": 68,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "tests\\test_exit_reason_persistence.py",
+      "lines": 58,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "tests\\test_failsafe_gates.py",
+      "lines": 50,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "tests\\test_frontend_backend_contract.py",
+      "lines": 69,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "tests\\test_gamma_exposure_gate.py",
+      "lines": 189,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "tests\\test_har_rv.py",
+      "lines": 331,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "tests\\test_high_end_integration.py",
+      "lines": 129,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "tests\\test_historical_var.py",
+      "lines": 212,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "tests\\test_hypothesis_harness.py",
+      "lines": 246,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "tests\\test_instrument_master.py",
+      "lines": 132,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "tests\\test_intraday_forecaster.py",
+      "lines": 132,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "tests\\test_kelly_sizing.py",
+      "lines": 59,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "tests\\test_label_factory.py",
+      "lines": 304,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "tests\\test_live_feed.py",
+      "lines": 226,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "tests\\test_live_feed_heartbeat.py",
+      "lines": 180,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "tests\\test_live_feed_service.py",
+      "lines": 153,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "tests\\test_live_feed_sharding.py",
+      "lines": 256,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "tests\\test_local_model_gateway.py",
+      "lines": 420,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "tests\\test_local_model_operations.py",
+      "lines": 304,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "tests\\test_logging_safety.py",
+      "lines": 48,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "tests\\test_market_intelligence_news_sentiment.py",
+      "lines": 59,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "tests\\test_master_orchestrator_neural_node.py",
+      "lines": 100,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "tests\\test_mcp_server.py",
+      "lines": 118,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "tests\\test_meta_labeler.py",
+      "lines": 405,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "tests\\test_model_research_service.py",
+      "lines": 100,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "tests\\test_monitoring.py",
+      "lines": 40,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "tests\\test_multi_leg_exit.py",
+      "lines": 213,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "tests\\test_neural_lab.py",
+      "lines": 139,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "tests\\test_neural_serving_v2.py",
+      "lines": 395,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "tests\\test_new_components.py",
+      "lines": 492,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "tests\\test_new_observability_endpoints.py",
+      "lines": 63,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "tests\\test_news_feed.py",
+      "lines": 71,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "tests\\test_news_intelligence.py",
+      "lines": 99,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "tests\\test_non_blocking_fixes.py",
+      "lines": 357,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "tests\\test_oms_store.py",
+      "lines": 227,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "tests\\test_options_chain_collector.py",
+      "lines": 331,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "tests\\test_options_service.py",
+      "lines": 54,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "tests\\test_orchestrator_strategy_selection.py",
+      "lines": 214,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "tests\\test_phase1.py",
+      "lines": 512,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "tests\\test_policy_service.py",
+      "lines": 154,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "tests\\test_portfolio_greeks.py",
+      "lines": 159,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "tests\\test_portfolio_guardian.py",
+      "lines": 126,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "tests\\test_portfolio_ledger.py",
+      "lines": 124,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "tests\\test_price_resolution_service.py",
+      "lines": 129,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "tests\\test_profit_guard_recalibration.py",
+      "lines": 91,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "tests\\test_put_spread.py",
+      "lines": 78,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "tests\\test_real_specialists.py",
+      "lines": 61,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "tests\\test_reconciliation.py",
+      "lines": 131,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "tests\\test_reconciliation_tick.py",
+      "lines": 130,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "tests\\test_regime_meta_service.py",
+      "lines": 83,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "tests\\test_return_forecaster.py",
+      "lines": 94,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "tests\\test_risk_engine.py",
+      "lines": 258,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "tests\\test_rl_lab.py",
+      "lines": 139,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "tests\\test_runtime.py",
+      "lines": 763,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "tests\\test_scheduled_research_session.py",
+      "lines": 118,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "tests\\test_short_vol.py",
+      "lines": 949,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "tests\\test_short_vol_backtest.py",
+      "lines": 331,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "tests\\test_signal_hash.py",
+      "lines": 59,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "tests\\test_signal_hash_wiring.py",
+      "lines": 117,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "tests\\test_strategy_catalog.py",
+      "lines": 30,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "tests\\test_strategy_validator.py",
+      "lines": 305,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "tests\\test_streaming_topics.py",
+      "lines": 322,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "tests\\test_supervisor_gaps.py",
+      "lines": 529,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "tests\\test_svi_surface.py",
+      "lines": 195,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "tests\\test_symbol_universe_consistency.py",
+      "lines": 46,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "tests\\test_target_portfolio.py",
+      "lines": 40,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "tests\\test_tick_bus_integration.py",
+      "lines": 402,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "tests\\test_trace_replay_service.py",
+      "lines": 105,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "tests\\test_trace_store.py",
+      "lines": 285,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "tests\\test_trend_backtest.py",
+      "lines": 118,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "tests\\test_validation_gates.py",
+      "lines": 627,
+      "bare_pass_handlers": [
+        335,
+        389,
+        478,
+        548
+      ]
+    },
+    {
+      "path": "tests\\test_vector_memory.py",
+      "lines": 364,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "tests\\test_vector_memory_qdrant.py",
+      "lines": 137,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "tests\\test_vol_forecaster.py",
+      "lines": 67,
+      "bare_pass_handlers": []
+    },
+    {
+      "path": "hft_frontend\\src\\api.ts",
+      "lines": 290
+    },
+    {
+      "path": "hft_frontend\\src\\App.tsx",
+      "lines": 64
+    },
+    {
+      "path": "hft_frontend\\src\\auth.ts",
+      "lines": 37
+    },
+    {
+      "path": "hft_frontend\\src\\components\\Layout.tsx",
+      "lines": 357
+    },
+    {
+      "path": "hft_frontend\\src\\components\\shared\\Badge.tsx",
+      "lines": 95
+    },
+    {
+      "path": "hft_frontend\\src\\components\\shared\\Card.tsx",
+      "lines": 57
+    },
+    {
+      "path": "hft_frontend\\src\\components\\shared\\Command.tsx",
+      "lines": 149
+    },
+    {
+      "path": "hft_frontend\\src\\components\\shared\\Freshness.tsx",
+      "lines": 76
+    },
+    {
+      "path": "hft_frontend\\src\\components\\shared\\MetricCard.tsx",
+      "lines": 75
+    },
+    {
+      "path": "hft_frontend\\src\\components\\shared\\PageHeader.tsx",
+      "lines": 31
+    },
+    {
+      "path": "hft_frontend\\src\\components\\shared\\States.tsx",
+      "lines": 45
+    },
+    {
+      "path": "hft_frontend\\src\\components\\shared\\Table.tsx",
+      "lines": 100
+    },
+    {
+      "path": "hft_frontend\\src\\components\\ShortVolPanel.tsx",
+      "lines": 136
+    },
+    {
+      "path": "hft_frontend\\src\\freshness.ts",
+      "lines": 90
+    },
+    {
+      "path": "hft_frontend\\src\\main.tsx",
+      "lines": 10
+    },
+    {
+      "path": "hft_frontend\\src\\store.ts",
+      "lines": 229
+    },
+    {
+      "path": "hft_frontend\\src\\types.ts",
+      "lines": 650
+    },
+    {
+      "path": "hft_frontend\\src\\utils.ts",
+      "lines": 81
+    },
+    {
+      "path": "hft_frontend\\src\\views\\Account.tsx",
+      "lines": 265
+    },
+    {
+      "path": "hft_frontend\\src\\views\\AICouncil.tsx",
+      "lines": 366
+    },
+    {
+      "path": "hft_frontend\\src\\views\\AILab.tsx",
+      "lines": 973
+    },
+    {
+      "path": "hft_frontend\\src\\views\\Backtest.tsx",
+      "lines": 269
+    },
+    {
+      "path": "hft_frontend\\src\\views\\CommandCenter.tsx",
+      "lines": 479
+    },
+    {
+      "path": "hft_frontend\\src\\views\\Dashboard.tsx",
+      "lines": 779
+    },
+    {
+      "path": "hft_frontend\\src\\views\\Engine.tsx",
+      "lines": 984
+    },
+    {
+      "path": "hft_frontend\\src\\views\\Execution.tsx",
+      "lines": 438
+    },
+    {
+      "path": "hft_frontend\\src\\views\\GoalGovernor.tsx",
+      "lines": 204
+    },
+    {
+      "path": "hft_frontend\\src\\views\\Intelligence.tsx",
+      "lines": 328
+    },
+    {
+      "path": "hft_frontend\\src\\views\\Models.tsx",
+      "lines": 371
+    },
+    {
+      "path": "hft_frontend\\src\\views\\NeuralLab.tsx",
+      "lines": 214
+    },
+    {
+      "path": "hft_frontend\\src\\views\\Policies.tsx",
+      "lines": 306
+    },
+    {
+      "path": "hft_frontend\\src\\views\\Research.tsx",
+      "lines": 365
+    },
+    {
+      "path": "hft_frontend\\src\\views\\Risk.tsx",
+      "lines": 272
+    },
+    {
+      "path": "hft_frontend\\src\\views\\Signals.tsx",
+      "lines": 258
+    },
+    {
+      "path": "hft_frontend\\src\\views\\Strategies.tsx",
+      "lines": 318
+    },
+    {
+      "path": "hft_frontend\\src\\views\\Tournament.tsx",
+      "lines": 277
+    },
+    {
+      "path": "hft_frontend\\src\\views\\TraceReplay.tsx",
+      "lines": 228
+    },
+    {
+      "path": "hft_frontend\\src\\ws.ts",
+      "lines": 446
+    }
+  ],
+  "historical": [
+    {
+      "file": "AARTIIND__ONE_DAY.csv",
+      "rows": 1356,
+      "first": "2021-02-05T00:00:00+05:30",
+      "last": "2026-07-28T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "ACC__ONE_DAY.csv",
+      "rows": 1356,
+      "first": "2021-02-05T00:00:00+05:30",
+      "last": "2026-07-28T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "ADANIENT__ONE_DAY.csv",
+      "rows": 1356,
+      "first": "2021-02-05T00:00:00+05:30",
+      "last": "2026-07-28T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "ADANIENT__ONE_DAY_deep.csv",
+      "rows": 1837,
+      "first": "2019-03-11T00:00:00+05:30",
+      "last": "2026-08-07T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "ADANIENT__ONE_DAY_pipeline.csv",
+      "rows": 49,
+      "first": "2026-07-07T00:00:00+05:30",
+      "last": "2026-09-11T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "ADANIGREEN__ONE_DAY.csv",
+      "rows": 1356,
+      "first": "2021-02-05T00:00:00+05:30",
+      "last": "2026-07-28T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "ADANIPORTS__ONE_DAY.csv",
+      "rows": 1356,
+      "first": "2021-02-05T00:00:00+05:30",
+      "last": "2026-07-28T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "ADANIPORTS__ONE_DAY_deep.csv",
+      "rows": 1837,
+      "first": "2019-03-11T00:00:00+05:30",
+      "last": "2026-08-07T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "ADANIPORTS__ONE_DAY_pipeline.csv",
+      "rows": 49,
+      "first": "2026-07-07T00:00:00+05:30",
+      "last": "2026-09-11T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "ADANIPOWER__ONE_DAY.csv",
+      "rows": 1356,
+      "first": "2021-02-05T00:00:00+05:30",
+      "last": "2026-07-28T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "ALKEM__ONE_DAY.csv",
+      "rows": 1356,
+      "first": "2021-02-05T00:00:00+05:30",
+      "last": "2026-07-28T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "AMBUJACEM__ONE_DAY.csv",
+      "rows": 1356,
+      "first": "2021-02-05T00:00:00+05:30",
+      "last": "2026-07-28T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "APOLLOHOSP__ONE_DAY.csv",
+      "rows": 1356,
+      "first": "2021-02-05T00:00:00+05:30",
+      "last": "2026-07-28T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "APOLLOHOSP__ONE_DAY_deep.csv",
+      "rows": 1837,
+      "first": "2019-03-11T00:00:00+05:30",
+      "last": "2026-08-07T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "APOLLOHOSP__ONE_DAY_pipeline.csv",
+      "rows": 49,
+      "first": "2026-07-07T00:00:00+05:30",
+      "last": "2026-09-11T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "ASIANPAINT__ONE_DAY.csv",
+      "rows": 1356,
+      "first": "2021-02-05T00:00:00+05:30",
+      "last": "2026-07-28T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "ASIANPAINT__ONE_DAY_deep.csv",
+      "rows": 1837,
+      "first": "2019-03-11T00:00:00+05:30",
+      "last": "2026-08-07T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "ASIANPAINT__ONE_DAY_pipeline.csv",
+      "rows": 49,
+      "first": "2026-07-07T00:00:00+05:30",
+      "last": "2026-09-11T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "AUBANK__ONE_DAY.csv",
+      "rows": 1356,
+      "first": "2021-02-05T00:00:00+05:30",
+      "last": "2026-07-28T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "AUROPHARMA__ONE_DAY.csv",
+      "rows": 1356,
+      "first": "2021-02-05T00:00:00+05:30",
+      "last": "2026-07-28T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "AXISBANK__ONE_DAY.csv",
+      "rows": 511,
+      "first": "2024-08-23T00:00:00+05:30",
+      "last": "2026-09-11T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "AXISBANK__ONE_DAY_deep.csv",
+      "rows": 1837,
+      "first": "2019-03-11T00:00:00+05:30",
+      "last": "2026-08-07T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "AXISBANK__ONE_DAY_pipeline.csv",
+      "rows": 49,
+      "first": "2026-07-07T00:00:00+05:30",
+      "last": "2026-09-11T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "BAJAJ-AUTO__ONE_DAY.csv",
+      "rows": 1356,
+      "first": "2021-02-05T00:00:00+05:30",
+      "last": "2026-07-28T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "BAJAJFINSV__ONE_DAY.csv",
+      "rows": 1356,
+      "first": "2021-02-05T00:00:00+05:30",
+      "last": "2026-07-28T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "BAJAJFINSV__ONE_DAY_deep.csv",
+      "rows": 1837,
+      "first": "2019-03-11T00:00:00+05:30",
+      "last": "2026-08-07T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "BAJAJFINSV__ONE_DAY_pipeline.csv",
+      "rows": 49,
+      "first": "2026-07-07T00:00:00+05:30",
+      "last": "2026-09-11T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "BAJAJHLDNG__ONE_DAY.csv",
+      "rows": 1356,
+      "first": "2021-02-05T00:00:00+05:30",
+      "last": "2026-07-28T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "BAJFINANCE__ONE_DAY.csv",
+      "rows": 1356,
+      "first": "2021-02-05T00:00:00+05:30",
+      "last": "2026-07-28T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "BAJFINANCE__ONE_DAY_deep.csv",
+      "rows": 1837,
+      "first": "2019-03-11T00:00:00+05:30",
+      "last": "2026-08-07T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "BAJFINANCE__ONE_DAY_pipeline.csv",
+      "rows": 49,
+      "first": "2026-07-07T00:00:00+05:30",
+      "last": "2026-09-11T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "BALKRISIND__ONE_DAY.csv",
+      "rows": 1356,
+      "first": "2021-02-05T00:00:00+05:30",
+      "last": "2026-07-28T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "BANDHANBNK__ONE_DAY.csv",
+      "rows": 1356,
+      "first": "2021-02-05T00:00:00+05:30",
+      "last": "2026-07-28T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "BANKBARODA__ONE_DAY.csv",
+      "rows": 1356,
+      "first": "2021-02-05T00:00:00+05:30",
+      "last": "2026-07-28T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "BANKEX__ONE_DAY_pipeline.csv",
+      "rows": 49,
+      "first": "2026-07-07T00:00:00+05:30",
+      "last": "2026-09-11T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "BANKNIFTY__ONE_DAY_deep.csv",
+      "rows": 1837,
+      "first": "2019-03-11T00:00:00+05:30",
+      "last": "2026-08-07T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "BANKNIFTY__ONE_DAY_pipeline.csv",
+      "rows": 49,
+      "first": "2026-07-07T00:00:00+05:30",
+      "last": "2026-09-11T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "BEL__ONE_DAY.csv",
+      "rows": 508,
+      "first": "2024-07-08T00:00:00+05:30",
+      "last": "2026-07-24T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "BERGEPAINT__ONE_DAY.csv",
+      "rows": 1356,
+      "first": "2021-02-05T00:00:00+05:30",
+      "last": "2026-07-28T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "BHARTIARTL__ONE_DAY.csv",
+      "rows": 511,
+      "first": "2024-08-23T00:00:00+05:30",
+      "last": "2026-09-11T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "BHARTIARTL__ONE_DAY_deep.csv",
+      "rows": 1837,
+      "first": "2019-03-11T00:00:00+05:30",
+      "last": "2026-08-07T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "BHARTIARTL__ONE_DAY_pipeline.csv",
+      "rows": 49,
+      "first": "2026-07-07T00:00:00+05:30",
+      "last": "2026-09-11T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "BIOCON__ONE_DAY.csv",
+      "rows": 1356,
+      "first": "2021-02-05T00:00:00+05:30",
+      "last": "2026-07-28T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "BOSCHLTD__ONE_DAY.csv",
+      "rows": 1356,
+      "first": "2021-02-05T00:00:00+05:30",
+      "last": "2026-07-28T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "BPCL__ONE_DAY.csv",
+      "rows": 1356,
+      "first": "2021-02-05T00:00:00+05:30",
+      "last": "2026-07-28T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "BPCL__ONE_DAY_deep.csv",
+      "rows": 1837,
+      "first": "2019-03-11T00:00:00+05:30",
+      "last": "2026-08-07T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "BPCL__ONE_DAY_pipeline.csv",
+      "rows": 49,
+      "first": "2026-07-07T00:00:00+05:30",
+      "last": "2026-09-11T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "BRITANNIA__ONE_DAY.csv",
+      "rows": 1356,
+      "first": "2021-02-05T00:00:00+05:30",
+      "last": "2026-07-28T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "CANBK__ONE_DAY.csv",
+      "rows": 1356,
+      "first": "2021-02-05T00:00:00+05:30",
+      "last": "2026-07-28T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "CHOLAFIN__ONE_DAY.csv",
+      "rows": 1356,
+      "first": "2021-02-05T00:00:00+05:30",
+      "last": "2026-07-28T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "CIPLA__ONE_DAY.csv",
+      "rows": 1356,
+      "first": "2021-02-05T00:00:00+05:30",
+      "last": "2026-07-28T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "CIPLA__ONE_DAY_deep.csv",
+      "rows": 1837,
+      "first": "2019-03-11T00:00:00+05:30",
+      "last": "2026-08-07T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "CIPLA__ONE_DAY_pipeline.csv",
+      "rows": 49,
+      "first": "2026-07-07T00:00:00+05:30",
+      "last": "2026-09-11T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "COALINDIA__ONE_DAY.csv",
+      "rows": 1356,
+      "first": "2021-02-05T00:00:00+05:30",
+      "last": "2026-07-28T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "COALINDIA__ONE_DAY_deep.csv",
+      "rows": 1837,
+      "first": "2019-03-11T00:00:00+05:30",
+      "last": "2026-08-07T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "COALINDIA__ONE_DAY_pipeline.csv",
+      "rows": 49,
+      "first": "2026-07-07T00:00:00+05:30",
+      "last": "2026-09-11T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "COFORGE__ONE_DAY.csv",
+      "rows": 1356,
+      "first": "2021-02-05T00:00:00+05:30",
+      "last": "2026-07-28T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "COLPAL__ONE_DAY.csv",
+      "rows": 1356,
+      "first": "2021-02-05T00:00:00+05:30",
+      "last": "2026-07-28T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "COPPER__ONE_DAY_pipeline.csv",
+      "rows": 49,
+      "first": "2026-07-07T00:00:00+05:30",
+      "last": "2026-09-11T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "CRUDEOIL__ONE_DAY_pipeline.csv",
+      "rows": 61,
+      "first": "2026-06-19T00:00:00+05:30",
+      "last": "2026-09-11T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "CRUDEOILM__ONE_DAY_pipeline.csv",
+      "rows": 49,
+      "first": "2026-07-07T00:00:00+05:30",
+      "last": "2026-09-11T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "DABUR__ONE_DAY.csv",
+      "rows": 1356,
+      "first": "2021-02-05T00:00:00+05:30",
+      "last": "2026-07-28T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "DALBHARAT__ONE_DAY.csv",
+      "rows": 832,
+      "first": "2023-03-16T00:00:00+05:30",
+      "last": "2026-07-28T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "DIVISLAB__ONE_DAY.csv",
+      "rows": 1356,
+      "first": "2021-02-05T00:00:00+05:30",
+      "last": "2026-07-28T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "DIVISLAB__ONE_DAY_pipeline.csv",
+      "rows": 49,
+      "first": "2026-07-07T00:00:00+05:30",
+      "last": "2026-09-11T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "DLF__ONE_DAY.csv",
+      "rows": 1356,
+      "first": "2021-02-05T00:00:00+05:30",
+      "last": "2026-07-28T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "DMART__ONE_DAY.csv",
+      "rows": 1356,
+      "first": "2021-02-05T00:00:00+05:30",
+      "last": "2026-07-28T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "DRREDDY__ONE_DAY.csv",
+      "rows": 1356,
+      "first": "2021-02-05T00:00:00+05:30",
+      "last": "2026-07-28T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "DRREDDY__ONE_DAY_deep.csv",
+      "rows": 1837,
+      "first": "2019-03-11T00:00:00+05:30",
+      "last": "2026-08-07T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "DRREDDY__ONE_DAY_pipeline.csv",
+      "rows": 49,
+      "first": "2026-07-07T00:00:00+05:30",
+      "last": "2026-09-11T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "EICHERMOT__ONE_DAY.csv",
+      "rows": 1356,
+      "first": "2021-02-05T00:00:00+05:30",
+      "last": "2026-07-28T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "EICHERMOT__ONE_DAY_deep.csv",
+      "rows": 1837,
+      "first": "2019-03-11T00:00:00+05:30",
+      "last": "2026-08-07T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "EICHERMOT__ONE_DAY_pipeline.csv",
+      "rows": 49,
+      "first": "2026-07-07T00:00:00+05:30",
+      "last": "2026-09-11T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "FEDERALBNK__ONE_DAY.csv",
+      "rows": 1356,
+      "first": "2021-02-05T00:00:00+05:30",
+      "last": "2026-07-28T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "FINNIFTY__ONE_DAY_deep.csv",
+      "rows": 1820,
+      "first": "2019-03-11T00:00:00+05:30",
+      "last": "2026-08-07T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "FINNIFTY__ONE_DAY_pipeline.csv",
+      "rows": 373,
+      "first": "2025-03-10T00:00:00+05:30",
+      "last": "2026-09-10T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "GAIL__ONE_DAY.csv",
+      "rows": 1356,
+      "first": "2021-02-05T00:00:00+05:30",
+      "last": "2026-07-28T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "GODREJCP__ONE_DAY.csv",
+      "rows": 1356,
+      "first": "2021-02-05T00:00:00+05:30",
+      "last": "2026-07-28T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "GODREJPROP__ONE_DAY.csv",
+      "rows": 1356,
+      "first": "2021-02-05T00:00:00+05:30",
+      "last": "2026-07-28T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "GOLD__ONE_DAY_pipeline.csv",
+      "rows": 35,
+      "first": "2026-01-01T00:00:00+00:00",
+      "last": "2026-02-04T00:00:00+00:00",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "GOLDM__ONE_DAY_pipeline.csv",
+      "rows": 49,
+      "first": "2026-07-07T00:00:00+05:30",
+      "last": "2026-09-11T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "GRASIM__ONE_DAY.csv",
+      "rows": 1356,
+      "first": "2021-02-05T00:00:00+05:30",
+      "last": "2026-07-28T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "GRASIM__ONE_DAY_deep.csv",
+      "rows": 1837,
+      "first": "2019-03-11T00:00:00+05:30",
+      "last": "2026-08-07T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "GRASIM__ONE_DAY_pipeline.csv",
+      "rows": 49,
+      "first": "2026-07-07T00:00:00+05:30",
+      "last": "2026-09-11T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "HCLTECH__ONE_DAY.csv",
+      "rows": 1356,
+      "first": "2021-02-05T00:00:00+05:30",
+      "last": "2026-07-28T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "HCLTECH__ONE_DAY_deep.csv",
+      "rows": 1837,
+      "first": "2019-03-11T00:00:00+05:30",
+      "last": "2026-08-07T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "HCLTECH__ONE_DAY_pipeline.csv",
+      "rows": 49,
+      "first": "2026-07-07T00:00:00+05:30",
+      "last": "2026-09-11T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "HDFCBANK__ONE_DAY.csv",
+      "rows": 511,
+      "first": "2024-08-23T00:00:00+05:30",
+      "last": "2026-09-11T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "HDFCBANK__ONE_DAY_deep.csv",
+      "rows": 1837,
+      "first": "2019-03-11T00:00:00+05:30",
+      "last": "2026-08-07T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "HDFCBANK__ONE_DAY_pipeline.csv",
+      "rows": 49,
+      "first": "2026-07-07T00:00:00+05:30",
+      "last": "2026-09-11T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "HDFCLIFE__ONE_DAY.csv",
+      "rows": 1356,
+      "first": "2021-02-05T00:00:00+05:30",
+      "last": "2026-07-28T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "HEROMOTOCO__ONE_DAY.csv",
+      "rows": 1356,
+      "first": "2021-02-05T00:00:00+05:30",
+      "last": "2026-07-28T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "HEROMOTOCO__ONE_DAY_deep.csv",
+      "rows": 1837,
+      "first": "2019-03-11T00:00:00+05:30",
+      "last": "2026-08-07T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "HEROMOTOCO__ONE_DAY_pipeline.csv",
+      "rows": 49,
+      "first": "2026-07-07T00:00:00+05:30",
+      "last": "2026-09-11T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "HINDALCO__ONE_DAY.csv",
+      "rows": 1356,
+      "first": "2021-02-05T00:00:00+05:30",
+      "last": "2026-07-28T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "HINDALCO__ONE_DAY_deep.csv",
+      "rows": 1837,
+      "first": "2019-03-11T00:00:00+05:30",
+      "last": "2026-08-07T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "HINDALCO__ONE_DAY_pipeline.csv",
+      "rows": 49,
+      "first": "2026-07-07T00:00:00+05:30",
+      "last": "2026-09-11T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "HINDUNILVR__ONE_DAY.csv",
+      "rows": 511,
+      "first": "2024-08-23T00:00:00+05:30",
+      "last": "2026-09-11T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "HINDUNILVR__ONE_DAY_deep.csv",
+      "rows": 1837,
+      "first": "2019-03-11T00:00:00+05:30",
+      "last": "2026-08-07T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "HINDUNILVR__ONE_DAY_pipeline.csv",
+      "rows": 49,
+      "first": "2026-07-07T00:00:00+05:30",
+      "last": "2026-09-11T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "ICICIBANK__ONE_DAY.csv",
+      "rows": 511,
+      "first": "2024-08-23T00:00:00+05:30",
+      "last": "2026-09-11T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "ICICIBANK__ONE_DAY_deep.csv",
+      "rows": 1837,
+      "first": "2019-03-11T00:00:00+05:30",
+      "last": "2026-08-07T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "ICICIBANK__ONE_DAY_pipeline.csv",
+      "rows": 49,
+      "first": "2026-07-07T00:00:00+05:30",
+      "last": "2026-09-11T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "ICICIGI__ONE_DAY.csv",
+      "rows": 1356,
+      "first": "2021-02-05T00:00:00+05:30",
+      "last": "2026-07-28T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "ICICIPRULI__ONE_DAY.csv",
+      "rows": 1356,
+      "first": "2021-02-05T00:00:00+05:30",
+      "last": "2026-07-28T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "IDFCFIRSTB__ONE_DAY.csv",
+      "rows": 1356,
+      "first": "2021-02-05T00:00:00+05:30",
+      "last": "2026-07-28T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "INDIAVIX__ONE_DAY_deep.csv",
+      "rows": 1826,
+      "first": "2019-03-12T00:00:00+05:30",
+      "last": "2026-08-07T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "INDIGO__ONE_DAY.csv",
+      "rows": 1356,
+      "first": "2021-02-05T00:00:00+05:30",
+      "last": "2026-07-28T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "INDUSINDBK__ONE_DAY.csv",
+      "rows": 1356,
+      "first": "2021-02-05T00:00:00+05:30",
+      "last": "2026-07-28T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "INFY__ONE_DAY.csv",
+      "rows": 511,
+      "first": "2024-08-23T00:00:00+05:30",
+      "last": "2026-09-11T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "INFY__ONE_DAY_deep.csv",
+      "rows": 1837,
+      "first": "2019-03-11T00:00:00+05:30",
+      "last": "2026-08-07T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "INFY__ONE_DAY_pipeline.csv",
+      "rows": 49,
+      "first": "2026-07-07T00:00:00+05:30",
+      "last": "2026-09-11T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "IOC__ONE_DAY.csv",
+      "rows": 1356,
+      "first": "2021-02-05T00:00:00+05:30",
+      "last": "2026-07-28T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "IRCTC__ONE_DAY.csv",
+      "rows": 1356,
+      "first": "2021-02-05T00:00:00+05:30",
+      "last": "2026-07-28T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "ITC__ONE_DAY.csv",
+      "rows": 511,
+      "first": "2024-08-23T00:00:00+05:30",
+      "last": "2026-09-11T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "ITC__ONE_DAY_deep.csv",
+      "rows": 1837,
+      "first": "2019-03-11T00:00:00+05:30",
+      "last": "2026-08-07T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "ITC__ONE_DAY_pipeline.csv",
+      "rows": 49,
+      "first": "2026-07-07T00:00:00+05:30",
+      "last": "2026-09-11T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "JINDALSTEL__ONE_DAY.csv",
+      "rows": 1356,
+      "first": "2021-02-05T00:00:00+05:30",
+      "last": "2026-07-28T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "JSWSTEEL__ONE_DAY.csv",
+      "rows": 1356,
+      "first": "2021-02-05T00:00:00+05:30",
+      "last": "2026-07-28T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "JSWSTEEL__ONE_DAY_deep.csv",
+      "rows": 1837,
+      "first": "2019-03-11T00:00:00+05:30",
+      "last": "2026-08-07T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "JSWSTEEL__ONE_DAY_pipeline.csv",
+      "rows": 49,
+      "first": "2026-07-07T00:00:00+05:30",
+      "last": "2026-09-11T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "KOTAKBANK__ONE_DAY.csv",
+      "rows": 511,
+      "first": "2024-08-23T00:00:00+05:30",
+      "last": "2026-09-11T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "KOTAKBANK__ONE_DAY_deep.csv",
+      "rows": 1837,
+      "first": "2019-03-11T00:00:00+05:30",
+      "last": "2026-08-07T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "KOTAKBANK__ONE_DAY_pipeline.csv",
+      "rows": 49,
+      "first": "2026-07-07T00:00:00+05:30",
+      "last": "2026-09-11T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "LT__ONE_DAY.csv",
+      "rows": 511,
+      "first": "2024-08-23T00:00:00+05:30",
+      "last": "2026-09-11T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "LT__ONE_DAY_deep.csv",
+      "rows": 1837,
+      "first": "2019-03-11T00:00:00+05:30",
+      "last": "2026-08-07T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "LT__ONE_DAY_pipeline.csv",
+      "rows": 49,
+      "first": "2026-07-07T00:00:00+05:30",
+      "last": "2026-09-11T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "LUPIN__ONE_DAY.csv",
+      "rows": 1356,
+      "first": "2021-02-05T00:00:00+05:30",
+      "last": "2026-07-28T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "M&M__ONE_DAY.csv",
+      "rows": 1356,
+      "first": "2021-02-05T00:00:00+05:30",
+      "last": "2026-07-28T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "M&M__ONE_DAY_deep.csv",
+      "rows": 1837,
+      "first": "2019-03-11T00:00:00+05:30",
+      "last": "2026-08-07T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "M&M__ONE_DAY_pipeline.csv",
+      "rows": 49,
+      "first": "2026-07-07T00:00:00+05:30",
+      "last": "2026-09-11T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "MARICO__ONE_DAY.csv",
+      "rows": 1356,
+      "first": "2021-02-05T00:00:00+05:30",
+      "last": "2026-07-28T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "MARUTI__ONE_DAY.csv",
+      "rows": 1356,
+      "first": "2021-02-05T00:00:00+05:30",
+      "last": "2026-07-28T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "MARUTI__ONE_DAY_deep.csv",
+      "rows": 1837,
+      "first": "2019-03-11T00:00:00+05:30",
+      "last": "2026-08-07T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "MARUTI__ONE_DAY_pipeline.csv",
+      "rows": 49,
+      "first": "2026-07-07T00:00:00+05:30",
+      "last": "2026-09-11T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "MIDCPNIFTY__ONE_DAY_pipeline.csv",
+      "rows": 49,
+      "first": "2026-07-07T00:00:00+05:30",
+      "last": "2026-09-11T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "MOTHERSON__ONE_DAY.csv",
+      "rows": 1356,
+      "first": "2021-02-05T00:00:00+05:30",
+      "last": "2026-07-28T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "MPHASIS__ONE_DAY.csv",
+      "rows": 1356,
+      "first": "2021-02-05T00:00:00+05:30",
+      "last": "2026-07-28T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "MUTHOOTFIN__ONE_DAY.csv",
+      "rows": 1355,
+      "first": "2021-02-05T00:00:00+05:30",
+      "last": "2026-07-28T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "NATIONALUM__ONE_DAY.csv",
+      "rows": 1356,
+      "first": "2021-02-05T00:00:00+05:30",
+      "last": "2026-07-28T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "NATURALGAS__ONE_DAY_pipeline.csv",
+      "rows": 61,
+      "first": "2026-06-19T00:00:00+05:30",
+      "last": "2026-09-11T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "NAUKRI__ONE_DAY.csv",
+      "rows": 1356,
+      "first": "2021-02-05T00:00:00+05:30",
+      "last": "2026-07-28T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "NESTLEIND__ONE_DAY.csv",
+      "rows": 1356,
+      "first": "2021-02-05T00:00:00+05:30",
+      "last": "2026-07-28T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "NICKEL__ONE_DAY_pipeline.csv",
+      "rows": 48,
+      "first": "2026-07-07T00:00:00+05:30",
+      "last": "2026-09-11T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "NIFTY__ONE_DAY_deep.csv",
+      "rows": 1837,
+      "first": "2019-03-11T00:00:00+05:30",
+      "last": "2026-08-07T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "NIFTY__ONE_DAY_pipeline.csv",
+      "rows": 47,
+      "first": "2026-07-09T00:00:00+05:30",
+      "last": "2026-09-11T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "NMDC__ONE_DAY.csv",
+      "rows": 1356,
+      "first": "2021-02-05T00:00:00+05:30",
+      "last": "2026-07-28T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "NTPC__ONE_DAY.csv",
+      "rows": 1356,
+      "first": "2021-02-05T00:00:00+05:30",
+      "last": "2026-07-28T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "NTPC__ONE_DAY_deep.csv",
+      "rows": 1837,
+      "first": "2019-03-11T00:00:00+05:30",
+      "last": "2026-08-07T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "NTPC__ONE_DAY_pipeline.csv",
+      "rows": 49,
+      "first": "2026-07-07T00:00:00+05:30",
+      "last": "2026-09-11T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "OBEROIRLTY__ONE_DAY.csv",
+      "rows": 1356,
+      "first": "2021-02-05T00:00:00+05:30",
+      "last": "2026-07-28T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "ONGC__ONE_DAY.csv",
+      "rows": 1356,
+      "first": "2021-02-05T00:00:00+05:30",
+      "last": "2026-07-28T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "ONGC__ONE_DAY_deep.csv",
+      "rows": 1837,
+      "first": "2019-03-11T00:00:00+05:30",
+      "last": "2026-08-07T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "ONGC__ONE_DAY_pipeline.csv",
+      "rows": 49,
+      "first": "2026-07-07T00:00:00+05:30",
+      "last": "2026-09-11T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "PERSISTENT__ONE_DAY.csv",
+      "rows": 1356,
+      "first": "2021-02-05T00:00:00+05:30",
+      "last": "2026-07-28T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "PIDILITIND__ONE_DAY.csv",
+      "rows": 1356,
+      "first": "2021-02-05T00:00:00+05:30",
+      "last": "2026-07-28T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "PIIND__ONE_DAY.csv",
+      "rows": 1356,
+      "first": "2021-02-05T00:00:00+05:30",
+      "last": "2026-07-28T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "PNB__ONE_DAY.csv",
+      "rows": 1356,
+      "first": "2021-02-05T00:00:00+05:30",
+      "last": "2026-07-28T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "POWERGRID__ONE_DAY.csv",
+      "rows": 1356,
+      "first": "2021-02-05T00:00:00+05:30",
+      "last": "2026-07-28T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "POWERGRID__ONE_DAY_deep.csv",
+      "rows": 1837,
+      "first": "2019-03-11T00:00:00+05:30",
+      "last": "2026-08-07T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "POWERGRID__ONE_DAY_pipeline.csv",
+      "rows": 49,
+      "first": "2026-07-07T00:00:00+05:30",
+      "last": "2026-09-11T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "RAMCOCEM__ONE_DAY.csv",
+      "rows": 1356,
+      "first": "2021-02-05T00:00:00+05:30",
+      "last": "2026-07-28T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "RELIANCE__ONE_DAY.csv",
+      "rows": 511,
+      "first": "2024-08-23T00:00:00+05:30",
+      "last": "2026-09-11T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "RELIANCE__ONE_DAY_deep.csv",
+      "rows": 1837,
+      "first": "2019-03-11T00:00:00+05:30",
+      "last": "2026-08-07T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "RELIANCE__ONE_DAY_pipeline.csv",
+      "rows": 35,
+      "first": "2026-01-01T00:00:00+00:00",
+      "last": "2026-02-04T00:00:00+00:00",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "SAIL__ONE_DAY.csv",
+      "rows": 1356,
+      "first": "2021-02-05T00:00:00+05:30",
+      "last": "2026-07-28T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "SBILIFE__ONE_DAY.csv",
+      "rows": 1356,
+      "first": "2021-02-05T00:00:00+05:30",
+      "last": "2026-07-28T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "SBIN__ONE_DAY.csv",
+      "rows": 511,
+      "first": "2024-08-23T00:00:00+05:30",
+      "last": "2026-09-11T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "SBIN__ONE_DAY_deep.csv",
+      "rows": 1837,
+      "first": "2019-03-11T00:00:00+05:30",
+      "last": "2026-08-07T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "SBIN__ONE_DAY_pipeline.csv",
+      "rows": 49,
+      "first": "2026-07-07T00:00:00+05:30",
+      "last": "2026-09-11T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "SENSEX__ONE_DAY_pipeline.csv",
+      "rows": 49,
+      "first": "2026-07-07T00:00:00+05:30",
+      "last": "2026-09-11T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "SHREECEM__ONE_DAY.csv",
+      "rows": 1356,
+      "first": "2021-02-05T00:00:00+05:30",
+      "last": "2026-07-28T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "SHRIRAMFIN__ONE_DAY.csv",
+      "rows": 1356,
+      "first": "2021-02-05T00:00:00+05:30",
+      "last": "2026-07-28T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "SHRIRAMFIN__ONE_DAY_deep.csv",
+      "rows": 1837,
+      "first": "2019-03-11T00:00:00+05:30",
+      "last": "2026-08-07T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "SHRIRAMFIN__ONE_DAY_pipeline.csv",
+      "rows": 49,
+      "first": "2026-07-07T00:00:00+05:30",
+      "last": "2026-09-11T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "SILVER__ONE_DAY_pipeline.csv",
+      "rows": 49,
+      "first": "2026-07-07T00:00:00+05:30",
+      "last": "2026-09-11T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "SILVERMIC__ONE_DAY_pipeline.csv",
+      "rows": 49,
+      "first": "2026-07-07T00:00:00+05:30",
+      "last": "2026-09-11T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "SRF__ONE_DAY.csv",
+      "rows": 1356,
+      "first": "2021-02-05T00:00:00+05:30",
+      "last": "2026-07-28T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "SUNPHARMA__ONE_DAY.csv",
+      "rows": 1356,
+      "first": "2021-02-05T00:00:00+05:30",
+      "last": "2026-07-28T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "SUNPHARMA__ONE_DAY_deep.csv",
+      "rows": 1837,
+      "first": "2019-03-11T00:00:00+05:30",
+      "last": "2026-08-07T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "SUNPHARMA__ONE_DAY_pipeline.csv",
+      "rows": 49,
+      "first": "2026-07-07T00:00:00+05:30",
+      "last": "2026-09-11T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "TATACONSUM__ONE_DAY.csv",
+      "rows": 1356,
+      "first": "2021-02-05T00:00:00+05:30",
+      "last": "2026-07-28T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "TATACONSUM__ONE_DAY_deep.csv",
+      "rows": 1837,
+      "first": "2019-03-11T00:00:00+05:30",
+      "last": "2026-08-07T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "TATACONSUM__ONE_DAY_pipeline.csv",
+      "rows": 49,
+      "first": "2026-07-07T00:00:00+05:30",
+      "last": "2026-09-11T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "TATAPOWER__ONE_DAY.csv",
+      "rows": 1356,
+      "first": "2021-02-05T00:00:00+05:30",
+      "last": "2026-07-28T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "TATASTEEL__ONE_DAY.csv",
+      "rows": 1356,
+      "first": "2021-02-05T00:00:00+05:30",
+      "last": "2026-07-28T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "TCS__ONE_DAY.csv",
+      "rows": 511,
+      "first": "2024-08-23T00:00:00+05:30",
+      "last": "2026-09-11T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "TCS__ONE_DAY_deep.csv",
+      "rows": 1837,
+      "first": "2019-03-11T00:00:00+05:30",
+      "last": "2026-08-07T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "TCS__ONE_DAY_pipeline.csv",
+      "rows": 49,
+      "first": "2026-07-07T00:00:00+05:30",
+      "last": "2026-09-11T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "TECHM__ONE_DAY.csv",
+      "rows": 1356,
+      "first": "2021-02-05T00:00:00+05:30",
+      "last": "2026-07-28T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "TITAN__ONE_DAY.csv",
+      "rows": 1356,
+      "first": "2021-02-05T00:00:00+05:30",
+      "last": "2026-07-28T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "TITAN__ONE_DAY_deep.csv",
+      "rows": 1837,
+      "first": "2019-03-11T00:00:00+05:30",
+      "last": "2026-08-07T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "TITAN__ONE_DAY_pipeline.csv",
+      "rows": 49,
+      "first": "2026-07-07T00:00:00+05:30",
+      "last": "2026-09-11T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "TMPV__ONE_DAY_pipeline.csv",
+      "rows": 49,
+      "first": "2026-07-07T00:00:00+05:30",
+      "last": "2026-09-11T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "TRENT__ONE_DAY.csv",
+      "rows": 1356,
+      "first": "2021-02-05T00:00:00+05:30",
+      "last": "2026-07-28T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "TRENT__ONE_DAY_deep.csv",
+      "rows": 1837,
+      "first": "2019-03-11T00:00:00+05:30",
+      "last": "2026-08-07T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "TRENT__ONE_DAY_pipeline.csv",
+      "rows": 49,
+      "first": "2026-07-07T00:00:00+05:30",
+      "last": "2026-09-11T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "TVSMOTOR__ONE_DAY.csv",
+      "rows": 1356,
+      "first": "2021-02-05T00:00:00+05:30",
+      "last": "2026-07-28T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "UBL__ONE_DAY.csv",
+      "rows": 1356,
+      "first": "2021-02-05T00:00:00+05:30",
+      "last": "2026-07-28T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "ULTRACEMCO__ONE_DAY.csv",
+      "rows": 1356,
+      "first": "2021-02-05T00:00:00+05:30",
+      "last": "2026-07-28T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "ULTRACEMCO__ONE_DAY_deep.csv",
+      "rows": 1837,
+      "first": "2019-03-11T00:00:00+05:30",
+      "last": "2026-08-07T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "ULTRACEMCO__ONE_DAY_pipeline.csv",
+      "rows": 49,
+      "first": "2026-07-07T00:00:00+05:30",
+      "last": "2026-09-11T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "UPL__ONE_DAY.csv",
+      "rows": 1356,
+      "first": "2021-02-05T00:00:00+05:30",
+      "last": "2026-07-28T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "VEDL__ONE_DAY.csv",
+      "rows": 1356,
+      "first": "2021-02-05T00:00:00+05:30",
+      "last": "2026-07-28T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "WIPRO__ONE_DAY.csv",
+      "rows": 1356,
+      "first": "2021-02-05T00:00:00+05:30",
+      "last": "2026-07-28T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "WIPRO__ONE_DAY_deep.csv",
+      "rows": 1837,
+      "first": "2019-03-11T00:00:00+05:30",
+      "last": "2026-08-07T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "WIPRO__ONE_DAY_pipeline.csv",
+      "rows": 49,
+      "first": "2026-07-07T00:00:00+05:30",
+      "last": "2026-09-11T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    },
+    {
+      "file": "ZINC__ONE_DAY_pipeline.csv",
+      "rows": 49,
+      "first": "2026-07-07T00:00:00+05:30",
+      "last": "2026-09-11T00:00:00+05:30",
+      "duplicate_timestamps": 0
+    }
+  ],
+  "databases": {
+    "trading.db": {
+      "trades": {
+        "count": 480,
+        "columns": [
+          "trade_id",
+          "order_id",
+          "symbol",
+          "side",
+          "quantity",
+          "price",
+          "charges",
+          "timestamp",
+          "strategy_name",
+          "execution_mode",
+          "is_test",
+          "feature_vector",
+          "exit_reason"
+        ]
+      },
+      "portfolio_snapshots": {
+        "count": 1706,
+        "columns": [
+          "id",
+          "recorded_at",
+          "cash",
+          "equity",
+          "realized_pnl",
+          "unrealized_pnl",
+          "drawdown",
+          "execution_mode"
+        ]
+      },
+      "sqlite_sequence": {
+        "count": 7,
+        "columns": [
+          "name",
+          "seq"
+        ]
+      },
+      "daily_pnl": {
+        "count": 0,
+        "columns": [
+          "trade_date",
+          "realized_pnl",
+          "unrealized_pnl",
+          "total_trades",
+          "winning_trades",
+          "ending_equity"
+        ]
+      },
+      "model_runs": {
+        "count": 449,
+        "columns": [
+          "id",
+          "run_at",
+          "model_name",
+          "symbol",
+          "regime",
+          "signal",
+          "confidence",
+          "metadata"
+        ]
+      },
+      "risk_events": {
+        "count": 957,
+        "columns": [
+          "id",
+          "occurred_at",
+          "event_type",
+          "symbol",
+          "reason",
+          "risk_score",
+          "approved"
+        ]
+      },
+      "open_positions": {
+        "count": 0,
+        "columns": [
+          "symbol",
+          "execution_mode",
+          "quantity",
+          "average_price",
+          "realized_pnl",
+          "updated_at"
+        ]
+      },
+      "active_exit_plans": {
+        "count": 0,
+        "columns": [
+          "plan_id",
+          "symbol",
+          "execution_mode",
+          "side",
+          "entry_price",
+          "quantity",
+          "strategy_name",
+          "stop_loss_price",
+          "target_price",
+          "trailing_pct",
+          "expiry_date",
+          "partial_exit_enabled",
+          "created_at"
+        ]
+      },
+      "market_patterns": {
+        "count": 5,
+        "columns": [
+          "pattern_id",
+          "regime",
+          "news_sentiment_bucket",
+          "volatility_bucket",
+          "momentum_bucket",
+          "rsi_bucket",
+          "feature_vector",
+          "win_rate",
+          "avg_return",
+          "sample_size",
+          "last_updated"
+        ]
+      },
+      "profit_guard_outcomes": {
+        "count": 771,
+        "columns": [
+          "id",
+          "underlying",
+          "won",
+          "pnl_pct",
+          "ts"
+        ]
+      },
+      "reflections": {
+        "count": 745,
+        "columns": [
+          "id",
+          "trace_id",
+          "underlying",
+          "won",
+          "pnl_pct",
+          "quality",
+          "regime",
+          "payload",
+          "ts"
+        ]
+      },
+      "agent_weights": {
+        "count": 0,
+        "columns": [
+          "agent_name",
+          "weight",
+          "updated_at"
+        ]
+      },
+      "runtime_monitor_log": {
+        "count": 208,
+        "columns": [
+          "id",
+          "ts",
+          "severity",
+          "summary_text",
+          "anomalies",
+          "metrics"
+        ]
+      },
+      "daily_ai_reviews": {
+        "count": 7,
+        "columns": [
+          "id",
+          "review_date",
+          "summary_text",
+          "model_id",
+          "created_at"
+        ]
+      },
+      "tuning_suggestions": {
+        "count": 0,
+        "columns": [
+          "id",
+          "review_date",
+          "parameter",
+          "current_value",
+          "proposed_value",
+          "rationale",
+          "confidence",
+          "model_id",
+          "status",
+          "created_at",
+          "reviewed_at"
+        ]
+      },
+      "strategy_hypotheses": {
+        "count": 0,
+        "columns": [
+          "id",
+          "created_at",
+          "title",
+          "thesis_text",
+          "suggested_universe",
+          "suggested_features",
+          "model_id",
+          "status",
+          "validation_run_id",
+          "validation_verdict"
+        ]
+      },
+      "decision_traces": {
+        "count": 3728,
+        "columns": [
+          "trace_id",
+          "created_at",
+          "payload"
+        ]
+      },
+      "backtest_gate_results": {
+        "count": 0,
+        "columns": [
+          "id",
+          "run_at",
+          "backtest_id",
+          "strategy_id",
+          "subject_type",
+          "gate_name",
+          "result",
+          "metric_value",
+          "threshold_value",
+          "message",
+          "details",
+          "git_sha",
+          "config_snapshot"
+        ]
+      },
+      "strategy_promotions": {
+        "count": 0,
+        "columns": [
+          "strategy_id",
+          "status",
+          "version",
+          "updated_at",
+          "metadata"
+        ]
+      }
+    },
+    "oms_events.db": {
+      "oms_events": {
+        "count": 9119,
+        "columns": [
+          "id",
+          "event_id",
+          "occurred_at",
+          "event_type",
+          "order_id",
+          "idempotency_key",
+          "symbol",
+          "strategy_name",
+          "side",
+          "quantity",
+          "price",
+          "priority",
+          "broker_order_id",
+          "fill_price",
+          "fill_qty",
+          "rejection_reason",
+          "metadata",
+          "algo_id",
+          "signal_hash"
+        ]
+      },
+      "sqlite_sequence": {
+        "count": 1,
+        "columns": [
+          "name",
+          "seq"
+        ]
+      }
+    },
+    "paper_learning_journal.db": {
+      "paper_learning_events": {
+        "count": 5726,
+        "columns": [
+          "id",
+          "event_id",
+          "occurred_at",
+          "event_type",
+          "trace_id",
+          "order_id",
+          "trade_id",
+          "symbol",
+          "strategy_name",
+          "regime",
+          "side",
+          "quantity",
+          "execution_mode",
+          "source",
+          "payload"
+        ]
+      },
+      "sqlite_sequence": {
+        "count": 1,
+        "columns": [
+          "name",
+          "seq"
+        ]
+      }
+    }
+  }
+}

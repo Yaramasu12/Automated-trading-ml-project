@@ -1,0 +1,687 @@
+{
+  "scope": "Offline isolated PAPER execution; cached historical and synthetic backtests. No live market session.",
+  "run_at": "2026-09-13T14:42:17.909368+00:00",
+  "existing_history": {
+    "trade_groups": [
+      {
+        "execution_mode": "PAPER",
+        "is_test": 0,
+        "fills": 407,
+        "first": "2026-07-29T05:36:34.964781+00:00",
+        "last": "2026-09-09T01:35:33.102903+00:00",
+        "charges": 628.6300000000009
+      },
+      {
+        "execution_mode": "PAPER",
+        "is_test": 1,
+        "fills": 73,
+        "first": "2026-07-29T05:35:47.894075+00:00",
+        "last": "2026-09-09T01:36:19.169369+00:00",
+        "charges": 44.02999999999999
+      }
+    ],
+    "paper_strategies": [
+      {
+        "strategy_name": "exit_manager:target",
+        "fills": 222,
+        "charges": 408.47999999999837,
+        "min_price": 2859.115265401117
+      },
+      {
+        "strategy_name": "momentum_v1",
+        "fills": 185,
+        "charges": 220.14999999999966,
+        "min_price": 2800.677835063279
+      }
+    ],
+    "snapshot_ranges": [
+      {
+        "execution_mode": "PAPER",
+        "samples": 1706,
+        "first": "2026-07-26T06:10:58.165317+00:00",
+        "last": "2026-09-09T01:36:19.767673+00:00",
+        "minimum_equity": 997199.3221649367,
+        "maximum_equity": 1000055.4074303379
+      }
+    ],
+    "latest_snapshots": [
+      {
+        "recorded_at": "2026-09-09T01:36:19.767673+00:00",
+        "cash": 997199.3221649367,
+        "equity": 999999.3221649367,
+        "realized_pnl": 0.0,
+        "unrealized_pnl": -0.6778350632789625,
+        "drawdown": 6.778350633103401e-07,
+        "execution_mode": "PAPER"
+      },
+      {
+        "recorded_at": "2026-09-09T01:35:33.198995+00:00",
+        "cash": 1000055.4074303379,
+        "equity": 1000055.4074303379,
+        "realized_pnl": 58.43743033783812,
+        "unrealized_pnl": 0.0,
+        "drawdown": 2.7245762133733346e-06,
+        "execution_mode": "PAPER"
+      },
+      {
+        "recorded_at": "2026-09-09T01:35:33.027183+00:00",
+        "cash": 997198.1321649367,
+        "equity": 999998.81,
+        "realized_pnl": 0.0,
+        "unrealized_pnl": 0.0,
+        "drawdown": 1.1899999999441206e-06,
+        "execution_mode": "PAPER"
+      },
+      {
+        "recorded_at": "2026-09-09T01:35:29.149812+00:00",
+        "cash": 1000055.4074303379,
+        "equity": 1000055.4074303379,
+        "realized_pnl": 58.43743033783812,
+        "unrealized_pnl": 0.0,
+        "drawdown": 2.7245762133733346e-06,
+        "execution_mode": "PAPER"
+      },
+      {
+        "recorded_at": "2026-09-09T01:35:28.949430+00:00",
+        "cash": 997198.1321649367,
+        "equity": 999998.81,
+        "realized_pnl": 0.0,
+        "unrealized_pnl": 0.0,
+        "drawdown": 1.1899999999441206e-06,
+        "execution_mode": "PAPER"
+      }
+    ],
+    "first_snapshots": [
+      {
+        "recorded_at": "2026-07-26T06:10:58.165317+00:00",
+        "cash": 997198.1321649367,
+        "equity": 999998.81,
+        "realized_pnl": 0.0,
+        "unrealized_pnl": 0.0,
+        "drawdown": 1.1899999999441206e-06,
+        "execution_mode": "PAPER"
+      },
+      {
+        "recorded_at": "2026-07-26T06:10:58.217895+00:00",
+        "cash": 1000055.4074303379,
+        "equity": 1000055.4074303379,
+        "realized_pnl": 58.43743033783812,
+        "unrealized_pnl": 0.0,
+        "drawdown": 2.7245762133733346e-06,
+        "execution_mode": "PAPER"
+      },
+      {
+        "recorded_at": "2026-07-26T06:10:58.364884+00:00",
+        "cash": 997198.1321649367,
+        "equity": 999998.81,
+        "realized_pnl": 0.0,
+        "unrealized_pnl": 0.0,
+        "drawdown": 1.1899999999441206e-06,
+        "execution_mode": "PAPER"
+      },
+      {
+        "recorded_at": "2026-07-26T06:10:58.384200+00:00",
+        "cash": 1000055.4074303379,
+        "equity": 1000055.4074303379,
+        "realized_pnl": 58.43743033783812,
+        "unrealized_pnl": 0.0,
+        "drawdown": 2.7245762133733346e-06,
+        "execution_mode": "PAPER"
+      },
+      {
+        "recorded_at": "2026-07-26T06:10:58.600559+00:00",
+        "cash": 997198.1321649367,
+        "equity": 999998.81,
+        "realized_pnl": 0.0,
+        "unrealized_pnl": 0.0,
+        "drawdown": 1.1899999999441206e-06,
+        "execution_mode": "PAPER"
+      }
+    ],
+    "zero_price_fills": [],
+    "fifo_diagnostic": {
+      "matched_chunks": 185,
+      "net_pnl": 10250.374612500053,
+      "wins": 185,
+      "losses": 0,
+      "profit_factor": null,
+      "caveat": "Local non-test-tagged records; completeness, reset history and original quote provenance are not established."
+    }
+  },
+  "calendar": {
+    "2026-09-13": false,
+    "2026-09-14": true,
+    "2026-03-03": true,
+    "2026-03-25": false
+  },
+  "market_status_now": "CLOSED",
+  "paper_initial_state": {
+    "execution_mode": "PAPER",
+    "live_armed": false,
+    "kill_switch_active": false,
+    "broker": "ANGEL_ONE",
+    "angel_one_configured": true,
+    "live_order_confirmation_ready": false
+  },
+  "synthetic_backtests": [
+    {
+      "config": {
+        "starting_capital": 1000000,
+        "start": "2026-01-01",
+        "days": 30,
+        "underlyings": [
+          "NIFTY",
+          "BANKNIFTY",
+          "MIDCPNIFTY",
+          "RELIANCE",
+          "TCS"
+        ],
+        "max_drawdown": 0.1,
+        "strategy_names": null
+      },
+      "metrics": {
+        "starting_capital": 1000000,
+        "ending_equity": 999132.8523186018,
+        "total_pnl": -867.1476813982008,
+        "return_pct": -0.0008671476813982009,
+        "max_drawdown": 0.0008671476813982009,
+        "trade_count": 6,
+        "win_rate": 0.0,
+        "profit_factor": 0.0,
+        "sharpe_like": -5.569032576394443
+      },
+      "orders": 6,
+      "selected_strategies": {
+        "NIFTY": [
+          "equity_momentum",
+          "futures_trend",
+          "swing_trend"
+        ],
+        "BANKNIFTY": [
+          "equity_momentum",
+          "futures_trend",
+          "swing_trend"
+        ],
+        "MIDCPNIFTY": [
+          "equity_momentum",
+          "futures_trend",
+          "swing_trend"
+        ],
+        "RELIANCE": [
+          "equity_momentum",
+          "futures_trend",
+          "swing_trend"
+        ],
+        "TCS": [
+          "equity_momentum",
+          "futures_trend",
+          "swing_trend"
+        ]
+      },
+      "charges": 62.74,
+      "matched_pnl_count": 3,
+      "rejections": {},
+      "equity_samples": 25,
+      "unique_equity_dates": 9,
+      "filled_segments": {
+        "CASH": 6
+      }
+    },
+    {
+      "config": {
+        "starting_capital": 1000000,
+        "start": "2026-01-01",
+        "days": 90,
+        "underlyings": [
+          "NIFTY",
+          "BANKNIFTY",
+          "MIDCPNIFTY",
+          "RELIANCE",
+          "TCS"
+        ],
+        "max_drawdown": 0.1,
+        "strategy_names": null
+      },
+      "metrics": {
+        "starting_capital": 1000000,
+        "ending_equity": 998238.0350738124,
+        "total_pnl": -1761.9649261876475,
+        "return_pct": -0.0017619649261876476,
+        "max_drawdown": 0.0040787363201482225,
+        "trade_count": 56,
+        "win_rate": 0.42857142857142855,
+        "profit_factor": 0.7214270426469666,
+        "sharpe_like": -0.7660115811182671
+      },
+      "orders": 56,
+      "selected_strategies": {
+        "NIFTY": [
+          "equity_momentum",
+          "futures_trend",
+          "swing_trend"
+        ],
+        "BANKNIFTY": [
+          "equity_momentum",
+          "futures_trend",
+          "swing_trend"
+        ],
+        "MIDCPNIFTY": [
+          "mean_reversion",
+          "equity_momentum"
+        ],
+        "RELIANCE": [
+          "breakout",
+          "equity_momentum"
+        ],
+        "TCS": [
+          "equity_momentum",
+          "futures_trend",
+          "swing_trend"
+        ]
+      },
+      "charges": 571.41,
+      "matched_pnl_count": 28,
+      "rejections": {},
+      "equity_samples": 195,
+      "unique_equity_dates": 69,
+      "filled_segments": {
+        "CASH": 56
+      }
+    }
+  ],
+  "cached_backtests": [
+    {
+      "config": {
+        "starting_capital": 1000000,
+        "start": "2024-08-23",
+        "days": 511,
+        "underlyings": [
+          "RELIANCE"
+        ],
+        "max_drawdown": 0.1,
+        "strategy_names": [
+          "equity_momentum"
+        ]
+      },
+      "metrics": {
+        "starting_capital": 1000000,
+        "ending_equity": 994781.9491452932,
+        "total_pnl": -5218.0508547067875,
+        "return_pct": -0.005218050854706787,
+        "max_drawdown": 0.009297471498988536,
+        "trade_count": 176,
+        "win_rate": 0.3977272727272727,
+        "profit_factor": 0.7269859361732531,
+        "sharpe_like": -0.5214648408571332
+      },
+      "orders": 176,
+      "selected_strategies": {
+        "RELIANCE": [
+          "equity_momentum"
+        ]
+      },
+      "charges": 1811.46,
+      "matched_pnl_count": 88,
+      "rejections": {},
+      "equity_samples": 1157,
+      "unique_equity_dates": 490,
+      "filled_segments": {
+        "CASH": 176
+      },
+      "data_first": "2024-08-23T00:00:00+05:30",
+      "data_last": "2026-09-11T00:00:00+05:30",
+      "bars": 511,
+      "buy_hold_return": -0.15573302909298348
+    },
+    {
+      "config": {
+        "starting_capital": 1000000,
+        "start": "2024-08-23",
+        "days": 511,
+        "underlyings": [
+          "RELIANCE"
+        ],
+        "max_drawdown": 0.1,
+        "strategy_names": [
+          "swing_trend"
+        ]
+      },
+      "metrics": {
+        "starting_capital": 1000000,
+        "ending_equity": 999111.7424957315,
+        "total_pnl": -888.2575042685494,
+        "return_pct": -0.0008882575042685494,
+        "max_drawdown": 0.005004722983850102,
+        "trade_count": 94,
+        "win_rate": 0.3829787234042553,
+        "profit_factor": 0.9353746391267909,
+        "sharpe_like": -0.0884217074433043
+      },
+      "orders": 94,
+      "selected_strategies": {
+        "RELIANCE": [
+          "swing_trend"
+        ]
+      },
+      "charges": 965.56,
+      "matched_pnl_count": 47,
+      "rejections": {},
+      "equity_samples": 1075,
+      "unique_equity_dates": 490,
+      "filled_segments": {
+        "CASH": 94
+      },
+      "data_first": "2024-08-23T00:00:00+05:30",
+      "data_last": "2026-09-11T00:00:00+05:30",
+      "bars": 511,
+      "buy_hold_return": -0.15573302909298348
+    },
+    {
+      "config": {
+        "starting_capital": 1000000,
+        "start": "2024-08-23",
+        "days": 511,
+        "underlyings": [
+          "TCS"
+        ],
+        "max_drawdown": 0.1,
+        "strategy_names": [
+          "equity_momentum"
+        ]
+      },
+      "metrics": {
+        "starting_capital": 1000000,
+        "ending_equity": 999204.3763250592,
+        "total_pnl": -795.6236749407835,
+        "return_pct": -0.0007956236749407836,
+        "max_drawdown": 0.004285338032951726,
+        "trade_count": 168,
+        "win_rate": 0.40476190476190477,
+        "profit_factor": 0.9534775584366041,
+        "sharpe_like": -0.06626219018686723
+      },
+      "orders": 168,
+      "selected_strategies": {
+        "TCS": [
+          "equity_momentum"
+        ]
+      },
+      "charges": 1627.94,
+      "matched_pnl_count": 84,
+      "rejections": {},
+      "equity_samples": 1149,
+      "unique_equity_dates": 490,
+      "filled_segments": {
+        "CASH": 168
+      },
+      "data_first": "2024-08-23T00:00:00+05:30",
+      "data_last": "2026-09-11T00:00:00+05:30",
+      "bars": 511,
+      "buy_hold_return": -0.4862402445141798
+    },
+    {
+      "config": {
+        "starting_capital": 1000000,
+        "start": "2024-08-23",
+        "days": 511,
+        "underlyings": [
+          "TCS"
+        ],
+        "max_drawdown": 0.1,
+        "strategy_names": [
+          "swing_trend"
+        ]
+      },
+      "metrics": {
+        "starting_capital": 1000000,
+        "ending_equity": 998131.6917611907,
+        "total_pnl": -1868.3082388093462,
+        "return_pct": -0.0018683082388093462,
+        "max_drawdown": 0.0050313696975011766,
+        "trade_count": 98,
+        "win_rate": 0.3877551020408163,
+        "profit_factor": 0.8869468535580877,
+        "sharpe_like": -0.15724928657063283
+      },
+      "orders": 98,
+      "selected_strategies": {
+        "TCS": [
+          "swing_trend"
+        ]
+      },
+      "charges": 942.79,
+      "matched_pnl_count": 49,
+      "rejections": {},
+      "equity_samples": 1079,
+      "unique_equity_dates": 490,
+      "filled_segments": {
+        "CASH": 98
+      },
+      "data_first": "2024-08-23T00:00:00+05:30",
+      "data_last": "2026-09-11T00:00:00+05:30",
+      "bars": 511,
+      "buy_hold_return": -0.4862402445141798
+    },
+    {
+      "config": {
+        "starting_capital": 1000000,
+        "start": "2024-08-23",
+        "days": 511,
+        "underlyings": [
+          "INFY"
+        ],
+        "max_drawdown": 0.1,
+        "strategy_names": [
+          "equity_momentum"
+        ]
+      },
+      "metrics": {
+        "starting_capital": 1000000,
+        "ending_equity": 1001597.6891106953,
+        "total_pnl": 1597.689110695268,
+        "return_pct": 0.001597689110695268,
+        "max_drawdown": 0.00583541538266708,
+        "trade_count": 156,
+        "win_rate": 0.4358974358974359,
+        "profit_factor": 1.0820990590266244,
+        "sharpe_like": 0.13717071767205397
+      },
+      "orders": 156,
+      "selected_strategies": {
+        "INFY": [
+          "equity_momentum"
+        ]
+      },
+      "charges": 1596.09,
+      "matched_pnl_count": 78,
+      "rejections": {},
+      "equity_samples": 1137,
+      "unique_equity_dates": 490,
+      "filled_segments": {
+        "CASH": 156
+      },
+      "data_first": "2024-08-23T00:00:00+05:30",
+      "data_last": "2026-09-11T00:00:00+05:30",
+      "bars": 511,
+      "buy_hold_return": -0.4560268266485028
+    },
+    {
+      "config": {
+        "starting_capital": 1000000,
+        "start": "2024-08-23",
+        "days": 511,
+        "underlyings": [
+          "INFY"
+        ],
+        "max_drawdown": 0.1,
+        "strategy_names": [
+          "swing_trend"
+        ]
+      },
+      "metrics": {
+        "starting_capital": 1000000,
+        "ending_equity": 998089.3681482571,
+        "total_pnl": -1910.631851742859,
+        "return_pct": -0.001910631851742859,
+        "max_drawdown": 0.007133351373340394,
+        "trade_count": 92,
+        "win_rate": 0.34782608695652173,
+        "profit_factor": 0.8914807321303682,
+        "sharpe_like": -0.15552065137394727
+      },
+      "orders": 92,
+      "selected_strategies": {
+        "INFY": [
+          "swing_trend"
+        ]
+      },
+      "charges": 938.99,
+      "matched_pnl_count": 46,
+      "rejections": {},
+      "equity_samples": 1073,
+      "unique_equity_dates": 490,
+      "filled_segments": {
+        "CASH": 92
+      },
+      "data_first": "2024-08-23T00:00:00+05:30",
+      "data_last": "2026-09-11T00:00:00+05:30",
+      "bars": 511,
+      "buy_hold_return": -0.4560268266485028
+    }
+  ],
+  "paper_roundtrip": {
+    "entry_response": {
+      "enqueued": true,
+      "approval_required": false,
+      "event_id": "evt_20260913144220_000002",
+      "trace_id": "order-1a09b381944-4e036641",
+      "idempotency_key": "e7ea9ba0449443a698a4a32f126ac9e0"
+    },
+    "exit_response": {
+      "enqueued": true,
+      "approval_required": false,
+      "event_id": "evt_20260913144220_000012",
+      "trace_id": "order-1a09b3819bc-676d1dee",
+      "idempotency_key": "643d97f003a245d5bff6df9315f1abba"
+    },
+    "trades": [
+      {
+        "trade_id": "10dc0979de1b411591c21f3ecf348d4f",
+        "order_id": "SIM-000001",
+        "symbol": "RELIANCE",
+        "side": "BUY",
+        "quantity": 1,
+        "price": 1000.2363706410657,
+        "charges": 0.42,
+        "timestamp": "2026-09-13 14:42:20.163022+00:00",
+        "strategy_name": "audit_paper_roundtrip"
+      },
+      {
+        "trade_id": "5fffabb985094e58a36d90e9f405524e",
+        "order_id": "SIM-000002",
+        "symbol": "RELIANCE",
+        "side": "SELL",
+        "quantity": 1,
+        "price": 1009.6934392942904,
+        "charges": 0.65,
+        "timestamp": "2026-09-13 14:42:20.285567+00:00",
+        "strategy_name": "audit_paper_roundtrip"
+      }
+    ],
+    "snapshot": {
+      "cash": 1000008.3870686532,
+      "equity": 1000008.3870686532,
+      "realized_pnl": 9.457068653224724,
+      "unrealized_pnl": 0.0,
+      "drawdown": 9.565517680068354e-07,
+      "peak_equity": 1000009.3436293589,
+      "open_positions": 0
+    },
+    "stats": {
+      "running": false,
+      "queue_depth": 0,
+      "processed": 2,
+      "rejected": 0,
+      "unresolved_orders": 0,
+      "tracking_orders": 0,
+      "kill_switch_active": false,
+      "locked_symbols": []
+    },
+    "prices": "Deliberately supplied test prices 1000 and 1010; this tests execution, not alpha or market profit."
+  },
+  "reproductions": {
+    "forged_close_on_flat_portfolio": {
+      "approved": true,
+      "reason": "approved",
+      "stage": "final_execution_gate",
+      "risk_score": 0.99,
+      "details": {
+        "execution_mode": "PAPER",
+        "symbol": "RELIANCE",
+        "strategy_name": "audit_paper_roundtrip",
+        "notional_value": 1000000.0,
+        "portfolio_equity": 1000008.3870686532,
+        "portfolio_drawdown": 9.565517680068354e-07,
+        "trace_id": "order-1a09b381a49-37b06de1",
+        "protection": {
+          "opens_position": false,
+          "priority": "TARGET",
+          "explicit_stop_loss": true,
+          "explicit_target": true,
+          "system_exit_plan_after_fill": false
+        }
+      }
+    },
+    "ordinary_entry_under_kill_switch": {
+      "approved": false,
+      "reason": "kill_switch_active",
+      "stage": "final_execution_gate",
+      "risk_score": 1.0,
+      "details": {
+        "execution_mode": "PAPER",
+        "symbol": "RELIANCE",
+        "strategy_name": "audit_paper_roundtrip",
+        "notional_value": 1000000.0,
+        "portfolio_equity": 1000008.3870686532,
+        "portfolio_drawdown": 9.565517680068354e-07,
+        "trace_id": "order-1a09b381a5d-534f0d50",
+        "protection": {
+          "opens_position": true,
+          "priority": "ENTRY",
+          "explicit_stop_loss": true,
+          "explicit_target": true,
+          "system_exit_plan_after_fill": true
+        }
+      }
+    },
+    "marketable_buy_limit": {
+      "limit": 1000,
+      "fill": 1000.2084852813742,
+      "status": "FILLED",
+      "breaches_limit": true
+    },
+    "unarmed_live_entry": {
+      "approved": false,
+      "reason": "live_mode_not_armed",
+      "stage": "final_execution_gate",
+      "risk_score": 1.0,
+      "details": {
+        "execution_mode": "LIVE",
+        "symbol": "RELIANCE",
+        "strategy_name": "audit_paper_roundtrip",
+        "notional_value": 1000000.0,
+        "portfolio_equity": 1000008.3870686532,
+        "portfolio_drawdown": 9.565517680068354e-07,
+        "trace_id": "order-1a09b381a5d-534f0d50",
+        "protection": {
+          "opens_position": true,
+          "priority": "ENTRY",
+          "explicit_stop_loss": true,
+          "explicit_target": true,
+          "system_exit_plan_after_fill": true
+        },
+        "live_armed": false
+      }
+    }
+  }
+}
