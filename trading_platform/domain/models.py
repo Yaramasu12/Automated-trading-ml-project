@@ -146,6 +146,19 @@ class Trade:
     charges: float
     timestamp: datetime
     strategy_name: str
+    # audit_results/2026-09-13/AUDIT_REPORT.md finding #4 (high): quantity is
+    # in LOTS (matching PortfolioLedger.apply_fill's own accounting), but
+    # nothing on Trade recorded the contract multiplier needed to turn a lot
+    # count into rupees. backtesting/metrics.py::round_trip_pnls multiplied
+    # price-change directly by quantity with no lot_size anywhere to read —
+    # a reproduced one-lot trade (lot_size 50, price +10) produced ₹500
+    # ledger profit but ₹10 in round_trip_pnls, corrupting win rate/profit
+    # factor and able to flip a trade's sign after costs. Default 1 is
+    # correct for equities (lot_size is always 1 there) and preserves every
+    # existing call site that never dealt with a derivative multiplier;
+    # PortfolioLedger.apply_fill (the only real construction site) now
+    # always passes the instrument's actual lot_size.
+    lot_size: int = 1
 
 
 @dataclass

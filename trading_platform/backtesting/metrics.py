@@ -47,7 +47,12 @@ def round_trip_pnls(trades: list[Trade]) -> list[float]:
             else:
                 # Short open, current close is BUY
                 pnl_per_unit = head["price"] - trade.price
-            pnl = pnl_per_unit * matched - matched * head["per_unit_charge"] - matched * per_unit_charge
+            # lot_size from the CLOSING trade — mirrors PortfolioLedger.
+            # apply_fill's own realized_pnl, which always reads
+            # intent.instrument.lot_size fresh at the closing fill rather
+            # than remembering the opening fill's value. Charges are
+            # already in rupees (not per-lot), so they are not multiplied.
+            pnl = (pnl_per_unit * trade.lot_size) * matched - matched * head["per_unit_charge"] - matched * per_unit_charge
             realised.append(pnl)
             head["quantity"] -= matched
             remaining_qty -= matched

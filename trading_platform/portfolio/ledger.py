@@ -132,6 +132,7 @@ class PortfolioLedger:
                 charges=charges,
                 timestamp=timestamp,
                 strategy_name=intent.signal.strategy_name,
+                lot_size=lot_size,
             )
             self.trades.append(trade)
             return trade

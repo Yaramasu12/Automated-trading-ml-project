@@ -45,7 +45,8 @@ CREATE TABLE IF NOT EXISTS trades (
     execution_mode TEXT        NOT NULL DEFAULT 'BACKTEST',
     is_test        BOOLEAN     NOT NULL DEFAULT FALSE,
     feature_vector vector(7),
-    exit_reason    TEXT
+    exit_reason    TEXT,
+    lot_size       INTEGER     NOT NULL DEFAULT 1
 );
 
 CREATE TABLE IF NOT EXISTS portfolio_snapshots (
@@ -270,7 +271,8 @@ CREATE TABLE IF NOT EXISTS trades (
     execution_mode TEXT NOT NULL DEFAULT 'BACKTEST',
     is_test       INTEGER NOT NULL DEFAULT 0,
     feature_vector TEXT,
-    exit_reason   TEXT
+    exit_reason   TEXT,
+    lot_size      INTEGER NOT NULL DEFAULT 1
 );
 CREATE TABLE IF NOT EXISTS portfolio_snapshots (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -551,6 +553,19 @@ class TradingDatabase:
                         "ALTER TABLE trades ADD COLUMN IF NOT EXISTS ts TIMESTAMPTZ DEFAULT now()",
                         "ALTER TABLE trades ADD COLUMN IF NOT EXISTS feature_vector vector(7)",
                         "ALTER TABLE trades ADD COLUMN IF NOT EXISTS exit_reason TEXT",
+                        # audit_results/2026-09-13/AUDIT_REPORT.md finding #4.
+                        # KNOWN LIMITATION: this backfills every pre-existing
+                        # row to 1, which is correct for equities but WRONG
+                        # for any historical derivative trade — there is no
+                        # way to recover the true historical lot_size from
+                        # this column alone. Do not treat lot_size on a row
+                        # older than this migration as trustworthy; cross-
+                        # reference symbol/expiry against the instrument
+                        # master before using it for reconciliation. Every
+                        # trade recorded AFTER this migration carries its
+                        # real value (PortfolioLedger.apply_fill always
+                        # passes intent.instrument.lot_size).
+                        "ALTER TABLE trades ADD COLUMN IF NOT EXISTS lot_size INTEGER DEFAULT 1",
                     ]
                 )
                 for stmt in statements:
@@ -642,6 +657,9 @@ class TradingDatabase:
             self._sl_ensure_column(cur, "trades", "timestamp", "TEXT NOT NULL DEFAULT ''")
             self._sl_ensure_column(cur, "trades", "feature_vector", "TEXT")
             self._sl_ensure_column(cur, "trades", "exit_reason", "TEXT")
+            # See the matching postgres migration's comment above (finding
+            # #4) — same backfill-to-1 caveat for pre-migration rows.
+            self._sl_ensure_column(cur, "trades", "lot_size", "INTEGER NOT NULL DEFAULT 1")
 
     @staticmethod
     def _sl_ensure_column(cur, table: str, column: str, definition: str) -> None:
@@ -663,20 +681,21 @@ class TradingDatabase:
     ) -> None:
         is_test = trade.strategy_name in {"manual_preview", "trace_fill_test"}
         ts = trade.timestamp.isoformat() if hasattr(trade.timestamp, "isoformat") else str(trade.timestamp)
+        lot_size = getattr(trade, "lot_size", 1)
         if self._mode == "postgres":
             vec_val = _vec_to_pg(feature_vector) if feature_vector else None
             with self._cursor() as cur:
                 cur.execute(
                     """INSERT INTO trades
                        (trade_id, order_id, symbol, side, quantity, price, charges,
-                        ts, strategy_name, execution_mode, is_test, feature_vector, exit_reason)
-                       VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::vector,%s)
+                        ts, strategy_name, execution_mode, is_test, feature_vector, exit_reason, lot_size)
+                       VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::vector,%s,%s)
                        ON CONFLICT (trade_id) DO NOTHING""",
                     (
                         trade.trade_id, trade.order_id, trade.symbol,
                         trade.side.value, trade.quantity, trade.price,
                         trade.charges, ts, trade.strategy_name,
-                        execution_mode, is_test, vec_val, exit_reason,
+                        execution_mode, is_test, vec_val, exit_reason, lot_size,
                     ),
                 )
         else:
@@ -685,13 +704,13 @@ class TradingDatabase:
                 cur.execute(
                     """INSERT OR IGNORE INTO trades
                        (trade_id, order_id, symbol, side, quantity, price, charges,
-                        timestamp, strategy_name, execution_mode, is_test, feature_vector, exit_reason)
-                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                        timestamp, strategy_name, execution_mode, is_test, feature_vector, exit_reason, lot_size)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                     (
                         trade.trade_id, trade.order_id, trade.symbol,
                         trade.side.value, trade.quantity, trade.price,
                         trade.charges, ts, trade.strategy_name,
-                        execution_mode, int(is_test), vec_json, exit_reason,
+                        execution_mode, int(is_test), vec_json, exit_reason, lot_size,
                     ),
                 )
 
