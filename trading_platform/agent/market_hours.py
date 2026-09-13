@@ -27,21 +27,57 @@ _MCX_ENTRY_CUTOFF = time(23, 25)   # no new commodity entries after this
 _MCX_EOD_SQUAREOFF = time(23, 25)  # force-close all commodity positions
 
 # NSE holidays 2026 + 2027
+#
+# audit_results/2026-09-13/AUDIT_REPORT.md finding #8 (high): the 2026 list
+# below was wrong on multiple dates and missing several holidays entirely —
+# most urgently, 14 September 2026 (Ganesh Chaturthi) was classified as a
+# trading day, and this app runs unattended. Re-verified 2026-09-13 against
+# NSE's published circular via two independent secondary sources that agree
+# exactly on all 15 dates (nseindia.com's own circular page timed out on
+# fetch; re-verify directly against
+# https://nsearchives.nseindia.com/content/circulars/FAOP71777.pdf and
+# https://www.nseindia.com/resources/exchange-communication-holidays when
+# next reachable):
+#   https://groww.in/p/nse-holidays
+#   https://www.smallcase.com/learn/nse-holidays-2026/
+# Corrected: Holi was 25 March (actually 3 March — a real trading day was
+# being closed while the actual holiday was being traded). "Diwali Laxmi
+# Puja" on 4 November was both the wrong date and the wrong holiday: 8
+# November 2026 is a Sunday with a special Muhurat trading SESSION (not a
+# closure) for Laxmi Pujan; the actual observed closure is "Diwali-
+# Balipratipada" on 10 November. Added: Ram Navami, Mahavir Jayanti, Bakri
+# Id, Muharram, Ganesh Chaturthi, Dussehra, Guru Nanak Jayanti — all
+# present on both source calendars, all previously missing. Independence
+# Day (15 Aug 2026) falls on a Saturday and so is absent from both sources'
+# "15 weekday closures" lists — kept here anyway since is_trading_day()
+# already excludes weekends separately, so it's redundant, not wrong.
 _HOLIDAYS: set[date] = {
     # 2026
     date(2026, 1, 26),  # Republic Day
-    date(2026, 3, 25),  # Holi
+    date(2026, 3, 3),   # Holi
+    date(2026, 3, 26),  # Ram Navami
+    date(2026, 3, 31),  # Mahavir Jayanti
     date(2026, 4, 3),   # Good Friday
     date(2026, 4, 14),  # Ambedkar Jayanti
     date(2026, 5, 1),   # Maharashtra Day
-    date(2026, 8, 15),  # Independence Day
+    date(2026, 5, 28),  # Bakri Id
+    date(2026, 6, 26),  # Muharram
+    date(2026, 8, 15),  # Independence Day (Saturday — redundant, see above)
+    date(2026, 9, 14),  # Ganesh Chaturthi
     date(2026, 10, 2),  # Gandhi Jayanti
-    date(2026, 11, 4),  # Diwali Laxmi Puja
+    date(2026, 10, 20), # Dussehra
+    date(2026, 11, 10), # Diwali-Balipratipada
+    date(2026, 11, 24), # Guru Nanak Jayanti
     date(2026, 12, 25), # Christmas
-    # 2027
+    # 2027 — NSE had not published its 2027 circular as of this correction
+    # (2026-09-13); these are the SAME entries as before, still tentative
+    # for exactly the reason the original comment gave. Do not trust them
+    # the way the corrected, source-cited 2026 list above can be trusted —
+    # re-verify against NSE's own circular once published, the same way
+    # the 2026 errors above were found.
     date(2027, 1, 26),  # Republic Day
-    date(2027, 3, 15),  # Holi
-    date(2027, 3, 26),  # Good Friday
+    date(2027, 3, 15),  # Holi (tentative — verify NSE circular)
+    date(2027, 3, 26),  # Good Friday (tentative — verify NSE circular)
     date(2027, 4, 14),  # Ambedkar Jayanti / Dr. Ambedkar Jayanti
     date(2027, 5, 1),   # Maharashtra Day
     date(2027, 8, 15),  # Independence Day
