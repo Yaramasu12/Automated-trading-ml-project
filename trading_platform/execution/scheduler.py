@@ -546,7 +546,7 @@ class ExecutionScheduler:
     ) -> None:
         """Book a confirmed fill: ledger, OMS, event bus, fill callbacks."""
         order.filled_at = now
-        charges = self.charges_model.estimate(intent, fill_price) if self.charges_model else 0.0
+        charges = self.charges_model.estimate(intent, fill_price, as_of=now.date()) if self.charges_model else 0.0
         if partial and fill_qty < intent.quantity:
             trade = self.fill_processor.process_partial(order, fill_price, fill_qty, charges, now)
         else:

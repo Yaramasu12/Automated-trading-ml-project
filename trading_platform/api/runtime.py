@@ -3681,7 +3681,10 @@ class TradingRuntime:
                     scan.underlying: candidate.signal.price,
                     candidate.instrument.symbol: candidate.signal.price,
                 }
-                charges = self.charges_model.estimate(intent, candidate.signal.price)
+                charges = self.charges_model.estimate(
+                    intent, candidate.signal.price,
+                    as_of=scan.as_of.date() if hasattr(scan.as_of, "date") else scan.as_of,
+                )
                 report = router.submit(intent, scan.as_of, mark_prices, charges)
                 if report.trade:
                     raw = report.broker_result.raw if report.broker_result and report.broker_result.raw else {}

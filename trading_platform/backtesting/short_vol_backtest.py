@@ -159,6 +159,13 @@ class ShortVolTrade:
     charges: float = 0.0
     exit_reason: str = ""
     max_loss_points: float = 0.0
+    # audit_results/2026-09-13/AUDIT_REPORT.md finding #3 (high, second
+    # half): gross per-leg premium at ENTRY, split by side — needed at exit
+    # to compute real STT (charged on gross SELL-side premium turnover per
+    # leg, not a structure's net credit) across the full round trip. See
+    # _leg_turnovers() and _charges()'s own docstring.
+    entry_sell_gross_points: float = 0.0
+    entry_buy_gross_points: float = 0.0
 
     @property
     def held_days(self) -> int:
@@ -267,26 +274,59 @@ class ShortVolBacktester:
         """Spread paid crossing every leg once, in points."""
         return self.spread_points * len(legs)
 
+    def _leg_turnovers(self, legs, spot: float, atm_iv: float, t_years: float) -> tuple[float, float]:
+        """Gross per-leg premium, in index points, split by the leg's own
+        SELL/BUY side: (sell_side_gross, buy_side_gross).
+
+        audit_results/2026-09-13/AUDIT_REPORT.md finding #3 (high, second
+        half): a condor's real STT is charged on the GROSS premium of each
+        SOLD leg individually — a 4-leg condor with 2 short legs and 2 long
+        wings owes STT on the sum of the two short legs' own premiums, not
+        on (short premiums minus long premiums). The old _charges() was
+        handed the structure's NET credit and treated the whole thing as
+        one sell-side turnover, understating STT whenever the wings' own
+        premium was non-trivial relative to the shorts'. Mirrors
+        _structure_value's per-leg pricing exactly, just keeping the two
+        sides separate instead of netting them.
+        """
+        sell_gross = 0.0
+        buy_gross = 0.0
+        for leg in legs:
+            iv = smile_iv(atm_iv, spot, leg.strike, leg.option_type)
+            px = black_scholes(spot, leg.strike, t_years, iv, leg.option_type)
+            if leg.side == Side.SELL:
+                sell_gross += px
+            else:
+                buy_gross += px
+        return sell_gross, buy_gross
+
     # -- charges ------------------------------------------------------------
 
-    def _charges(self, legs, lots: int, entry_points: float, exit_points: float) -> float:
-        """Real Indian F&O option costs on premium turnover.
+    def _charges(self, legs, lots: int, sell_turnover_points: float, buy_turnover_points: float) -> float:
+        """Real Indian F&O option costs on GROSS premium turnover.
 
         Deliberately computed here rather than through `ChargesModel.estimate()`:
         that API takes an `OrderIntent` bound to a live `Instrument`, which this
         offline replay has no way to construct. The rates below mirror
-        backtesting/charges.py's `_options_charges` — STT 0.0625% on SELL-side
-        premium, exchange txn 0.05%, GST 18% on (brokerage + txn), SEBI 0.0001%,
-        stamp 0.003% on buy — keeping this consistent with the live cost model.
+        backtesting/charges.py's `_options_charges` — STT 0.15% on SELL-side
+        premium (2026-04-01 rate; see charges.py's own citation — this offline
+        replay always prices at the current rate, it has no as_of concept),
+        exchange txn 0.05%, GST 18% on (brokerage + txn), SEBI 0.0001%, stamp
+        0.003% on buy — keeping this consistent with the live cost model.
+
+        `sell_turnover_points`/`buy_turnover_points` must already be the
+        GROSS points across the full round trip (entry + exit), summed by
+        which side each leg transaction actually was — see the callers in
+        run(), which combine _leg_turnovers() at entry and at exit correctly
+        (a leg opened by selling is closed by buying, and vice versa).
         """
         qty = lots * self.lot_size
         n_legs = max(1, len(legs))
-        # Premium turnover across both sides of the round trip.
-        sell_turnover = abs(entry_points) * qty
-        buy_turnover = abs(exit_points) * qty
+        sell_turnover = abs(sell_turnover_points) * qty
+        buy_turnover = abs(buy_turnover_points) * qty
 
         brokerage = min(20.0, 0.0003 * (sell_turnover + buy_turnover)) * n_legs * 2
-        stt = 0.000625 * sell_turnover
+        stt = 0.0015 * sell_turnover
         exch = 0.0005 * (sell_turnover + buy_turnover)
         gst = 0.18 * (brokerage + exch)
         sebi = 0.000001 * (sell_turnover + buy_turnover)
@@ -401,19 +441,22 @@ class ShortVolBacktester:
                     # short structure; the debit itself for a long-only one).
                     pnl_points = max(pnl_points, -open_trade.max_loss_points)
                     qty = open_trade.lots * self.lot_size
-                    if is_long_vol:
-                        # _charges()'s own "entry_points"/"exit_points" params
-                        # mean "sell-side turnover"/"buy-side turnover" (its
-                        # STT calc is SELL-side only, matching real NSE
-                        # rules) — for a short structure that's credit/
-                        # close_cost in that order; for a long-only structure
-                        # the SELL happens at CLOSE (proceeds) and the BUY at
-                        # entry (debit), so the two arguments swap accordingly.
-                        charges = self._charges(open_legs, open_trade.lots, proceeds, debit)
-                        exit_points = proceeds
-                    else:
-                        charges = self._charges(open_legs, open_trade.lots, credit, close_cost)
-                        exit_points = close_cost
+                    exit_points = proceeds if is_long_vol else close_cost
+                    # Gross per-leg turnover, not the structure's net credit/
+                    # debit (finding #3, second half — see _leg_turnovers'
+                    # own docstring). A leg opened by SELLING is closed by
+                    # BUYING it back and vice versa, so the round trip's
+                    # total sell-side (STT-liable) turnover is entry's sell
+                    # legs plus exit's buy-side closes, and symmetrically for
+                    # buy-side (stamp-liable) turnover — this formula is the
+                    # same for every structure, short or long-only, since it
+                    # only ever reads each leg's own recorded side.
+                    exit_sell_gross, exit_buy_gross = self._leg_turnovers(
+                        open_legs, bar.close, vix / 100.0, t_left,
+                    )
+                    total_sell_turnover = open_trade.entry_sell_gross_points + exit_buy_gross
+                    total_buy_turnover = open_trade.entry_buy_gross_points + exit_sell_gross
+                    charges = self._charges(open_legs, open_trade.lots, total_sell_turnover, total_buy_turnover)
                     pnl = pnl_points * qty - charges
                     open_trade.exit_day = bar.day
                     open_trade.exit_debit_points = exit_points
@@ -449,6 +492,9 @@ class ShortVolBacktester:
                     else:
                         entry_amount = decision.net_credit - self._leg_spread_cost(decision.legs)
                     if entry_amount > 0:
+                        entry_sell_gross, entry_buy_gross = self._leg_turnovers(
+                            decision.legs, bar.close, vix / 100.0, self.hold_days / TRADING_DAYS,
+                        )
                         open_trade = ShortVolTrade(
                             entry_day=bar.day,
                             underlying=self.underlying,
@@ -461,6 +507,8 @@ class ShortVolBacktester:
                             # on `is_long_vol` everywhere it's read back above.
                             entry_credit_points=entry_amount,
                             max_loss_points=entry_amount if is_long_vol else self.wing - entry_amount,
+                            entry_sell_gross_points=entry_sell_gross,
+                            entry_buy_gross_points=entry_buy_gross,
                         )
                         open_legs = decision.legs
                         open_entry_idx = i
