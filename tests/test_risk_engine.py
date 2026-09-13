@@ -59,8 +59,12 @@ class RiskEngineTests(unittest.TestCase):
         signal = Signal("exit_manager:expiry", option.symbol, Side.SELL, 1.0, 120,
                         "close", datetime.now(timezone.utc), metadata={"opens_position": False})
         intent = OrderIntent(signal, option, 1, OrderType.MARKET, ProductType.INTRADAY)
+        # held_quantity=1: a LONG 1 held position being fully closed -- the
+        # scenario the metadata claims. Without a real held position to
+        # verify against, opens_position=False is no longer trusted as-is
+        # (audit_results/2026-09-13/AUDIT_REPORT.md finding #1).
         decision = RiskEngine().evaluate(intent, self.snapshot, datetime(2026, 1, 5, 10, 0),
-                                         ExecutionMode.BACKTEST)
+                                         ExecutionMode.BACKTEST, held_quantity=1)
         self.assertTrue(decision.approved, decision.reason)
         self.assertNotEqual(decision.reason, "naked_option_selling_blocked")
 
@@ -198,8 +202,12 @@ class RiskEngineTests(unittest.TestCase):
         # A position-reducing futures order (square-off) must still pass.
         fut = self._future()
         intent = self._intent_meta(fut, Side.SELL, 1, 24000, metadata={"opens_position": False})
+        # held_quantity=1: a LONG 1 held future being fully closed. See
+        # test_allows_selling_option_to_close's comment on why this is now
+        # required (audit_results/2026-09-13/AUDIT_REPORT.md finding #1).
         decision = RiskEngine(RiskLimits(block_futures_opening=True)).evaluate(
             intent, self.snapshot, datetime(2026, 1, 5, 10, 0), ExecutionMode.BACKTEST,
+            held_quantity=1,
         )
         self.assertTrue(decision.approved, decision.reason)
 

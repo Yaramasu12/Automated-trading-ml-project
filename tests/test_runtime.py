@@ -4,6 +4,7 @@ import asyncio
 import dataclasses
 import tempfile
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import Mock
 
@@ -199,6 +200,72 @@ class RuntimeTests(unittest.TestCase):
             "blocking_reasons": [],
         }
         return runtime
+
+    def test_live_reduction_bypasses_only_the_kill_switch_readiness_gate(self):
+        # audit_results/2026-09-13/AUDIT_REPORT.md finding #6 (high): the
+        # LIVE final gate called overall readiness before its opening-only
+        # branches, so a correctly-classified, position-reducing order could
+        # still fail solely because the kill switch (one of readiness's
+        # seven gates) was active -- the exact protective state a reduction
+        # is supposed to be allowed through during. Every OTHER gate stays
+        # fully in force; this is not a general readiness bypass.
+        runtime = self._fully_ready_live_runtime()
+        runtime.arm_live(True)  # kill switch is off here -- arming succeeds
+
+        entry = runtime._intent_from_payload({
+            "symbol": "RELIANCE", "side": "BUY", "quantity": 10, "price": 2800.0,
+            "strategy_name": "test", "metadata": {},
+        })
+        from trading_platform.domain.models import Order
+        from trading_platform.domain.enums import OrderStatus
+        runtime.portfolio.apply_fill(Order(entry, status=OrderStatus.FILLED), 2800.0,
+                                     datetime.now(timezone.utc), 0.0)
+        self.assertEqual(runtime.portfolio.positions["RELIANCE"].quantity, 10)
+
+        # The kill switch trips AFTER arming and after the position is held --
+        # exactly the sequence a real daily-loss trip would follow.
+        runtime.kill_switch_active = True
+        reduction = runtime._intent_from_payload({
+            "symbol": "RELIANCE", "side": "SELL", "quantity": 10, "price": 2800.0,
+            "strategy_name": "test", "priority": "TARGET",
+            "metadata": {"opens_position": False},
+        })
+        decision = runtime._evaluate_final_execution_gate(reduction)
+        self.assertTrue(decision.approved, decision.reason)
+
+    def test_live_entry_still_blocked_by_kill_switch_readiness_gate(self):
+        # The bypass above must stay scoped to verified reductions -- a
+        # genuine new entry during the same kill-switch state must still be
+        # rejected by overall readiness, exactly as before.
+        runtime = self._fully_ready_live_runtime()
+        runtime.arm_live(True)
+        runtime.kill_switch_active = True
+
+        entry = runtime._intent_from_payload({
+            "symbol": "RELIANCE", "side": "BUY", "quantity": 10, "price": 2800.0,
+            "strategy_name": "test", "metadata": {},
+        })
+        decision = runtime._evaluate_final_execution_gate(entry)
+        self.assertFalse(decision.approved)
+        self.assertTrue(decision.reason.startswith("live_readiness_blocked"))
+
+    def test_forged_reduction_on_flat_symbol_still_blocked_in_live_gate(self):
+        # The audit's own scenario, exercised through the final gate: a
+        # flat position with a forged opens_position=False claim must NOT
+        # bypass the kill-switch readiness gate, because the derived truth
+        # (nothing held) overrides the caller's claim.
+        runtime = self._fully_ready_live_runtime()
+        runtime.arm_live(True)
+        runtime.kill_switch_active = True
+
+        forged = runtime._intent_from_payload({
+            "symbol": "RELIANCE", "side": "BUY", "quantity": 1000, "price": 1000.0,
+            "strategy_name": "audit_forged_close", "priority": "TARGET",
+            "metadata": {"opens_position": False},
+        })
+        decision = runtime._evaluate_final_execution_gate(forged)
+        self.assertFalse(decision.approved)
+        self.assertTrue(decision.reason.startswith("live_readiness_blocked"))
 
     def test_regulatory_compliance_gate_blocks_arming_when_risk_engine_missing(self):
         """2026-08-22: governance/regulatory_compliance.py wired into

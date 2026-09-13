@@ -38,6 +38,7 @@ from pathlib import Path
 
 from trading_platform.domain.enums import ExecutionMode, OptionType, OrderPriority, OrderType, ProductType, Segment, Side
 from trading_platform.domain.models import OrderIntent, Signal
+from trading_platform.domain.order_classification import derive_true_opens_position
 from trading_platform.event_bus import InMemoryEventBus
 from trading_platform.execution.emergency_square_off import EmergencySquareOff
 from trading_platform.execution.fill_processor import FillProcessor
@@ -2564,7 +2565,16 @@ class TradingRuntime:
         now = now or datetime.now(timezone.utc)
         mark_prices = dict(mark_prices or self._mark_prices_for_intent(intent, payload))
         snapshot = self.portfolio.mark_to_market(now, mark_prices)
-        opens_position = bool(intent.signal.metadata.get("opens_position", True))
+        # Never trust intent.signal.metadata["opens_position"] alone — see
+        # domain/order_classification.py and audit_results/2026-09-13/
+        # AUDIT_REPORT.md finding #1 (critical). Reproduced live: a flat
+        # account was sent metadata={"opens_position": False} and every
+        # check below that reads opens_position (price validation, LIVE
+        # readiness/canary gating, RiskEngine) let it through, filling a
+        # 1,000-share BUY while the kill switch was active.
+        held_position = self.portfolio.positions.get(intent.instrument.symbol)
+        held_quantity = held_position.quantity if held_position is not None else 0
+        opens_position = derive_true_opens_position(intent, held_quantity)
 
         protection = {
             "opens_position": opens_position,
@@ -2627,15 +2637,38 @@ class TradingRuntime:
                 return decision
             readiness = self.live_readiness_payload()
             if not readiness["armed_eligible"]:
-                blockers = readiness.get("blocking_reasons", [])
-                decision = FinalGateDecision.reject(
-                    "live_readiness_blocked:" + ",".join(blockers),
-                    stage=gate_phase,
-                    details={**common_details, "readiness": readiness},
+                # audit_results/2026-09-13/AUDIT_REPORT.md finding #6 (high):
+                # overall readiness includes the kill_switch gate, so a
+                # correctly-classified, position-reducing order (which the
+                # scheduler and RiskEngine both explicitly allow during a
+                # kill switch, by design) could still be rejected here for
+                # the same reason it was trying to fix. A verified reduction
+                # (opens_position is now independently derived, not caller-
+                # trusted — see domain/order_classification.py) may bypass
+                # ONLY the kill_switch gate; every other gate (execution
+                # mode, live flag, confirmation phrase, broker credentials,
+                # instrument freshness, feed staleness) still applies in
+                # full — this does not weaken any other LIVE invariant.
+                non_kill_switch_blockers = [
+                    g["reason"] for g in readiness.get("gates", [])
+                    if g.get("name") != "kill_switch" and not g.get("passed", False)
+                ]
+                reduction_bypasses_kill_switch_only = (not opens_position) and not non_kill_switch_blockers
+                if not reduction_bypasses_kill_switch_only:
+                    blockers = readiness.get("blocking_reasons", [])
+                    decision = FinalGateDecision.reject(
+                        "live_readiness_blocked:" + ",".join(blockers),
+                        stage=gate_phase,
+                        details={**common_details, "readiness": readiness},
+                    )
+                    if trace_side_effects:
+                        self._record_trace_final_gate(intent, decision)
+                    return decision
+                logger.warning(
+                    "LIVE reduction-only order for %s allowed despite kill switch active "
+                    "(every other readiness gate passed): %s",
+                    intent.instrument.symbol, common_details.get("strategy_name"),
                 )
-                if trace_side_effects:
-                    self._record_trace_final_gate(intent, decision)
-                return decision
             if opens_position:
                 canary_readiness = self.live_canary_readiness_payload()
                 if not canary_readiness.get("can_consider_live_canary", False):
@@ -2693,6 +2726,7 @@ class TradingRuntime:
             daily_pnl=gate_daily_pnl,
             strategy_daily_pnl=float(payload.get("strategy_daily_pnl", 0.0)),
             options_short_exposure=float(payload.get("options_short_exposure", 0.0)),
+            held_quantity=held_quantity,
             gamma_exposure=(
                 float(payload["gamma_exposure"])
                 if payload.get("gamma_exposure") is not None

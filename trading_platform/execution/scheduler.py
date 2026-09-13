@@ -13,6 +13,7 @@ from typing import Callable, Awaitable, TYPE_CHECKING
 from trading_platform.broker.base import BrokerClient
 from trading_platform.domain.enums import OrderPriority, OrderStatus, OrderType
 from trading_platform.domain.models import Order, OrderIntent, PrioritizedOrderIntent, Trade, compute_signal_hash
+from trading_platform.domain.order_classification import derive_true_opens_position
 from trading_platform.event_bus import InMemoryEventBus
 from trading_platform.execution.fill_processor import FillProcessor
 from trading_platform.execution.final_gate import FinalGateDecision, FinalGateFn
@@ -316,7 +317,7 @@ class ExecutionScheduler:
             return
 
         # Capital protection check (requires live portfolio snapshot)
-        opens_position = bool(intent.signal.metadata.get("opens_position", True))
+        opens_position = self._derive_opens_position(intent)
         if self.capital_protection and self.portfolio and opens_position and intent.priority >= OrderPriority.ENTRY:
             now = datetime.now(timezone.utc)
             snapshot = self.portfolio.mark_to_market(now, {intent.instrument.symbol: intent.signal.price})
@@ -937,12 +938,23 @@ class ExecutionScheduler:
         now = datetime.now(timezone.utc)
         return self.final_gate(intent, now, None)
 
-    @staticmethod
-    def _allowed_during_kill_switch(intent: OrderIntent) -> bool:
+    def _derive_opens_position(self, intent: OrderIntent) -> bool:
+        """Never trust intent.signal.metadata["opens_position"] alone — see
+        domain/order_classification.py and audit_results/2026-09-13/
+        AUDIT_REPORT.md finding #1 (critical). held_quantity is looked up
+        from this scheduler's own live portfolio reference, not the
+        caller's claim, so a forged "closing" flag on a flat (or same-
+        direction, or reversal-sized) order is still classified as opening."""
+        held_quantity = 0
+        if self.portfolio is not None:
+            position = self.portfolio.positions.get(intent.instrument.symbol)
+            held_quantity = position.quantity if position is not None else 0
+        return derive_true_opens_position(intent, held_quantity)
+
+    def _allowed_during_kill_switch(self, intent: OrderIntent) -> bool:
         if intent.priority == OrderPriority.KILL_SWITCH:
             return True
-        opens_position = bool(intent.signal.metadata.get("opens_position", True))
-        return not opens_position
+        return not self._derive_opens_position(intent)
 
     @property
     def queue_depth(self) -> int:

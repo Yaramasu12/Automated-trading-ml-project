@@ -34,6 +34,22 @@ class ArchitectureWiringTests(unittest.TestCase):
         self.addCleanup(runtime.paper_learning_journal.close)
         return runtime
 
+    @staticmethod
+    def _seed_long_position(runtime: TradingRuntime, symbol: str, quantity: int, price: float) -> None:
+        """Fills a real BUY so a subsequent SELL of the same quantity is a
+        genuine, verifiable reduction -- opens_position=False alone is no
+        longer trusted (audit_results/2026-09-13/AUDIT_REPORT.md finding #1)."""
+        from datetime import datetime, timezone
+        from trading_platform.domain.enums import OrderStatus
+        from trading_platform.domain.models import Order
+
+        entry = runtime._intent_from_payload({
+            "symbol": symbol, "side": "BUY", "quantity": quantity, "price": price,
+            "strategy_name": "test_seed", "metadata": {},
+        })
+        runtime.portfolio.apply_fill(Order(entry, status=OrderStatus.FILLED), price,
+                                     datetime.now(timezone.utc), 0.0)
+
     def _paper_entry_exit_trace(self, runtime: TradingRuntime, strategy_name: str = "momentum_v1") -> str:
         runtime.set_execution_mode("PAPER")
         runtime.event_risk.blocked_dates = set()
@@ -183,6 +199,10 @@ class ArchitectureWiringTests(unittest.TestCase):
 
     def test_stop_loss_exit_can_still_queue_during_kill_switch(self):
         runtime = TradingRuntime()
+        # A real held position for this exit to reduce -- opens_position=False
+        # is now independently verified against actual holdings, not trusted
+        # as-is (audit_results/2026-09-13/AUDIT_REPORT.md finding #1).
+        self._seed_long_position(runtime, "RELIANCE", 1, 2800)
         runtime.set_kill_switch(True)
         intent = runtime._intent_from_payload(
             {
@@ -465,6 +485,9 @@ class ArchitectureWiringTests(unittest.TestCase):
 
     def test_final_gate_allows_protective_live_exit_when_m6_not_ready(self):
         runtime = self._live_runtime_with_canary(canary_ready=False)
+        # A real held position for this exit to reduce -- see the identical
+        # comment on test_stop_loss_exit_can_still_queue_during_kill_switch.
+        self._seed_long_position(runtime, "RELIANCE", 1, 2800)
         intent = runtime._intent_from_payload(
             {
                 "symbol": "RELIANCE",

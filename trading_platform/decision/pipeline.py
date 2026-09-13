@@ -624,6 +624,7 @@ class DecisionPipeline:
         if quantity <= 0:
             return DecisionCandidate(underlying, strategy_name, instrument, signal, 0, None, "quantity_zero")
         intent = OrderIntent(signal, instrument, quantity, OrderType.MARKET, ProductType.INTRADAY)
+        position = self.portfolio.positions.get(instrument.symbol)
         risk_decision = self.risk_engine.evaluate(
             intent=intent,
             portfolio=snapshot,
@@ -631,6 +632,7 @@ class DecisionPipeline:
             execution_mode=execution_mode,
             live_armed=live_armed,
             kill_switch_active=kill_switch_active,
+            held_quantity=position.quantity if position is not None else 0,
         )
         return DecisionCandidate(
             underlying=underlying,

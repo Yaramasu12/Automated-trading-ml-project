@@ -61,6 +61,7 @@ class ExecutionRouter:
 
         snapshot = self.portfolio.mark_to_market(now, mark_prices)
         daily_pnl = (snapshot.equity - self._session_start_equity) if self._session_start_equity > 0 else 0.0
+        position = self.portfolio.positions.get(intent.instrument.symbol)
         risk_decision = self.risk_engine.evaluate(
             intent=intent,
             portfolio=snapshot,
@@ -71,6 +72,7 @@ class ExecutionRouter:
             daily_pnl=daily_pnl,
             orders_sent_today=self.orders_sent_today,
             trades_today=self.trades_today,
+            held_quantity=position.quantity if position is not None else 0,
         )
         order = Order(intent=intent)
         if not risk_decision.approved:

@@ -5,6 +5,7 @@ from datetime import datetime
 
 from trading_platform.domain.enums import ExecutionMode, InstrumentType, OptionType, Side
 from trading_platform.domain.models import OrderIntent
+from trading_platform.domain.order_classification import derive_true_opens_position
 from trading_platform.portfolio.ledger import PortfolioSnapshot
 from trading_platform.agent.market_hours import to_ist
 
@@ -62,11 +63,23 @@ class RiskEngine:
         margin_utilization: float = 0.0,
         orders_sent_today: int = 0,
         trades_today: int = 1,
+        held_quantity: int = 0,
     ) -> RiskDecision:
         # Position-reducing orders must stay available during protective states
         # in BACKTEST/PAPER. Otherwise a drawdown breach or kill switch would
         # trap the simulator in the risky position it is trying to close.
-        is_opening = intent.signal.metadata.get("opens_position", True)
+        #
+        # is_opening must NOT be the caller-supplied metadata flag alone —
+        # audit_results/2026-09-13/AUDIT_REPORT.md finding #1 (critical):
+        # a flat account was sent metadata={"opens_position": False} and
+        # every check below that gates on "is_opening" let it through,
+        # including the kill-switch check just below. held_quantity (signed,
+        # from the caller's own portfolio) lets derive_true_opens_position
+        # verify the claim instead of trusting it. held_quantity defaults to
+        # 0 (flat) so a caller that forgets to pass it fails safe toward
+        # "this is opening" rather than silently inheriting the old trust-
+        # the-flag behavior.
+        is_opening = derive_true_opens_position(intent, held_quantity)
         if kill_switch_active and is_opening:
             return RiskDecision(False, "kill_switch_active", 1.0)
         if execution_mode.value.startswith("LIVE") and not live_armed:
@@ -157,7 +170,7 @@ class RiskEngine:
                 # here made the outcome depend on when the code ran, so the same
                 # backtest returned different results before and after 14:00 IST.
                 and now_local.hour >= self.limits.expiry_day_open_cutoff_hour
-                and intent.signal.metadata.get("opens_position", True)
+                and is_opening
             ):
                 return RiskDecision(False, "expiry_day_open_cutoff", 0.85)
             if instrument.option_type in {OptionType.CE, OptionType.PE} and days_to_expiry <= 1:

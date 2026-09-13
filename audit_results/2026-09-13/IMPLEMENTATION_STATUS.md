@@ -36,12 +36,12 @@ proving it.
 
 | # | Finding | Severity | Status | Notes |
 |---|---|---|---|---|
-| 1 | opens_position=False bypasses kill switch on a flat account | Critical | pending | |
+| 1 | opens_position=False bypasses kill switch on a flat account | Critical | **FIXED** | `domain/order_classification.py::derive_true_opens_position` verifies the caller's claim against real signed holdings at every enforcement point (scheduler kill-switch check + capital protection, RiskEngine.evaluate, runtime final gate). Verified against the audit's own `probes.py`: `actual_fills: 0`, `position_quantity: 0`, `opens_position` correctly overridden to `true`. New tests: `tests/test_order_classification.py` (13 cases incl. the exact audit scenario), `tests/test_runtime.py` (3 cases for the related finding #6 fix). Full suite: 1410 passed. |
 | 2 | Deployed API auth disabled, published on all interfaces | High | pending | |
 | 3 | Outdated STT rates; short-vol charges use net credit not gross per-leg turnover | High | pending | |
 | 4 | Backtest metrics drop lot multiplier (₹500 ledger vs ₹10 metric) | High | pending | |
 | 5 | Generic backtester: lookahead, option/underlying price mixing, holding-period bugs | High | pending | |
-| 6 | LIVE emergency reduction can be blocked by overall readiness during kill switch | High | pending | |
+| 6 | LIVE emergency reduction can be blocked by overall readiness during kill switch | High | **FIXED** | Fixed alongside #1 (same function): a verified reduction (per the finding-#1 derivation, not the caller's claim) may bypass ONLY the `kill_switch` readiness gate; every other gate (execution mode, live flag, confirmation phrase, broker credentials, instrument freshness, feed staleness) still fully applies. Tests: `test_live_reduction_bypasses_only_the_kill_switch_readiness_gate`, `test_live_entry_still_blocked_by_kill_switch_readiness_gate`, `test_forged_reduction_on_flat_symbol_still_blocked_in_live_gate` (tests/test_runtime.py). |
 | 7 | Session-loss baseline uses cost-basis equity, resets on restart | High | pending | |
 | 8 | Exchange holiday calendar wrong (Holi, Sept 14, Diwali, others) | High | pending | |
 | 9 | short_vol validation narrower than deployed config, cost-sensitive | High | pending | |
