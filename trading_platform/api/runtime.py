@@ -298,6 +298,8 @@ class TradingRuntime:
             get_execution_mode=lambda: self.execution_mode.value,
         )
 
+        self._restore_kill_switch_from_db()
+
         self.exit_manager = ExitManager(
             enqueue_fn=self.scheduler.enqueue,
             poll_interval=1.0,
@@ -742,6 +744,32 @@ class TradingRuntime:
         payload = result.to_dict()
         payload["all_mandatory_passed"] = result.all_mandatory_passed
         return payload
+
+    def _restore_kill_switch_from_db(self) -> None:
+        """Called once from __init__. Found 2026-09-13 investigating the
+        2026-09-11 kill-switch trip (a real 6.7% daily loss, correctly
+        triggering portfolio_guardian's 2% breaker): kill_switch_active had
+        only ever been an in-memory flag defaulting to False in __init__, so
+        a routine redeploy silently discarded an unresolved trip with no
+        audit trail — unlike every prior trip, which was explicitly
+        kill_switch_cleared. Reading the same risk_events audit trail
+        set_kill_switch() already writes means a restart restores the
+        correct state instead of quietly defaulting back to "safe to trade".
+        A separate method (not inlined in __init__) so tests can call it
+        directly against an isolated self.db without depending on how
+        Settings/DATABASE_URL happens to route the real sqlite file."""
+        try:
+            last_event = self.db.latest_kill_switch_state()
+        except Exception as exc:
+            last_event = None
+            note_swallowed("runtime.init.kill_switch_restore", exc)
+        if last_event and last_event["event_type"] == "kill_switch_activated":
+            self.kill_switch_active = True
+            self.scheduler.kill_switch_active = True
+            logger.warning(
+                "Kill switch restored ACTIVE on startup — last trip (%s) was never cleared: %s",
+                last_event.get("occurred_at"), last_event.get("reason"),
+            )
 
     def set_kill_switch(self, active: bool, reason: str = "") -> dict:
         reason = reason.strip() or ("runtime_direct_activation" if active else "manual_clear")

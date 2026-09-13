@@ -105,6 +105,83 @@ class RuntimeControlDiagnosticFixTests(unittest.TestCase):
         self.assertEqual(events[0]["event_type"], "kill_switch_activated")
         self.assertEqual(events[0]["reason"], "diagnostic_test")
 
+    def test_latest_kill_switch_state_is_none_when_never_tripped(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db = TradingDatabase(Path(tmp) / "trading.db")
+            try:
+                self.assertIsNone(db.latest_kill_switch_state())
+            finally:
+                db.close()
+
+    def test_latest_kill_switch_state_reflects_the_last_event(self):
+        # Found 2026-09-13 investigating the 2026-09-11 kill-switch trip:
+        # this is the audit trail a restart now reads to decide whether an
+        # unresolved trip should survive it.
+        with tempfile.TemporaryDirectory() as tmp:
+            db = TradingDatabase(Path(tmp) / "trading.db")
+            try:
+                db.save_risk_event(event_type="kill_switch_activated", reason="daily loss limit: 6.7% >= 2.0%")
+                state = db.latest_kill_switch_state()
+                self.assertEqual(state["event_type"], "kill_switch_activated")
+
+                db.save_risk_event(event_type="kill_switch_cleared", reason="manual_clear")
+                state = db.latest_kill_switch_state()
+                self.assertEqual(state["event_type"], "kill_switch_cleared")
+            finally:
+                db.close()
+
+    def test_restore_kill_switch_from_db_activates_when_never_cleared(self):
+        # The core regression this whole investigation found: a restart used
+        # to silently discard an unresolved trip (kill_switch_active always
+        # defaulted to False in __init__, with no check against the DB) —
+        # exactly what happened after the 2026-09-11 trip, since it has no
+        # corresponding kill_switch_cleared event, only a routine redeploy.
+        # _restore_kill_switch_from_db is called against an isolated self.db
+        # swap (not via Settings/DATABASE_URL, which only redirects postgres,
+        # not the sqlite path TradingRuntime() would otherwise use for real).
+        runtime = TradingRuntime()
+        with tempfile.TemporaryDirectory() as tmp:
+            db = TradingDatabase(Path(tmp) / "trading.db")
+            try:
+                db.save_risk_event(event_type="kill_switch_activated", reason="daily loss limit: 6.7% >= 2.0%")
+                runtime.db = db
+                runtime.kill_switch_active = False
+                runtime.scheduler.kill_switch_active = False
+
+                runtime._restore_kill_switch_from_db()
+
+                self.assertTrue(runtime.kill_switch_active)
+                self.assertTrue(runtime.scheduler.kill_switch_active)
+            finally:
+                db.close()
+
+    def test_restore_kill_switch_from_db_stays_off_once_cleared(self):
+        runtime = TradingRuntime()
+        with tempfile.TemporaryDirectory() as tmp:
+            db = TradingDatabase(Path(tmp) / "trading.db")
+            try:
+                db.save_risk_event(event_type="kill_switch_activated", reason="daily loss limit: 6.7% >= 2.0%")
+                db.save_risk_event(event_type="kill_switch_cleared", reason="manual_clear")
+                runtime.db = db
+
+                runtime._restore_kill_switch_from_db()
+
+                self.assertFalse(runtime.kill_switch_active)
+                self.assertFalse(runtime.scheduler.kill_switch_active)
+            finally:
+                db.close()
+
+    def test_restore_kill_switch_from_db_is_a_noop_when_never_tripped(self):
+        runtime = TradingRuntime()
+        with tempfile.TemporaryDirectory() as tmp:
+            db = TradingDatabase(Path(tmp) / "trading.db")
+            try:
+                runtime.db = db
+                runtime._restore_kill_switch_from_db()
+                self.assertFalse(runtime.kill_switch_active)
+            finally:
+                db.close()
+
 
 class FeatureStoreRetentionTests(unittest.TestCase):
     def test_append_trims_oldest_rows(self):

@@ -884,6 +884,28 @@ class TradingDatabase:
             cur.execute(sql, (limit,))
             return self._rows(cur, cur.fetchall())
 
+    def latest_kill_switch_state(self) -> dict | None:
+        """The most recent kill_switch_activated/kill_switch_cleared event, or
+        None if the kill switch has never fired. Found 2026-09-13 investigating
+        the 2026-09-11 kill-switch trip: kill_switch_active lived only as an
+        in-memory TradingRuntime attribute, defaulting to False on every
+        __init__ — so ANY restart (a routine redeploy, a crash, Docker's own
+        unless-stopped policy) silently discarded an active trip with no audit
+        trail, unlike the three prior trips (2026-08-23, 2026-08-27, 2026-09-01)
+        which all show an explicit kill_switch_cleared event. This reads the
+        SAME risk_events audit trail the activation/clear calls already write,
+        so a restart can restore the correct state instead of quietly
+        defaulting to "safe to trade" whenever a trip was never actually,
+        deliberately cleared."""
+        sql = self._p(
+            "SELECT * FROM risk_events WHERE event_type IN "
+            "('kill_switch_activated', 'kill_switch_cleared') ORDER BY id DESC LIMIT 1"
+        )
+        with self._cursor() as cur:
+            cur.execute(sql)
+            rows = self._rows(cur, cur.fetchall())
+        return rows[0] if rows else None
+
     # ------------------------------------------------------------------
     # Backtest validation gates (REDESIGN §5)
     # ------------------------------------------------------------------
