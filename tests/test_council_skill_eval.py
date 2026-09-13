@@ -1,11 +1,19 @@
 """trading_platform.governance.eval_harness.evaluate_council_skill — the
 join/scoring logic shared by scripts/run_council_skill_eval.py (CLI, fetches
 over HTTP) and GET /ai-council/skill-eval (in-process). Tested directly
-against synthetic fixtures — the live system currently has real council
-decisions under scan-* trace_ids and real outcomes under order-* trace_ids,
-which never overlap (a real, documented structural gap, not a bug in this
-logic), so these fixtures exercise the JOIN MECHANICS the function applies
-once that structural gap is closed, not a claim about current live data.
+against synthetic fixtures — traced 2026-09-13 (audit_results/2026-09-13/
+AUDIT_REPORT.md finding #11): the live system's council votes and real trade
+outcomes are two genuinely disjoint POPULATIONS, not just disjoint ID
+namespaces. MasterOrchestrator.run() (the specialist-crew/council voting
+cycle) runs every scan and votes on directional-momentum candidates, but
+those are only ever enqueued as real orders when AGENT_DIRECTIONAL_ENABLED
+is true — off by default, no proven edge. short_vol_executor.py, which
+generates this deployment's actual fills, never calls MasterOrchestrator or
+records any agent_outputs at all. No trace-ID fix can join votes that were
+never cast on the trades that actually happened — these fixtures exercise
+the JOIN MECHANICS for whenever the council does vote on what executes
+(directional trading enabled, or short_vol wired to an advisory-only council
+check), not a claim about current live data.
 """
 from __future__ import annotations
 
@@ -39,6 +47,20 @@ class EmptyInputTests(unittest.TestCase):
         self.assertEqual(result["total_outcomes_traced"], 0)
         self.assertIsNotNone(result["structural_note"])
         self.assertFalse(result["sample_size_sufficient"])
+
+    def test_zero_overlap_note_names_the_real_structural_cause(self) -> None:
+        # audit_results/2026-09-13/AUDIT_REPORT.md finding #11 (medium): the
+        # message must explain the TRUE cause (short_vol never consults the
+        # council; the council's own candidates are gated off by default),
+        # not merely assert an ID-namespace mismatch that implies a simple
+        # plumbing fix would create real overlap.
+        decisions = [[_vote(trace_id="orch-NIFTY-1")]]
+        reflections = [{"trace_id": "order-abc123", "won": True, "pnl_pct": 0.01, "quality": 0.5}]
+        result = evaluate_council_skill(decisions, reflections)
+        note = result["structural_note"].lower()
+        self.assertIn("short_vol_executor", note)
+        self.assertIn("agent_directional_enabled", note)
+        self.assertEqual(result["joined_count"], 0)
 
     def test_never_raises_on_malformed_decision_rows(self) -> None:
         # An empty vote list for one traced cycle — legitimate (a scan that

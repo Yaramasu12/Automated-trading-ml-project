@@ -432,6 +432,36 @@ class StrategyPromotionServiceTests(unittest.TestCase):
         allowed = self.svc.promotion_gate(self.svc.get_record("short_vol"), "live_canary")
         self.assertTrue(allowed["approved"])
 
+    def test_paper_days_lookup_overrides_metadata_fallback(self):
+        # audit_results/2026-09-13/AUDIT_REPORT.md finding #11 (medium): when
+        # a real paper_days_lookup is supplied, it must be used INSTEAD of
+        # the metadata fallback -- even when metadata claims something
+        # different (metadata is never actually written to in production,
+        # so a real lookup taking precedence is the correct, not merely
+        # tolerated, behavior).
+        svc = StrategyPromotionService(
+            db=self.db, min_paper_days=30, paper_days_lookup=lambda strategy_id: 45,
+        )
+        svc.promote("short_vol", "shadow")
+        self._record_passing_gates()
+        svc.promote("short_vol", "paper")
+        # No metadata "paper_days" key was ever written -- the lookup alone
+        # must be enough to clear the live_canary gate.
+        allowed = svc.promotion_gate(svc.get_record("short_vol"), "live_canary")
+        self.assertTrue(allowed["approved"], allowed.get("blocking"))
+
+    def test_paper_days_lookup_exception_fails_closed_to_zero(self):
+        def _broken_lookup(strategy_id):
+            raise RuntimeError("boom")
+
+        svc = StrategyPromotionService(db=self.db, min_paper_days=30, paper_days_lookup=_broken_lookup)
+        svc.promote("short_vol", "shadow")
+        self._record_passing_gates()
+        svc.promote("short_vol", "paper")
+        blocked = svc.promotion_gate(svc.get_record("short_vol"), "live_canary")
+        self.assertFalse(blocked["approved"])
+        self.assertIn("paper_days", blocked["blocking"])
+
     def test_live_approved_requires_manual_approval(self):
         self.db.upsert_strategy_promotion("short_vol", "live_canary", 1, {"paper_days": 45})
         self._record_passing_gates()
@@ -461,6 +491,64 @@ class StrategyPromotionServiceTests(unittest.TestCase):
         gate = self.svc.promotion_gate(self.svc.get_record("short_vol"), "shadow")
         self.assertFalse(gate["approved"])
         self.assertIn("strategy_not_disabled", gate["blocking"])
+
+
+class DistinctPaperTradingDaysTests(unittest.TestCase):
+    """audit_results/2026-09-13/AUDIT_REPORT.md finding #11 (medium): the
+    real paper_days_lookup TradingRuntime should have been passing
+    StrategyPromotionService all along, derived from the immutable trades
+    table instead of a metadata counter nothing ever wrote to."""
+
+    def setUp(self):
+        self._tmpdir = tempfile.TemporaryDirectory()
+        self.db = TradingDatabase(Path(self._tmpdir.name) / "paperdays.db")
+
+    def tearDown(self):
+        try:
+            self._tmpdir.cleanup()
+        except (OSError, PermissionError):
+            pass
+
+    def _trade(self, strategy_name, ts, execution_mode="PAPER"):
+        from datetime import datetime
+        from trading_platform.domain.enums import Side
+        from trading_platform.domain.models import Trade
+        return Trade(
+            trade_id=f"t-{ts}-{strategy_name}-{execution_mode}",
+            order_id="o1", symbol="NIFTY", side=Side.BUY, quantity=1,
+            price=100.0, charges=1.0, timestamp=datetime.fromisoformat(ts),
+            strategy_name=strategy_name,
+        )
+
+    def test_counts_distinct_calendar_days_not_trade_rows(self):
+        # Two trades on the same day must count as ONE paper day.
+        self.db.save_trade(self._trade("short_vol_condor", "2026-08-10T03:45:00+00:00"), execution_mode="PAPER")
+        self.db.save_trade(self._trade("short_vol_condor", "2026-08-10T09:15:00+00:00"), execution_mode="PAPER")
+        self.db.save_trade(self._trade("short_vol_condor", "2026-08-11T03:45:00+00:00"), execution_mode="PAPER")
+        self.assertEqual(self.db.distinct_paper_trading_days("short_vol_condor"), 2)
+
+    def test_excludes_other_strategies(self):
+        self.db.save_trade(self._trade("short_vol_condor", "2026-08-10T03:45:00+00:00"), execution_mode="PAPER")
+        self.db.save_trade(self._trade("momentum_v1", "2026-08-11T03:45:00+00:00"), execution_mode="PAPER")
+        self.assertEqual(self.db.distinct_paper_trading_days("short_vol_condor"), 1)
+
+    def test_excludes_non_paper_execution_modes(self):
+        self.db.save_trade(self._trade("short_vol_condor", "2026-08-10T03:45:00+00:00"), execution_mode="PAPER")
+        self.db.save_trade(self._trade("short_vol_condor", "2026-08-11T03:45:00+00:00"), execution_mode="BACKTEST")
+        self.assertEqual(self.db.distinct_paper_trading_days("short_vol_condor"), 1)
+
+    def test_excludes_test_tagged_trades(self):
+        # is_test is derived from strategy_name being one of the special
+        # test-marker values (see save_trade's own is_test computation) —
+        # this trade is real "short_vol_condor" activity but flagged via
+        # the marker name, so it must not count toward paper days.
+        self.db.save_trade(self._trade("short_vol_condor", "2026-08-10T03:45:00+00:00"), execution_mode="PAPER")
+        self.db.save_trade(self._trade("manual_preview", "2026-08-11T03:45:00+00:00"), execution_mode="PAPER")
+        self.assertEqual(self.db.distinct_paper_trading_days("short_vol_condor"), 1)
+        self.assertEqual(self.db.distinct_paper_trading_days("manual_preview"), 0)
+
+    def test_unknown_strategy_returns_zero(self):
+        self.assertEqual(self.db.distinct_paper_trading_days("never_traded"), 0)
 
 
 class GateWaiverTests(unittest.TestCase):

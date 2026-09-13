@@ -759,6 +759,30 @@ class TradingDatabase:
             cur.execute(sql, [*params, limit])
             return self._rows(cur, cur.fetchall())
 
+    def distinct_paper_trading_days(self, strategy_name: str) -> int:
+        """Count of distinct calendar dates this strategy has a real PAPER
+        fill on — immutable evidence a promotion gate can trust, unlike a
+        metadata counter nothing was ever wiring up.
+
+        audit_results/2026-09-13/AUDIT_REPORT.md finding #11 (medium): the
+        short_vol promotion gate reported 0 paper days despite months of
+        real August-September paper fills, because StrategyPromotionService
+        was constructed with no paper_days_lookup at all — it silently fell
+        back to record.metadata.get("paper_days", 0), which nothing in this
+        codebase ever writes. This is what that lookup should have been:
+        derived directly from the trades table (excludes is_test rows the
+        same way trades() does), not a manually-maintained counter."""
+        test_clause = "is_test = FALSE" if self._mode == "postgres" else "COALESCE(is_test, 0) = 0"
+        sql = self._p(
+            f"SELECT COUNT(DISTINCT DATE({self._ts})) AS days FROM trades "
+            f"WHERE strategy_name = ? AND execution_mode = 'PAPER' AND {test_clause}"
+        )
+        with self._cursor() as cur:
+            cur.execute(sql, (strategy_name,))
+            row = cur.fetchone()
+            result = _row_to_dict(cur, row) if row else None
+        return int(result["days"]) if result and result["days"] is not None else 0
+
     def trade_count(self, execution_mode: str | None = None, include_test: bool = False) -> int:
         clauses, params = [], []
         if execution_mode:

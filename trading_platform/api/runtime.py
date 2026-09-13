@@ -526,9 +526,16 @@ class TradingRuntime:
         )
         # REDESIGN §5: rule-based strategies get their own promotion ladder,
         # gated on the backtest validation gates (CPCV/DSR/PBO/MC-DD/costs).
+        # audit_results/2026-09-13/AUDIT_REPORT.md finding #11 (medium): no
+        # paper_days_lookup was ever passed, so this always fell back to
+        # record.metadata.get("paper_days", 0) — nothing in this codebase
+        # ever writes that key, so the gate reported 0 paper days despite
+        # months of real fills. distinct_paper_trading_days derives it from
+        # the immutable trades table instead.
         self._strategy_promotion_service = StrategyPromotionService(
             db=self.db,
             min_paper_days=getattr(self.settings, "PROMOTION_PAPER_DAYS", 30),
+            paper_days_lookup=self.db.distinct_paper_trading_days,
         )
         self._options_service = self._build_options_service()
         self._live_feed_service = self._build_live_feed_service()

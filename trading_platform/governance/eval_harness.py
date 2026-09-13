@@ -73,14 +73,29 @@ def evaluate_council_skill(decisions_raw: list[list[dict]], reflections: list[di
 
     if not joined:
         result["structural_note"] = (
-            "Zero overlap by trace_id. If both total_decisions_traced and "
-            "total_outcomes_traced are non-zero, this is likely structural, not "
-            "a lack of data: council decisions are traced under scan-* IDs (one "
-            "DecisionTrace per scan cycle) while trade outcomes are traced under "
-            "order-* IDs (one per executed order) — two disjoint ID namespaces "
-            "as of 2026-08-29. DecisionTrace.order_intent_ids is a real, "
-            "unexploited bridge between them (see trace/models.py) but resolving "
-            "it needs confirming what identifier it actually holds at runtime."
+            "Zero overlap by trace_id. Traced 2026-09-13 (audit_results/2026-09-13/"
+            "AUDIT_REPORT.md finding #11): this is NOT a fixable ID-propagation bug "
+            "— DecisionTrace.order_intent_ids does get populated correctly when an "
+            "intent already carries its originating trace_id (see runtime.py's "
+            "_ensure_trace_for_intent). The real reason is structural: "
+            "MasterOrchestrator.run() (the specialist-crew/council voting cycle) "
+            "runs every scan regardless, but its resulting order_candidates are "
+            "only ever enqueued when AGENT_DIRECTIONAL_ENABLED=true — off by "
+            "default, since directional momentum has no proven edge (see "
+            "AGENTS.md's honesty discipline). short_vol_executor.py, the strategy "
+            "that generates this deployment's actual fills, never calls "
+            "MasterOrchestrator or records any agent_outputs at all — its intents "
+            "carry no pre-existing trace_id, so _ensure_trace_for_intent mints a "
+            "fresh one at enqueue time, disconnected from any council vote by "
+            "construction. The council's votes and the trades that actually "
+            "execute are two different populations: no amount of trace-ID "
+            "resolution can join votes that were never cast on the decisions that "
+            "actually happened. Measuring the council's skill against real "
+            "outcomes requires either enabling directional trading (not "
+            "recommended without proven edge) or routing short_vol's own entries "
+            "through an advisory (non-gating) council check purely to collect "
+            "this evaluation data — both are product decisions, not bugs to fix "
+            "here."
         )
         return result
 
