@@ -24,6 +24,7 @@ if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
 
 from trading_platform.backtesting.short_vol_backtest import (  # noqa: E402
+    DEFAULT_SPREAD_POINTS,
     SWEEP_GRID,
     evaluate_short_vol_gates,
     load_daily_closes,
@@ -75,17 +76,58 @@ def main() -> int:
           f"CAGR={cagr:.2f}%/yr over {years:.1f}y")
 
     if args.persist:
+        import subprocess
         from trading_platform.config import load_settings
         from trading_platform.data.persistence import TradingDatabase
 
+        # audit_results/2026-09-13/AUDIT_REPORT.md finding #9 (high): every
+        # underlying used to persist under the SAME strategy_id ("short_vol"),
+        # so validating NIFTY alone made the promotion ladder consider
+        # short_vol "cleared" for every underlying the live executor is
+        # configured to trade — 6 of 7 in the actual deployed config
+        # (SHORTVOL_AUTO_UNDERLYINGS) had never been independently
+        # validated. strategy_id is now underlying-specific; git_sha and a
+        # fuller config_snapshot (winning variant's own parameters, not
+        # just the sweep's shape) bind evidence to what was actually run,
+        # per section 4/5's "bind promotion evidence to strategy version,
+        # instrument family, universe, parameters, data provenance and
+        # source revision."
+        try:
+            git_sha = subprocess.run(
+                ["git", "rev-parse", "HEAD"], cwd=REPO, capture_output=True,
+                text=True, timeout=5, check=True,
+            ).stdout.strip()
+        except Exception:
+            git_sha = None
+
+        strategy_id = f"short_vol_{under.lower()}"
         settings = load_settings()
         db = TradingDatabase(database_url=settings.database_url or None)
         db.save_gate_results_batch(
-            results.backtest_id, "short_vol", results,
-            config_snapshot={"underlying": under, "grid_size": len(SWEEP_GRID),
-                             "bars": len(bars), "capital": args.capital},
+            results.backtest_id, strategy_id, results,
+            git_sha=git_sha,
+            config_snapshot={
+                "underlying": under,
+                "grid_size": len(SWEEP_GRID),
+                "bars": len(bars),
+                "bars_start": str(bars[0].day),
+                "bars_end": str(bars[-1].day),
+                "capital": args.capital,
+                "winning_variant_params": info["params"],
+                "spread_points_per_leg": info["params"].get("spread_points", DEFAULT_SPREAD_POINTS),
+                # Selected as the best of len(SWEEP_GRID) tested variants on
+                # this SAME data — not an untouched holdout result. See
+                # short_vol_backtest.py's own LIMITATIONS section.
+                "selection_method": "best_of_sweep_same_data",
+                "data_provenance": (
+                    "Underlying/VIX closes from cached Angel One daily history; "
+                    "option premiums are Black-Scholes MODEL prices off VIX, "
+                    "not real traded option-chain quotes."
+                ),
+            },
         )
-        print(f"\npersisted under backtest_id={results.backtest_id} strategy_id=short_vol")
+        print(f"\npersisted under backtest_id={results.backtest_id} strategy_id={strategy_id} "
+              f"git_sha={git_sha or '(unavailable)'}")
     else:
         print("\n(dry run — pass --persist to record these results)")
     return 0
