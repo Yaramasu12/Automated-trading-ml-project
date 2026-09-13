@@ -433,8 +433,12 @@ class TradingAgent:
         self._log_activity("PRE-MARKET: preparing instruments + starting live feed")
         # Reset the session-start equity baseline each morning so the daily-loss
         # circuit breaker measures today's loss, not cumulative multi-day loss.
+        # force_fresh=True: this genuinely is the start of a new trading day,
+        # so always compute (and persist) a fresh MARKED baseline rather than
+        # cost-basis equity — audit_results/2026-09-13/AUDIT_REPORT.md
+        # finding #7; see TradingRuntime._establish_session_baseline.
         try:
-            self._runtime.scheduler.set_session_start_equity(self._runtime.portfolio.equity)
+            self._runtime._establish_session_baseline(force_fresh=True)
         except Exception as _exc:
             logger.warning("Could not reset session_start_equity: %s", _exc)
         try:

@@ -69,6 +69,19 @@ CREATE TABLE IF NOT EXISTS daily_pnl (
     ending_equity  DOUBLE PRECISION NOT NULL DEFAULT 0
 );
 
+-- audit_results/2026-09-13/AUDIT_REPORT.md finding #7 (high): the daily-loss
+-- circuit breaker's session-start baseline was recomputed from cost-basis
+-- equity (cash + entry cost of open positions — ignores any existing
+-- unrealized P&L) on EVERY process start, including a mid-session restart.
+-- One persisted row per IST trading date lets a restart RESTORE the
+-- baseline this morning's premarket routine already captured (with real
+-- marks, not cost basis) instead of quietly recomputing a wrong one.
+CREATE TABLE IF NOT EXISTS session_baselines (
+    trade_date     DATE        PRIMARY KEY,
+    equity         DOUBLE PRECISION NOT NULL,
+    recorded_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
 CREATE TABLE IF NOT EXISTS model_runs (
     id             BIGSERIAL   PRIMARY KEY,
     run_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -291,6 +304,12 @@ CREATE TABLE IF NOT EXISTS daily_pnl (
     total_trades  INTEGER NOT NULL DEFAULT 0,
     winning_trades INTEGER NOT NULL DEFAULT 0,
     ending_equity REAL NOT NULL DEFAULT 0
+);
+-- See the matching postgres table's comment above (finding #7).
+CREATE TABLE IF NOT EXISTS session_baselines (
+    trade_date    TEXT PRIMARY KEY,
+    equity        REAL NOT NULL,
+    recorded_at   TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS model_runs (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -847,6 +866,37 @@ class TradingDatabase:
         with self._cursor() as cur:
             cur.execute(sql, (limit,))
             return list(reversed(self._rows(cur, cur.fetchall())))
+
+    def save_session_baseline(self, trade_date: date, equity: float) -> None:
+        """Persist the daily-loss circuit breaker's session-start equity for
+        one IST trading date. See session_baselines' own comment (audit
+        finding #7) — this is what lets a mid-day restart restore the value
+        this morning's premarket routine already captured instead of
+        recomputing a wrong (cost-basis) one."""
+        now = datetime.now(timezone.utc).isoformat()
+        if self._mode == "postgres":
+            sql = """INSERT INTO session_baselines (trade_date, equity, recorded_at)
+                     VALUES (%s,%s,%s)
+                     ON CONFLICT (trade_date) DO UPDATE SET
+                       equity=EXCLUDED.equity, recorded_at=EXCLUDED.recorded_at"""
+            params: Any = (trade_date, equity, now)
+        else:
+            sql = """INSERT INTO session_baselines (trade_date, equity, recorded_at)
+                     VALUES (?,?,?)
+                     ON CONFLICT(trade_date) DO UPDATE SET
+                       equity=excluded.equity, recorded_at=excluded.recorded_at"""
+            params = (trade_date.isoformat(), equity, now)
+        with self._cursor() as cur:
+            cur.execute(sql, params)
+
+    def get_session_baseline(self, trade_date: date) -> float | None:
+        sql = self._p("SELECT equity FROM session_baselines WHERE trade_date = ?")
+        params = (trade_date if self._mode == "postgres" else trade_date.isoformat(),)
+        with self._cursor() as cur:
+            cur.execute(sql, params)
+            row = cur.fetchone()
+            result = _row_to_dict(cur, row) if row else None
+        return float(result["equity"]) if result else None
 
     # ------------------------------------------------------------------
     # Model runs

@@ -1438,6 +1438,69 @@ class TradingRuntime:
                 f"Recovered {restored_positions} position(s) and {restored_plans} exit plan(s) from DB",
             )
 
+    def _marked_equity_now(self) -> float:
+        """Best-effort MARKED (not cost-basis) equity, using the same price
+        chain /portfolio/positions relies on (live tick -> theoretical
+        Black-Scholes -> ExitManager's sticky last-known -> entry price).
+        Used only for the session-start baseline (see
+        _establish_session_baseline) — falls back to entry price per
+        position when nothing better is available (e.g. pre-market, no
+        feed yet), which degrades to cost-basis equity in the worst case,
+        never worse than the old behavior."""
+        now = datetime.now(timezone.utc)
+        mark_prices: dict[str, float] = {}
+        for symbol, pos in self.portfolio.positions.items():
+            if pos.quantity == 0:
+                continue
+            resolution = self.price_service.resolve(
+                symbol, instrument=getattr(pos, "instrument", None), entry_price=pos.average_price
+            )
+            if resolution.price is not None:
+                mark_prices[symbol] = resolution.price
+        return self.portfolio.mark_to_market(now, mark_prices).equity
+
+    def _establish_session_baseline(self, *, force_fresh: bool = False) -> None:
+        """Set the daily-loss circuit breaker's session-start equity.
+
+        audit_results/2026-09-13/AUDIT_REPORT.md finding #7 (high): this
+        used to be `self.scheduler.set_session_start_equity(self.portfolio.
+        equity)` — COST-BASIS equity (cash + entry cost of open positions),
+        recomputed from scratch on every process start including a mid-
+        session restart. Cost basis never reflects unrealized P&L, so any
+        already-existing unrealized gain/loss on a position carried from a
+        prior session (short_vol condors are routinely held for days)
+        contaminated every later "today's loss" comparison — and a mid-day
+        restart (a routine redeploy, a crash) recomputed the SAME wrong
+        cost-basis value instead of preserving whatever this morning's
+        premarket routine had already captured.
+
+        Fix: persist one baseline per IST trading date. force_fresh=True
+        (the premarket routine — this genuinely IS the start of a new
+        trading day) always computes a fresh MARKED equity and overwrites
+        today's row. force_fresh=False (process startup, which may be a
+        first boot or a mid-session restart) restores today's persisted
+        value if one already exists, so a restart can never silently reset
+        or corrupt the baseline the day already started with; only when
+        nothing is persisted yet for today does it compute fresh (covers a
+        cold boot before premarket has run) and persist that.
+        """
+        today = now_ist().date()
+        if not force_fresh:
+            try:
+                persisted = self.db.get_session_baseline(today)
+            except Exception as exc:
+                persisted = None
+                note_swallowed("runtime.session_baseline.restore", exc)
+            if persisted is not None:
+                self.scheduler.set_session_start_equity(persisted)
+                return
+        equity = self._marked_equity_now()
+        self.scheduler.set_session_start_equity(equity)
+        try:
+            self.db.save_session_baseline(today, equity)
+        except Exception as exc:
+            note_swallowed("runtime.session_baseline.persist", exc)
+
     async def start_async_services(self) -> None:
         """Start core async services and optional broker-facing loops."""
         await self.scheduler.start()
@@ -1449,9 +1512,11 @@ class TradingRuntime:
         # Restore state BEFORE starting the feed/agent so the agent sees
         # already-open positions and doesn't create duplicates on its first tick.
         await self.restore_state()
-        # Seed the session-start equity so the daily-loss circuit breaker has a baseline.
-        # Must be called after restore_state() so portfolio cash is accurate.
-        self.scheduler.set_session_start_equity(self.portfolio.equity)
+        # Seed the session-start equity so the daily-loss circuit breaker has
+        # a baseline. Must be called after restore_state() so portfolio cash
+        # is accurate. force_fresh=False: restore today's persisted baseline
+        # if this is a mid-session restart, rather than recomputing (finding #7).
+        self._establish_session_baseline(force_fresh=False)
 
         live_feed_started = False
         agent_started = False
