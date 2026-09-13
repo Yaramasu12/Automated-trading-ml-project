@@ -305,6 +305,48 @@ class RuntimeTests(unittest.TestCase):
         self.assertIn("metrics", result)
         self.assertIn("selected_strategies", result)
 
+    def test_backtest_endpoint_exposes_real_equity_curve_and_provenance(self):
+        # audit_results/2026-09-13/AUDIT_REPORT.md finding #10 (medium):
+        # BacktestResult.to_dict() computed a real equity_curve/trade_pnls
+        # but never sent them, so the dashboard fabricated a straight-line
+        # two-point curve. Also verify data_source is honestly reported —
+        # this endpoint always runs on SyntheticDataProvider today.
+        runtime = TradingRuntime()
+        result = runtime.run_backtest({"days": 30, "underlyings": ["NIFTY", "RELIANCE"]})
+
+        self.assertIn("equity_curve", result)
+        self.assertIsInstance(result["equity_curve"], list)
+        self.assertGreater(len(result["equity_curve"]), 2)  # a real daily series, not Start/End
+        for point in result["equity_curve"]:
+            self.assertIn("timestamp", point)
+            self.assertIn("equity", point)
+
+        self.assertEqual(result["data_source"], "synthetic")
+        self.assertIn("trade_pnls", result)
+        self.assertIn("fills", result)
+        self.assertIsInstance(result["fills"], list)
+        if result["fills"]:
+            fill = result["fills"][0]
+            for key in ("symbol", "side", "quantity", "price", "charges", "timestamp", "strategy_name"):
+                self.assertIn(key, fill)
+
+    def test_backtest_endpoint_strategy_names_filter_is_actually_applied(self):
+        # audit_results/2026-09-13/AUDIT_REPORT.md finding #10 (medium): the
+        # frontend sent `strategy_name` (singular) while this endpoint reads
+        # `strategy_names` (plural) -- the filter was silently a no-op.
+        # Guards the backend's own contract so a future frontend fix can't
+        # silently regress back to sending the wrong key unnoticed.
+        runtime = TradingRuntime()
+        unfiltered = runtime.run_backtest({"days": 30, "underlyings": ["NIFTY"]})
+        available = set(unfiltered["selected_strategies"].get("NIFTY", []))
+        self.assertTrue(available, "expected at least one strategy selected for NIFTY")
+        one_strategy = next(iter(available))
+
+        filtered = runtime.run_backtest({
+            "days": 30, "underlyings": ["NIFTY"], "strategy_names": [one_strategy],
+        })
+        self.assertEqual(set(filtered["selected_strategies"].get("NIFTY", [])), {one_strategy})
+
     def test_performance_summary_caches_the_backtest_evaluation(self):
         # Found 2026-09-06: /performance/summary evaluates every strategy
         # against the full default scan universe via real backtests every

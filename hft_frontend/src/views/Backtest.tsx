@@ -14,6 +14,26 @@ import { inr, pct, fmtDate } from '../utils'
 
 const UNDERLYINGS = ['NIFTY', 'BANKNIFTY', 'FINNIFTY', 'MIDCPNIFTY', 'RELIANCE', 'TCS', 'INFY', 'HDFCBANK']
 
+// Extracted as a pure function so the request contract (audit_results/
+// 2026-09-13/AUDIT_REPORT.md finding #10: `strategy_name` vs the backend's
+// `strategy_names`) has a direct unit test instead of only being reachable
+// through a full component render.
+export function buildBacktestPayload(args: {
+  capital: number
+  startDate: string
+  days: number
+  underlyings: string[]
+  strategyFilter: string
+}): Record<string, unknown> {
+  return {
+    starting_capital: args.capital,
+    start: args.startDate,
+    days: args.days,
+    underlyings: args.underlyings,
+    strategy_names: args.strategyFilter ? [args.strategyFilter] : undefined,
+  }
+}
+
 const TOOLTIP_STYLE = {
   backgroundColor: '#161b22',
   border: '1px solid #30363d',
@@ -49,13 +69,9 @@ export function Backtest() {
     setLoading('backtest', true)
     setError(null)
     try {
-      const payload = {
-        starting_capital: capital,
-        start: startDate,
-        days,
-        underlyings: selectedUnderlyings,
-        strategy_name: strategyFilter || undefined,
-      }
+      const payload = buildBacktestPayload({
+        capital, startDate, days, underlyings: selectedUnderlyings, strategyFilter,
+      })
       const res = await runBacktest(payload)
       setBacktestResult(res)
     } catch (e) {
@@ -67,11 +83,13 @@ export function Backtest() {
 
   const m = backtestResult?.metrics
 
-  // Fake equity curve from starting capital + total pnl
-  const equityCurveData = m ? [
-    { day: 'Start', equity: m.starting_capital },
-    { day: 'End',   equity: m.ending_equity },
-  ] : []
+  // Real per-bar equity series from the backend (audit_results/2026-09-13/
+  // AUDIT_REPORT.md finding #10: this used to be a fabricated two-point
+  // "Start"/"End" line hiding the actual path and drawdowns).
+  const equityCurveData = backtestResult?.equity_curve?.map((p) => ({
+    day: fmtDate(p.timestamp),
+    equity: p.equity,
+  })) ?? []
 
   return (
     <div className="space-y-6">
@@ -174,7 +192,16 @@ export function Backtest() {
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
           {/* Metrics */}
           <Card>
-            <CardHeader title="Backtest Results" subtitle={`${days}d · ${selectedUnderlyings.join(', ')}`} />
+            <CardHeader
+              title="Backtest Results"
+              subtitle={`${days}d · ${selectedUnderlyings.join(', ')}`}
+              action={
+                <Tag
+                  color={backtestResult.data_source === 'synthetic' ? 'yellow' : 'blue'}
+                  label={backtestResult.data_source === 'synthetic' ? 'Synthetic prices' : 'Historical cache'}
+                />
+              }
+            />
             <CardBody>
               <div className="grid grid-cols-2 gap-3">
                 {[
@@ -198,7 +225,10 @@ export function Backtest() {
 
           {/* Equity curve mini chart */}
           <Card>
-            <CardHeader title="Equity Curve" subtitle="Start vs End" />
+            <CardHeader
+              title="Equity Curve"
+              subtitle={`${equityCurveData.length} bars · ${backtestResult.data_source === 'synthetic' ? 'synthetic prices — not a real market replay' : 'cached historical data'}`}
+            />
             <CardBody className="h-64 !p-2">
               <ResponsiveContainer width="100%" height="100%">
                 <AreaChart data={equityCurveData} margin={{ top: 4, right: 8, bottom: 0, left: 0 }}>
@@ -231,28 +261,35 @@ export function Backtest() {
             </CardBody>
           </Card>
 
-          {/* Trade log */}
-          {backtestResult.reports && backtestResult.reports.length > 0 && (
+          {/* Trade log — audit_results/2026-09-13/AUDIT_REPORT.md finding
+              #10: this used to read `backtestResult.reports`, a field the
+              backend never actually sent (only a bare `orders` count), so
+              this section silently never rendered anything. `fills` is the
+              real per-fill log; there's no single "pnl" per fill (P&L is a
+              round-trip concept), so this shows the real fill fields
+              instead of a fabricated one. */}
+          {backtestResult.fills && backtestResult.fills.length > 0 && (
             <div className="lg:col-span-2">
               <Card>
                 <button
                   className="w-full flex items-center justify-between px-4 py-3 hover:bg-surface-elevated/30 transition-colors"
                   onClick={() => setTradeLogExpanded(v => !v)}
                 >
-                  <span className="text-sm font-semibold text-ink">Trade Log ({backtestResult.reports.length} records)</span>
+                  <span className="text-sm font-semibold text-ink">Trade Log ({backtestResult.fills.length} fills)</span>
                   <span className="text-xs text-ink-faint">{tradeLogExpanded ? 'Collapse' : 'Expand'}</span>
                 </button>
                 {tradeLogExpanded && (
                   <Table
                     columns={[
+                      { key: 'timestamp', label: 'Time', render: (v) => fmtDate(String(v)) },
                       { key: 'symbol', label: 'Symbol' },
                       { key: 'side', label: 'Side', render: (v) => <span className={String(v) === 'BUY' ? 'text-brand-green' : 'text-brand-red'}>{String(v)}</span> },
+                      { key: 'quantity', label: 'Qty', align: 'right' },
+                      { key: 'price', label: 'Price', align: 'right', render: (v) => inr(Number(v), 2) },
+                      { key: 'charges', label: 'Charges', align: 'right', render: (v) => inr(Number(v), 2) },
                       { key: 'strategy_name', label: 'Strategy' },
-                      { key: 'pnl', label: 'P&L', align: 'right', render: (v) => (
-                        <span className={Number(v) >= 0 ? 'text-brand-green' : 'text-brand-red'}>{inr(Number(v), 2)}</span>
-                      )},
                     ]}
-                    rows={backtestResult.reports as Record<string, unknown>[]}
+                    rows={backtestResult.fills as unknown as Record<string, unknown>[]}
                     keyFn={(r, i) => String(i)}
                     emptyMessage="No trade records"
                     compact

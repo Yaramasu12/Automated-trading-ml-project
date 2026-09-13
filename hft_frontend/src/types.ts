@@ -331,7 +331,23 @@ export interface BacktestResult {
     profit_factor: number
     sharpe_like: number
   }
-  reports: unknown[]
+  orders: number
+  selected_strategies: Record<string, string[]>
+  // "synthetic" today, always -- this endpoint has no real historical
+  // option-chain data source wired in yet. Show this, don't hide it.
+  data_source: 'synthetic' | 'historical_cache'
+  equity_curve: Array<{ timestamp: string; equity: number }>
+  trade_pnls: number[]
+  total_charges: number
+  fills: Array<{
+    symbol: string
+    side: string
+    quantity: number
+    price: number
+    charges: number
+    timestamp: string
+    strategy_name: string
+  }>
 }
 
 // ─── Walk-Forward ─────────────────────────────────────────────────────────────

@@ -46,8 +46,34 @@ class BacktestResult:
     equity_curve: list[tuple[datetime, float]] = field(default_factory=list)
     trade_pnls: list[float] = field(default_factory=list)
     total_charges: float = 0.0
+    # audit_results/2026-09-13/AUDIT_REPORT.md finding #10 (medium): to_dict()
+    # never exposed the real equity_curve/trade_pnls this dataclass already
+    # computes, so the dashboard fabricated a straight-line "Start"/"End"
+    # two-point curve and called it a historical simulation. data_source
+    # records which BacktestEngine.data_provider actually ran (this endpoint
+    # always uses SyntheticDataProvider today — see BacktestEngine.__init__'s
+    # default and every runtime.py construction site) so the UI can say so
+    # honestly instead of implying real market replay.
+    data_source: str = "synthetic"
 
     def to_dict(self) -> dict:
+        # Every ACTUALLY FILLED report carries a real Trade -- a rejected/
+        # unfilled order's .trade is None. This is the real per-fill log
+        # (finding #10, medium): the dashboard's own "Trade Log" section
+        # expected a `reports` array that to_dict() never sent (only a bare
+        # `orders` count), so it silently never rendered anything.
+        fills = [
+            {
+                "symbol": r.trade.symbol,
+                "side": r.trade.side.value,
+                "quantity": r.trade.quantity,
+                "price": r.trade.price,
+                "charges": r.trade.charges,
+                "timestamp": r.trade.timestamp.isoformat() if hasattr(r.trade.timestamp, "isoformat") else str(r.trade.timestamp),
+                "strategy_name": r.trade.strategy_name,
+            }
+            for r in self.reports if r.trade is not None
+        ]
         return {
             "config": {
                 **asdict(self.config),
@@ -57,6 +83,14 @@ class BacktestResult:
             "metrics": asdict(self.metrics),
             "orders": len(self.reports),
             "selected_strategies": self.selected_strategies,
+            "data_source": self.data_source,
+            "equity_curve": [
+                {"timestamp": ts.isoformat(), "equity": equity}
+                for ts, equity in self.equity_curve
+            ],
+            "trade_pnls": list(self.trade_pnls),
+            "total_charges": self.total_charges,
+            "fills": fills,
         }
 
 
@@ -458,6 +492,7 @@ class BacktestEngine:
             equity_curve=list(portfolio.equity_curve),
             trade_pnls=round_trip_pnls(trades),
             total_charges=sum(t.charges for t in trades),
+            data_source="synthetic" if isinstance(self.data_provider, SyntheticDataProvider) else "historical_cache",
         )
 
     def _select_instrument(self, strategy_name: str, underlying: str, bar: MarketBar, as_of: date):
