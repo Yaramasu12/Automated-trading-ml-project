@@ -203,8 +203,25 @@ class BacktestEngine:
                 portfolio, underlying_marks, entry_context, as_of=bar_date
             )
 
-            # C2: set session-start equity so per-bar daily-loss gate fires
-            bar_open_snap = portfolio.mark_to_market(now, full_marks)
+            # C2: set session-start equity so per-bar daily-loss gate fires.
+            # audit_results/2026-09-13/AUDIT_REPORT.md finding #5 (high): this
+            # used to mark with `full_marks` (built from THIS bar's CLOSE) and
+            # call the result "bar_open_snap" -- the daily-loss circuit
+            # breaker's baseline was computed using a price not actually
+            # known until end of day, the classic lookahead this file's own
+            # docstring says to avoid ("Signal lookahead fix... orders filled
+            # at bar[t].open"). Use each underlying's own OPEN price instead
+            # -- the only information genuinely available before today's
+            # entries/exits are decided.
+            opening_marks: dict[str, float] = {
+                sym: bars[bar_index].open
+                for sym, bars in bars_by_underlying.items()
+                if bar_index < len(bars)
+            }
+            opening_full_marks = self._with_position_marks(
+                portfolio, opening_marks, entry_context, as_of=bar_date
+            )
+            bar_open_snap = portfolio.mark_to_market(now, opening_full_marks)
             router.set_session_start_equity(bar_open_snap.equity)
 
             # M2: reset daily counters at bar open
@@ -220,12 +237,34 @@ class BacktestEngine:
 
                 es.bars_held += 1
 
-                # Use the underlying's bar to detect intrabar SL/target hits
+                # Use the underlying's bar to detect intrabar SL/target hits.
+                # audit_results/2026-09-13/AUDIT_REPORT.md finding #5 (high):
+                # for an OPTION position, plan.stop_loss_price/target_price
+                # are premium-denominated (a few rupees), but bar_low/high
+                # here used to come straight from the UNDERLYING's own OHLC
+                # (index points, thousands) -- comparing across completely
+                # incompatible scales meant an option's stop/target could
+                # never trigger correctly (or, coincidentally, trigger on
+                # meaningless numeric overlap). Fixed by pricing the option
+                # at BOTH of the underlying's intrabar extremes and taking
+                # min/max of the two -- correct regardless of option_type,
+                # since Black-Scholes price is monotonic in spot either way
+                # (a call's premium rises with spot, a put's falls).
                 underlying_sym = es.plan.instrument.underlying or symbol
                 u_bars = bars_by_underlying.get(underlying_sym, [])
                 if bar_index < len(u_bars):
-                    bar_low = u_bars[bar_index].low
-                    bar_high = u_bars[bar_index].high
+                    u_low = u_bars[bar_index].low
+                    u_high = u_bars[bar_index].high
+                    if es.plan.instrument.instrument_type == InstrumentType.OPTION:
+                        price_at_low = self._mark_price_for_instrument(
+                            es.plan.instrument, {underlying_sym: u_low}, u_low, entry_context, as_of=bar_date,
+                        )
+                        price_at_high = self._mark_price_for_instrument(
+                            es.plan.instrument, {underlying_sym: u_high}, u_high, entry_context, as_of=bar_date,
+                        )
+                        bar_low, bar_high = min(price_at_low, price_at_high), max(price_at_low, price_at_high)
+                    else:
+                        bar_low, bar_high = u_low, u_high
                 else:
                     bar_low = bar_high = full_marks.get(symbol, es.plan.entry_price)
 
@@ -275,7 +314,14 @@ class BacktestEngine:
                         instrument=pos.instrument,
                         quantity=abs(pos.quantity),
                         order_type=OrderType.MARKET,
-                        product_type=ProductType.INTRADAY,
+                        # audit_results/2026-09-13/AUDIT_REPORT.md finding #5
+                        # (high): every strategy this engine can select has
+                        # exit_rules().max_holding_days >= 2 (verified: no
+                        # registered strategy uses 1) -- these are genuinely
+                        # multi-day carried positions, not same-day intraday
+                        # ones. Tagging them INTRADAY made ChargesModel apply
+                        # the wrong (lower) equity STT/brokerage schedule.
+                        product_type=ProductType.CARRYFORWARD,
                     )
                     exit_charges = self.charges_model.estimate(exit_intent, exit_price)
                     exit_marks = self._with_position_marks(
@@ -355,7 +401,19 @@ class BacktestEngine:
                     if signal_filter is not None and not signal_filter(signal):
                         continue
 
-                    fill_reference_price = execution_bar.open
+                    # audit_results/2026-09-13/AUDIT_REPORT.md finding #5 (high):
+                    # this used to be `execution_bar.open` unconditionally --
+                    # the UNDERLYING's own opening price (e.g. NIFTY ~24000)
+                    # used directly as an OPTION's fill price, mixing
+                    # incompatible price scales entirely. _mark_price_for_
+                    # instrument already has the real logic (Black-Scholes off
+                    # the underlying, correct passthrough for non-options) --
+                    # it was only ever used for MARKING existing positions,
+                    # never for pricing the entry fill itself.
+                    fill_reference_price = self._mark_price_for_instrument(
+                        instrument, {underlying: execution_bar.open}, execution_bar.open,
+                        entry_context, as_of=bar_date,
+                    )
                     signal = replace(signal, price=fill_reference_price)
 
                     quantity = self._position_quantity(
@@ -381,7 +439,8 @@ class BacktestEngine:
                         instrument=instrument,
                         quantity=quantity,
                         order_type=OrderType.MARKET,
-                        product_type=ProductType.INTRADAY,
+                        # See the exit_intent's identical comment above (finding #5).
+                        product_type=ProductType.CARRYFORWARD,
                     )
                     # H4: use derivative-enriched marks for every submit call
                     entry_marks = self._with_position_marks(
@@ -466,7 +525,8 @@ class BacktestEngine:
                 instrument=position.instrument,
                 quantity=abs(position.quantity),
                 order_type=OrderType.MARKET,
-                product_type=ProductType.INTRADAY,
+                # See the exit_intent's identical comment earlier (finding #5).
+                product_type=ProductType.CARRYFORWARD,
             )
             charges = self.charges_model.estimate(intent, mark_price)
             eod_marks = self._with_position_marks(
