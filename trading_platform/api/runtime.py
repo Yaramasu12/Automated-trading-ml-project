@@ -75,7 +75,7 @@ from trading_platform.risk.event_risk import EventRiskGuard
 from trading_platform.risk.manual_approval import ManualApprovalGate
 from trading_platform.strategies.factory import StrategyFactory
 from trading_platform.agent.trading_agent import TradingAgent, SCAN_UNDERLYINGS
-from trading_platform.agent.market_hours import now_ist, to_ist
+from trading_platform.agent.market_hours import is_trading_day, now_ist, to_ist
 
 # ── Phase 1–9: new components (lazy-safe imports) ─────────────────────────────
 from trading_platform.trace.ids import new_trace_id
@@ -1525,9 +1525,26 @@ class TradingRuntime:
         # if this is a mid-session restart, rather than recomputing (finding #7).
         self._establish_session_baseline(force_fresh=False)
 
+        # Found 2026-09-14 live: on Ganesh Chaturthi (a real exchange holiday
+        # the calendar had misclassified as a trading day — since fixed,
+        # see agent/market_hours.py's _HOLIDAYS), a routine redeploy for an
+        # unrelated fix restarted this process, which unconditionally
+        # restarted the live feed with no calendar check at all — unlike
+        # daily_scheduler.py's own start_feed/stop_feed jobs, which already
+        # skip non-trading days. The agent's own scan loop already checks
+        # is_trading_day() and correctly stayed idle, but the feed came up
+        # anyway and produced at least one wildly wrong quote for an
+        # illiquid holiday instrument (an 18x jump in ~20s), which a
+        # concurrent exit's "prefer the live price over the strategy's own
+        # estimate" logic then used verbatim — a real, if paper-only, loss
+        # that tripped the daily-loss kill switch. Gating auto-start on
+        # is_trading_day() here closes the actual gap: a restart on a
+        # holiday no longer starts the feed at all.
         live_feed_started = False
         agent_started = False
-        if self.settings.auto_start_live_feed and self.settings.angel_one_configured:
+        if self.settings.auto_start_live_feed and not is_trading_day():
+            logger.info("Live feed auto-start requested but today is not a trading day — not starting")
+        elif self.settings.auto_start_live_feed and self.settings.angel_one_configured:
             self.start_live_feed()
             live_feed_started = True
         elif self.settings.auto_start_live_feed:

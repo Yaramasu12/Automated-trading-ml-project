@@ -84,6 +84,46 @@ class RuntimeTests(unittest.TestCase):
         runtime.start_live_feed.assert_not_called()
         runtime.agent.start.assert_not_called()
 
+    @staticmethod
+    def _settings_with_angel_one_credentials(**overrides):
+        base = load_settings()
+        return dataclasses.replace(
+            base,
+            auto_start_agent=False,
+            angel_one_api_key="api-key",
+            angel_one_client_code="client",
+            angel_one_pin="1234",
+            angel_one_totp_secret="ABCDEF",
+            **overrides,
+        )
+
+    def test_live_feed_auto_start_skips_on_a_non_trading_day(self):
+        # Found 2026-09-14 live: on a real exchange holiday the calendar had
+        # misclassified as a trading day, a routine restart unconditionally
+        # restarted the live feed (unlike daily_scheduler.py's own
+        # start_feed job, which already skips non-trading days) -- it then
+        # produced a wildly wrong quote for an illiquid holiday instrument,
+        # which a concurrent exit used verbatim, tripping the kill switch on
+        # what was really a data-integrity artifact, not a market loss.
+        settings = self._settings_with_angel_one_credentials(auto_start_live_feed=True)
+        runtime = TradingRuntime(settings)
+        self.assertTrue(runtime.settings.angel_one_configured)
+        runtime.start_live_feed = Mock()  # type: ignore[method-assign]
+        with unittest.mock.patch("trading_platform.api.runtime.is_trading_day", return_value=False):
+            asyncio.run(runtime.start_async_services())
+            asyncio.run(runtime.stop_async_services())
+        runtime.start_live_feed.assert_not_called()
+
+    def test_live_feed_auto_start_still_works_on_a_trading_day(self):
+        settings = self._settings_with_angel_one_credentials(auto_start_live_feed=True)
+        runtime = TradingRuntime(settings)
+        self.assertTrue(runtime.settings.angel_one_configured)
+        runtime.start_live_feed = Mock()  # type: ignore[method-assign]
+        with unittest.mock.patch("trading_platform.api.runtime.is_trading_day", return_value=True):
+            asyncio.run(runtime.start_async_services())
+            asyncio.run(runtime.stop_async_services())
+        runtime.start_live_feed.assert_called_once()
+
     def test_live_arm_requires_explicit_real_money_confirmation(self):
         runtime = TradingRuntime(
             Settings(
