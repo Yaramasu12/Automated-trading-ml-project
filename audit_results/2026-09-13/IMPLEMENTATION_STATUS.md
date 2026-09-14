@@ -444,16 +444,42 @@ fake model, independent of stochastic classifier behavior. Full suite:
   `WEIGHT_MIN`/`WEIGHT_MAX`/`EMA_ALPHA`) — matches 21G's "agent scoring"
   definition. No LLM fine-tuning exists anywhere (correct — 21G explicitly
   prohibits nightly fine-tuning on a handful of trade summaries).
-- **21I** (immutable versioned promotion registry): `NeuralPredictionService`
-  in `serving.py` already has `ModelVersionRecord`/`pin_version`/
-  `promote_to_champion`/`WarmStandbyCache` — a real, if partial, version-
-  pinning and warm-standby-rollback mechanism — but it has no checksum
-  validation, no dataset-hash/code-revision stamping, and (per the
-  Section 21A fix) was until this session not even reachable from the
-  nightly retrain jobs. `StrategyPromotionService` separately tracks
-  strategy-level (not model-level) promotion with its own gate/rollback.
-  Two different registries at two different granularities; no single
-  registry authority as §21I asks for. Not unified this pass.
+- **21I** (immutable versioned promotion registry) — **real gap found and
+  partially fixed**: `NeuralPredictionService.promote_to_champion()`/
+  `ModelVersionRecord`/`WarmStandbyCache` already existed, but
+  `_get_model_obj()`/`_install_model()` only recognised `tft_forecaster`/
+  `ma_forecaster`/`garch`/`tail_risk`/`corr_graph` — none of which go
+  through a real train-then-load cycle (TFT is a stub, GARCH/tail-risk/
+  corr-graph are self-contained online learners, MA is a stateless
+  baseline). The two forecasters that DO have a genuine retrain→validate→
+  save cycle (`gbm_forecaster`, `intraday_forecaster`) were never wired
+  into promotion at all — `reload_neural_models()` (the Section 21A fix)
+  was reconstructing a brand-new `NeuralPredictionService` from scratch on
+  every reload, bypassing the version/warm-standby system entirely and
+  discarding unrelated models' state each time.
+
+  Fixed: extended `_get_model_obj`/`_install_model` to cover both
+  forecasters; added `NeuralPredictionService.reload_forecaster_from_disk()`
+  which loads the artifact, checks `is_available()`, and only calls
+  `promote_to_champion()` — with a timestamp version and the artifact's own
+  recorded walk-forward metrics — when it actually validated; a rejected/
+  absent artifact leaves the current champion untouched. `reload_neural_
+  models()` now reuses the SAME `NeuralPredictionService` instance instead
+  of rebuilding it, so champion/challenger history and the warm-standby
+  cache persist across reloads.
+
+  Still not done: no checksum validation, no dataset-hash/code-revision
+  stamping on the `ModelVersionRecord`, and `StrategyPromotionService`
+  (strategy-level promotion) remains a fully separate registry from
+  `ModelVersionRecord` (model-level) — no single registry authority as
+  §21I ultimately asks for. Unifying those two would be a larger,
+  cross-cutting change deferred for a future session.
+
+  Tests: `tests/test_runtime.py::test_reload_neural_models_reports_status_without_a_saved_artifact`,
+  `::test_reload_neural_models_promotes_a_validated_artifact_through_champion_path`
+  (trains a real model on genuine AR(1) synthetic edge, saves it, reloads
+  it, and asserts it was promoted to `status: "champion"` and is actually
+  serving). Full suite: 1476 passed. Deployed live.
 - **21K** (acceptance tests for the full lifecycle): some of §21K's listed
   scenarios are independently covered by existing/new tests (open trades
   stay pending — `test_return_forecaster.py`/`test_intraday_forecaster.py`'s

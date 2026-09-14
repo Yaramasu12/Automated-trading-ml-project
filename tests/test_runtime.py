@@ -930,14 +930,18 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(result, {"reloaded": False, "reason": "enable_neural_lab is False"})
         self.assertIsNone(runtime._neural_service)
 
-    def test_reload_neural_models_swaps_in_a_freshly_loaded_service(self):
+    def test_reload_neural_models_reports_status_without_a_saved_artifact(self):
         """Regression 2026-09-14 (Section 21A audit): daily_scheduler.py's nightly
         model_retrain / intraday_retrain jobs saved validated artifacts to disk but
         NeuralPredictionService only ever loaded them once, at TradingRuntime
         construction — there was no way for the already-running process to notice
         a new file short of a full restart. reload_neural_models() (exposed as
         POST /neural/reload-models, called by the scheduler right after save())
-        must actually replace the in-memory service, not just report status."""
+        must actually attempt a reload, not just report stale status. With no
+        artifact on disk (this repo's own honest state — no forecaster has ever
+        earned promotion), nothing should be promoted and the same service
+        object should keep serving (Section 21I: reload must not discard the
+        version/warm-standby history of unrelated models on every call)."""
         base = load_settings()
         settings = dataclasses.replace(base, enable_neural_lab=True)
         runtime = TradingRuntime(settings)
@@ -947,9 +951,46 @@ class RuntimeTests(unittest.TestCase):
         result = runtime.reload_neural_models()
 
         self.assertTrue(result["reloaded"])
-        self.assertIn("before", result)
-        self.assertIn("after", result)
-        self.assertIsNot(runtime._neural_service, original_service)
+        self.assertIsNone(result["promotions"]["gbm_forecaster"])
+        self.assertIsNone(result["promotions"]["intraday_forecaster"])
+        self.assertFalse(result["status"]["return_forecaster_available"])
+        self.assertFalse(result["status"]["intraday_forecaster_available"])
+        self.assertIs(runtime._neural_service, original_service)
+
+    def test_reload_neural_models_promotes_a_validated_artifact_through_champion_path(self):
+        """A genuinely validated artifact on disk must be promoted via
+        promote_to_champion() — ModelVersionRecord + warm-standby, not a
+        silent object swap — and the champion object actually starts
+        serving predictions."""
+        import numpy as np
+        from trading_platform.neural.return_forecaster import GradientBoostedReturnForecaster
+
+        rng = np.random.default_rng(1)
+        r = np.zeros(600)
+        for t in range(1, 600):
+            r[t] = 0.6 * r[t - 1] + rng.normal(0, 0.01)
+        closes = 1000.0 * np.cumprod(1.0 + r)
+        bars = [{"open": c, "high": c * 1.001, "low": c * 0.999, "close": float(c), "volume": 500_000}
+                for c in closes]
+
+        trainer = GradientBoostedReturnForecaster()
+        self.assertTrue(trainer.train(bars, n_splits=5))  # genuine AR(1) edge must validate
+
+        tmp_dir = tempfile.mkdtemp(prefix="trading_qa_model_reload_")
+        self.addCleanup(lambda: __import__("shutil").rmtree(tmp_dir, ignore_errors=True))
+        trainer.save(f"{tmp_dir}/return_forecaster")
+
+        base = load_settings()
+        settings = dataclasses.replace(base, enable_neural_lab=True)
+        runtime = TradingRuntime(settings)
+        runtime._model_dir = tmp_dir
+
+        result = runtime.reload_neural_models()
+
+        self.assertIsNotNone(result["promotions"]["gbm_forecaster"])
+        self.assertEqual(result["promotions"]["gbm_forecaster"]["status"], "champion")
+        self.assertTrue(result["status"]["return_forecaster_available"])
+        self.assertTrue(runtime._neural_service._gbm_forecaster.is_available())
 
     def test_daily_learning_report_reads_back_todays_model_runs(self):
         """Regression 2026-09-14 (Section 21J): model_runs was write-only —

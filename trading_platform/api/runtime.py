@@ -5112,34 +5112,48 @@ class TradingRuntime:
         return bundle.to_dict()
 
     def reload_neural_models(self) -> dict:
-        """Re-read forecaster artifacts from disk into a fresh NeuralPredictionService.
+        """Re-read forecaster artifacts from disk and, if validated, promote
+        them through NeuralPredictionService's own version/warm-standby path.
 
-        Found in the 2026-09-13 audit (Section 21A): NeuralPredictionService only
-        ever loaded return_forecaster / intraday_forecaster once, at __init__ time —
-        scripts/daily_scheduler.py's nightly model_retrain / intraday_retrain jobs
-        wrote validated artifacts to disk but had no way to get the running process
-        to pick them up short of a full container restart. This closes that loop:
-        the scheduler calls POST /neural/reload-models right after a successful
-        save, and this swaps in a service built from the current files.
+        Found in the 2026-09-13 audit (Section 21A): NeuralPredictionService
+        only ever loaded return_forecaster / intraday_forecaster once, at
+        __init__ time — scripts/daily_scheduler.py's nightly model_retrain /
+        intraday_retrain jobs wrote validated artifacts to disk but had no
+        way to get the running process to pick them up short of a full
+        container restart. This closes that loop: the scheduler calls
+        POST /neural/reload-models right after a successful save.
+
+        Found in the follow-up Section 21I audit (2026-09-14):
+        NeuralPredictionService.promote_to_champion()/ModelVersionRecord/
+        WarmStandbyCache already existed but only recognised
+        tft/ma/garch/tail_risk/corr_graph — none of which go through a real
+        train-then-load cycle — while the two forecasters that actually do
+        were never wired into promotion or rollback at all. Rather than
+        rebuild the whole service (which discarded that history and
+        disturbed unrelated models on every call), this now reloads each
+        forecaster individually through reload_forecaster_from_disk(),
+        which only promotes when the artifact on disk actually validated —
+        a rejected/absent artifact leaves the current champion untouched.
         """
         if not self.settings.enable_neural_lab:
             return {"reloaded": False, "reason": "enable_neural_lab is False"}
 
-        before = self._neural_service
-        before_status = {
-            "return_forecaster_available": bool(before and before._gbm_forecaster.is_available()),
-            "intraday_forecaster_available": bool(before and before._intraday_forecaster.is_available()),
+        service = self._neural_service
+        if service is None:
+            service = NeuralPredictionService(trace_store=self.trace_store, model_dir=self._model_dir)
+            self._neural_service = service
+
+        promotions = {}
+        for model_name in ("gbm_forecaster", "intraday_forecaster"):
+            record = service.reload_forecaster_from_disk(model_name, self._model_dir)
+            promotions[model_name] = record.to_dict() if record else None
+
+        status = {
+            "return_forecaster_available": service._gbm_forecaster.is_available(),
+            "intraday_forecaster_available": service._intraday_forecaster.is_available(),
         }
-        after = NeuralPredictionService(trace_store=self.trace_store, model_dir=self._model_dir)
-        self._neural_service = after
-        after_status = {
-            "return_forecaster_available": after._gbm_forecaster.is_available(),
-            "intraday_forecaster_available": after._intraday_forecaster.is_available(),
-        }
-        logger.info(
-            "reload_neural_models: before=%s after=%s", before_status, after_status,
-        )
-        return {"reloaded": True, "before": before_status, "after": after_status}
+        logger.info("reload_neural_models: promotions=%s status=%s", promotions, status)
+        return {"reloaded": True, "promotions": promotions, "status": status}
 
     def meta_labeler_status(self) -> dict:
         """Return champion/challenger summary for monitoring and policy UI."""

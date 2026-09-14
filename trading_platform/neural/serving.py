@@ -590,6 +590,8 @@ class NeuralPredictionService:
             "garch": self._garch,
             "tail_risk": self._tail_risk,
             "corr_graph": self._corr_graph,
+            "gbm_forecaster": self._gbm_forecaster,
+            "intraday_forecaster": self._intraday_forecaster,
         }.get(model_name)
 
     def _install_model(self, model_name: str, model: Any) -> None:
@@ -604,8 +606,58 @@ class NeuralPredictionService:
             self._tail_risk = model
         elif model_name == "corr_graph":
             self._corr_graph = model
+        elif model_name == "gbm_forecaster":
+            self._gbm_forecaster = model
+        elif model_name == "intraday_forecaster":
+            self._intraday_forecaster = model
         else:
             logger.warning("NeuralPredictionService: unknown model_name '%s' for install", model_name)
+
+    # ── Reload retrained forecasters through the version/warm-standby path ─────
+
+    def reload_forecaster_from_disk(self, model_name: str, model_dir: str) -> ModelVersionRecord | None:
+        """Load a freshly-retrained return_forecaster/intraday_forecaster
+        artifact from disk and, only if it validated (is_available()),
+        promote it to champion — through the SAME ModelVersionRecord /
+        WarmStandbyCache path serving.py already built for its other
+        models, which the nightly retrain pipeline never actually used
+        (Section 21I audit, 2026-09-14: _get_model_obj/_install_model only
+        recognised tft/ma/garch/tail_risk/corr_graph — none of which go
+        through a real train-then-load cycle — while the two forecasters
+        that do were never wired into promotion, pinning, or rollback).
+
+        Returns the new ModelVersionRecord, or None if the artifact on disk
+        did not validate (nothing is installed or promoted in that case —
+        the existing champion, if any, keeps serving unchanged).
+        """
+        if model_name == "gbm_forecaster":
+            from trading_platform.neural.return_forecaster import GradientBoostedReturnForecaster
+            candidate = GradientBoostedReturnForecaster()
+            artifact_path = f"{model_dir}/return_forecaster"
+        elif model_name == "intraday_forecaster":
+            from trading_platform.neural.intraday_forecaster import IntradayReturnForecaster
+            candidate = IntradayReturnForecaster()
+            artifact_path = f"{model_dir}/intraday_forecaster"
+        else:
+            raise ValueError(f"reload_forecaster_from_disk: unsupported model_name '{model_name}'")
+
+        try:
+            candidate.load(artifact_path)
+        except Exception as exc:
+            logger.warning("reload_forecaster_from_disk(%s): load failed: %s", model_name, exc)
+            return None
+
+        if not candidate.is_available():
+            logger.info(
+                "reload_forecaster_from_disk(%s): artifact on disk is not a "
+                "validated model (rejected or absent) — keeping current champion",
+                model_name,
+            )
+            return None
+
+        metrics = dict(candidate.last_train_metrics or {})
+        version = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        return self.promote_to_champion(model_name, candidate, version=version, metrics=metrics)
 
     def _build_version_map(self) -> dict[str, str]:
         """Build model_versions dict including pinned version strings."""
