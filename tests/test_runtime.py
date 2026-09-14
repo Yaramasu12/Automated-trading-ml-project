@@ -951,6 +951,40 @@ class RuntimeTests(unittest.TestCase):
         self.assertIn("after", result)
         self.assertIsNot(runtime._neural_service, original_service)
 
+    def test_daily_learning_report_reads_back_todays_model_runs(self):
+        """Regression 2026-09-14 (Section 21J): model_runs was write-only —
+        save_model_run() had no matching read method anywhere, so a night's
+        retrain verdicts were durably recorded but unreachable by any API or
+        dashboard. daily_learning_report() must surface today's rows."""
+        runtime = TradingRuntime()
+
+        runtime.db.save_model_run(
+            model_name="return_forecaster",
+            symbol="__POOLED__",
+            signal="rejected",
+            confidence=0.4987,
+            metadata={"horizon": 3, "oos_auc": 0.4987},
+        )
+
+        report = runtime.daily_learning_report()
+
+        self.assertIn("model_retrains_today", report)
+        runs = report["model_retrains_today"]["runs"]
+        self.assertTrue(
+            any(r["model_name"] == "return_forecaster" and r["signal"] == "rejected" for r in runs)
+        )
+        self.assertEqual(runs[0]["metadata"]["horizon"], 3)  # JSON round-trips as a dict, not a string
+
+    def test_daily_learning_report_has_required_top_level_sections(self):
+        runtime = TradingRuntime()
+        report = runtime.daily_learning_report()
+        for key in (
+            "session_date", "is_trading_day", "data_quality", "pnl", "labels",
+            "model_retrains_today", "agent_learning", "neural_models",
+            "strategy_promotions", "next_session",
+        ):
+            self.assertIn(key, report)
+
 
 if __name__ == "__main__":
     unittest.main()

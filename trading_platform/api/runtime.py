@@ -5144,3 +5144,108 @@ class TradingRuntime:
     def meta_labeler_status(self) -> dict:
         """Return champion/challenger summary for monitoring and policy UI."""
         return self._meta_labeler.summary()
+
+    def daily_learning_report(self, as_of: date | None = None) -> dict:
+        """Aggregate today's learning-pipeline state (implementation prompt
+        Section 21J: "Produce a daily learning report ... expose through
+        authenticated API/dashboard views").
+
+        Everything below is read from data this process already durably
+        records — nothing here trains or promotes anything. Per this
+        project's honesty discipline (see CLAUDE.md), each J-bullet is
+        marked covered/partial/not_built rather than papered over: several
+        of J's asks (shadow/offline comparison, drift detection, per-rupee
+        cost attribution, forecast-calibration-on-maturity) have no real
+        implementation yet (see Section 21A/D audit notes in
+        audit_results/2026-09-13/IMPLEMENTATION_STATUS.md) and reporting
+        them as "covered" with fabricated content would be exactly the kind
+        of fake intelligence this project exists to avoid.
+        """
+        session_date = as_of or now_ist().date()
+
+        model_runs = self.db.recent_model_runs(limit=100)
+        todays_model_runs = [
+            r for r in model_runs
+            if str(r.get("run_at", ""))[:10] == session_date.isoformat()
+        ]
+
+        pnl_rows = self.db.daily_pnl_history(limit=1)
+        todays_pnl = pnl_rows[-1] if pnl_rows and str(pnl_rows[-1].get("trade_date")) == session_date.isoformat() else None
+
+        outcome_stats = {
+            "matured_labels": self._outcome_factory.count(),
+            "pending_symbols": self._outcome_factory.pending_symbols(),
+            "barrier_distribution": self._outcome_factory.barrier_distribution(),
+            "forward_bucket_distribution": self._outcome_factory.bucket_distribution(),
+            "average_meta_label_score": round(self._outcome_factory.average_meta_score(), 4),
+        }
+
+        reflection_stats = self.master_orchestrator._reflection_engine.stats()
+        neural = self.neural_status()
+        neural["forecasters_available"] = {
+            "return_forecaster": bool(
+                self._neural_service and self._neural_service._gbm_forecaster.is_available()
+            ),
+            "intraday_forecaster": bool(
+                self._neural_service and self._neural_service._intraday_forecaster.is_available()
+            ),
+        }
+
+        try:
+            promotions = self._strategy_promotion_service.list_promotions()
+        except Exception as exc:
+            note_swallowed("daily_learning_report.promotions", exc)
+            promotions = []
+
+        return {
+            "session_date": session_date.isoformat(),
+            "is_trading_day": is_trading_day(session_date),
+            "generated_at": now_ist().isoformat(),
+            "data_quality": {
+                "swallowed_errors_total": swallowed_error_count(),
+                "swallowed_errors_by_component": swallowed_errors_by_component(),
+                "spec_coverage": "partial — exchange reconciliation status and per-job "
+                                  "data cutoffs are not yet tracked as distinct fields "
+                                  "(Section 21C, not built)",
+            },
+            "pnl": {
+                "todays_row": todays_pnl,
+                "spec_coverage": "partial — net P&L/trades/equity only; no gross-vs-cost "
+                                  "or per-strategy attribution yet (Section 9, not built)",
+            },
+            "labels": {
+                **outcome_stats,
+                "spec_coverage": "covered for realized trade outcomes (triple-barrier, "
+                                  "forward bucket, meta-label score, pending symbols never "
+                                  "manufacture a label — Section 21D). Horizon-based forecast "
+                                  "label maturation (e.g. scoring a 5-day-ahead prediction "
+                                  "only after 5 sessions elapse) has no live implementation "
+                                  "yet — not_built.",
+            },
+            "model_retrains_today": {
+                "runs": todays_model_runs,
+                "spec_coverage": "covered — every nightly model_retrain/intraday_retrain "
+                                  "verdict (accepted/rejected, AUC, horizon) is durably "
+                                  "recorded via save_model_run and now readable here; no "
+                                  "recorded compute-duration field yet (minor gap)",
+            },
+            "agent_learning": {
+                **reflection_stats,
+                "meta_labeler": self._meta_labeler.summary(),
+                "spec_coverage": "covered for agent voting weights (bounded EMA, "
+                                  "persisted, restored at startup) and champion/challenger "
+                                  "scoring. Prompt/config experiment versioning and any LLM "
+                                  "weight fine-tuning (Section 21G) are not implemented — "
+                                  "the platform does not fine-tune local LLMs.",
+            },
+            "neural_models": neural,
+            "strategy_promotions": promotions,
+            "next_session": {
+                "note": "No neural forecaster artifact is currently promoted (none has "
+                        "ever earned walk-forward acceptance); serving falls back to the "
+                        "documented MA baseline / short_vol's own validated logic. "
+                        "Strategy-level promotion state is in strategy_promotions above. "
+                        "A dedicated immutable versioned-bundle registry with checksum/"
+                        "rollback (Section 21I) does not exist yet.",
+            },
+        }

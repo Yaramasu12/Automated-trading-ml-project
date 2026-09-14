@@ -5,7 +5,7 @@ import hashlib
 import json
 import logging
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
 from trading_platform.api.auth import _auth_disabled, require_auth, verify_token
 from trading_platform.api.runtime import TradingRuntime
@@ -1247,6 +1247,14 @@ def neural_reload_models():
     scripts/daily_scheduler.py right after a nightly retrain saves a new
     validated artifact (see IMPLEMENTATION_STATUS.md, Section 21A)."""
     return runtime.reload_neural_models()
+
+
+# ── Daily learning report (implementation prompt Section 21J) ──────────────────
+
+@app.get("/learning/daily-report", dependencies=[_AuthDep])
+def daily_learning_report(session_date: str | None = None):
+    parsed = date.fromisoformat(session_date) if session_date else None
+    return runtime.daily_learning_report(parsed)
 
 
 # ── Goal Governor ──────────────────────────────────────────────────────────────

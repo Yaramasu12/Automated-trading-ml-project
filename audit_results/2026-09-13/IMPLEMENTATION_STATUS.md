@@ -265,3 +265,68 @@ unstarted — it is new-architecture work, not integration repair, and per
 this section's own findings there is no evidence yet that the existing
 pieces need replacing rather than the specific connective-tissue gap fixed
 above.
+
+## Section 21D — audit: are labels only built when outcomes are observable?
+
+Checked `trading_platform/trace/label_factory.py::OutcomeFactory` (the only
+place trade outcome labels are computed) against §21D's requirement that
+open multi-day positions must stay pending, never get a manufactured label.
+
+**Compliant by construction.** `compute_exit_label()` is the only place an
+`OutcomeLabel` is created, and it does `self._pending.pop(symbol, None)` —
+if no exit fill has happened yet it returns `None` and the entry simply
+stays in `_pending` (exposed via `pending_symbols()`). Confirmed via grep
+that the only production caller is `runtime.py`'s `_on_fill`, gated on
+`intent.priority != OrderPriority.ENTRY` — i.e. a genuine exit fill, never
+a session-close snapshot or synthetic mark. No EOD/session-close code path
+calls `compute_exit_label()` at all.
+
+**Real gap found**: §21D also asks that horizon-based *forecast* labels
+("a five-session prediction issued today cannot become a realized target
+tonight") mature only after the full horizon elapses. No such mechanism
+exists anywhere — there is no code that logs a live forecast with its
+horizon and later, once enough sessions have passed, scores it against the
+realized outcome. `return_forecaster.py`/`intraday_forecaster.py`'s own
+validation is entirely offline (walk-forward backtest at training time);
+nothing scores predictions the running process actually issued live. Not
+fixed this pass — recorded as a genuine, scoped gap for a future session
+(needs a small forecast-log table + a scheduled maturity-check job, not a
+full rebuild).
+
+## Section 21J — daily learning report (built)
+
+`model_runs` (written by `daily_scheduler.py`'s retrain jobs via
+`save_model_run()`) had **no matching read method anywhere** — confirmed by
+grep; it was write-only from the application's own perspective. Every
+night's verdict (accepted/rejected, per horizon, with AUC) was durably
+recorded and permanently invisible to any API, dashboard, or human without
+manual SQL. This alone is worth fixing regardless of the rest of §21J's
+much larger ambition.
+
+Added:
+- `TradingDatabase.recent_model_runs(model_name=None, since=None, limit=200)`
+  — dual-dialect read (SQLite/Postgres), reuses the existing `_json_field`
+  JSONB-vs-TEXT decode helper for the `metadata` column.
+- `TradingRuntime.daily_learning_report(as_of: date | None = None)` —
+  aggregates today's model-retrain verdicts, `daily_pnl` row, realized-label
+  stats (`OutcomeFactory`), agent voting weights (`ReflectionEngine.stats()`),
+  champion/challenger state (`MetaLabeler.summary()`), neural-forecaster
+  availability, and strategy-promotion state
+  (`StrategyPromotionService.list_promotions()`).
+- `GET /learning/daily-report` (auth-gated, optional `?session_date=`).
+
+**Deliberately not a full §21J implementation.** Several of the spec's
+bullets have no real backing data yet — rather than fabricate them, each
+section of the report carries an explicit `spec_coverage` string stating
+covered / partial / not_built and why, matching this project's honesty
+discipline (CLAUDE.md: never present a stub as intelligence). Concretely
+not_built: shadow/offline candidate comparison, cost-stress and uncertainty
+reporting, data/model drift detection, per-rupee gross-vs-cost attribution,
+and an immutable versioned-bundle registry with checksums/rollback (§21I).
+These remain open for a future, properly-scoped session — most need real
+option-chain data or a validated model to have anything genuine to report
+on, neither of which exists yet in this deployment.
+
+Tests: `tests/test_runtime.py::test_daily_learning_report_reads_back_todays_model_runs`,
+`::test_daily_learning_report_has_required_top_level_sections`. Full suite:
+1469 passed.

@@ -947,6 +947,33 @@ class TradingDatabase:
         with self._cursor() as cur:
             cur.execute(sql, (now, model_name, symbol, regime, signal, confidence, meta_val))
 
+    def recent_model_runs(
+        self,
+        model_name: str | None = None,
+        since: datetime | None = None,
+        limit: int = 200,
+    ) -> list[dict]:
+        """Read back what scripts/daily_scheduler.py's model_retrain /
+        intraday_retrain jobs recorded via save_model_run(): every nightly
+        verdict (accepted/rejected, per horizon), win or lose. Written since
+        that job's introduction but never read back anywhere until the
+        Section 21A/J audit (2026-09-14) — this table was write-only."""
+        clauses, params = [], []
+        if model_name:
+            clauses.append("model_name = ?")
+            params.append(model_name)
+        if since:
+            clauses.append("run_at >= ?")
+            params.append(since if self._mode == "postgres" else since.isoformat())
+        where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+        sql = self._p(f"SELECT * FROM model_runs {where} ORDER BY id DESC LIMIT ?")
+        with self._cursor() as cur:
+            cur.execute(sql, [*params, limit])
+            rows = self._rows(cur, cur.fetchall())
+        for row in rows:
+            row["metadata"] = self._json_field(row.get("metadata"), default={})
+        return rows
+
     # ------------------------------------------------------------------
     # Risk events
     # ------------------------------------------------------------------
