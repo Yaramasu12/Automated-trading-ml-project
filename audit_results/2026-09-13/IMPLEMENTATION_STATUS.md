@@ -55,8 +55,48 @@ numbered findings above are through triage, per the prompt's own dependency
 ordering ("complete mandatory correctness/security/data work before
 interpreting strategy improvements").
 
-## Section 21 (daily learning pipeline) — audit and integration status
+## Numbered findings: final tally
 
-Not started. Requires sections 1-8 above to be settled first (accounting,
-costs, calendar, session baselines) since the learning pipeline consumes
-their output.
+All 11 numbered findings triaged. 8 fully fixed and tested (1, 3, 4, 6, 7,
+8, 10, 11). 1 fixed for the code/observability part with the live-config
+decision explicitly deferred by the user (2). 1 fixed for the evidence-
+binding part with two live-trading decisions explicitly deferred by the
+user pending full-universe validation (9). 1 fixed for 3 of its cited
+defects, 1 reviewed and judged not a bug (5). Every fix has a regression
+test and the full backend suite (1454 tests) plus frontend build/tests
+were green after each one. Nothing here was merged into main without
+running the suite first.
+
+## Sections 12-21 (implementation prompt) — status
+
+**Not started.** These are not individual bugs — they are large, multi-week
+research/engineering programs in their own right (execution realism and
+order-lifecycle idempotency, per-rupee performance attribution, entry-
+quality and frequency research, volatility modelling, exit/tail-risk
+research, portfolio concentration controls, regime/event-filter evaluation,
+a falsifiable strategy research backlog, ML/LLM validation without leakage,
+promotion/versioning of served models, and a full session-end daily-
+learning state machine with its own 11-point acceptance-test list).
+Attempting them in the same pass as the numbered findings above would mean
+either rushing them (producing exactly the kind of "fake edge presented as
+intelligence" this project's own honesty discipline exists to prevent) or
+not finishing the numbered findings properly first, which section 20 of the
+prompt itself says to avoid ("Complete mandatory correctness/security/data
+work before interpreting strategy improvements").
+
+Recommended next steps, in the prompt's own dependency order:
+1. Section 6 (data quality/provenance) and section 8 (execution realism) —
+   natural next since sections 1-5 (accounting/costs/calendar/backtester)
+   are now settled and these consume that work directly.
+2. Section 21 (daily learning pipeline) — the prompt's own §21A asks to
+   first *audit* the existing scheduler jobs, training scripts, and
+   learning-journal/trace infrastructure before building anything new;
+   several of the memory files in this session already describe pieces of
+   this (research/hypothesis_harness.py, the LLM research loop,
+   strategy_validator.py's registry) that a real audit pass should
+   reconcile against §21's state-machine design rather than duplicate.
+3. Sections 9-17 (research, ML validation) — genuinely require real
+   option-chain data and time-series compute this pass didn't have
+   authorization or scope to run; §15's "select at most three initial
+   experiments" is the right-sized unit of work for a future session, not
+   all of them at once.
