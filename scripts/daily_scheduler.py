@@ -23,6 +23,7 @@ from __future__ import annotations
 import logging
 import os
 import sys
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -639,6 +640,69 @@ _JOB_FNS = {
     "mcx_eod_square_off": run_mcx_eod_square_off,
 }
 
+# Section 21B: "Run CPU/GPU-heavy training away from the order/exit loop
+# with explicit resource/time budgets ... A model job must never delay
+# risk-reducing execution." These two are the only jobs that do real local
+# compute (Angel One candle fetch over a network SDK + sklearn fit across
+# up to 12 symbols / 4 horizons) rather than a bounded HTTP call to the API
+# (which already has its own short timeout via _api_post). 30 minutes is
+# generous headroom over normal runtime (a few minutes) while still
+# guaranteeing the single-threaded loop below is free again hours before
+# 23:25's mcx_eod_square_off — the one later job whose lateness would be a
+# real risk-management gap, not just a stale model.
+_JOB_TIME_BUDGET_SECONDS: dict[str, float] = {
+    "model_retrain": 1800.0,
+    "intraday_retrain": 1800.0,
+}
+
+# Tracks a still-running background thread per job name, so a job whose
+# previous run blew its budget and is still executing in the background
+# can't be started a second time concurrently (both eventually calling
+# winner.save() / _reload_neural_models() on the same artifact).
+_in_flight_job_threads: dict[str, threading.Thread] = {}
+
+
+def _run_job_with_budget(fn, budget_seconds: float, job_name: str) -> None:
+    """Run fn() with a wall-clock budget; never let the caller block past it.
+
+    fn() executes in a daemon thread. If it finishes within budget_seconds
+    its exception (if any) is re-raised here, matching a direct call. If it
+    does not, this returns anyway — the thread keeps running in the
+    background (its own save()/DB writes are unaffected) but the scheduler's
+    single-threaded main loop is free to move on to whatever is next due.
+    """
+    if job_name in _in_flight_job_threads and _in_flight_job_threads[job_name].is_alive():
+        logger.warning(
+            "%s: previous run is still executing past its budget — skipping "
+            "this invocation rather than running two concurrent trainers",
+            job_name,
+        )
+        return
+
+    outcome: dict[str, BaseException] = {}
+
+    def _target() -> None:
+        try:
+            fn()
+        except BaseException as exc:  # noqa: BLE001 - re-raised on the caller's side below
+            outcome["exc"] = exc
+
+    thread = threading.Thread(target=_target, name=f"job-{job_name}", daemon=True)
+    _in_flight_job_threads[job_name] = thread
+    thread.start()
+    thread.join(timeout=budget_seconds)
+    if thread.is_alive():
+        logger.error(
+            "%s exceeded its %.0fs time budget — moving on so later jobs "
+            "(including mcx_eod_square_off) are not delayed. It keeps "
+            "running in the background; the existing served model is kept "
+            "since nothing has called save() yet.",
+            job_name, budget_seconds,
+        )
+        return
+    if "exc" in outcome:
+        raise outcome["exc"]
+
 
 # ---------------------------------------------------------------------------
 # Main loop
@@ -677,7 +741,11 @@ def main() -> None:
 
         logger.info("Running job: %s", next_name)
         try:
-            _JOB_FNS[next_name]()
+            budget = _JOB_TIME_BUDGET_SECONDS.get(next_name)
+            if budget is not None:
+                _run_job_with_budget(_JOB_FNS[next_name], budget, next_name)
+            else:
+                _JOB_FNS[next_name]()
         finally:
             last_run_date[next_name] = _now_ist().date()
             _checkpoint_sqlite_wal()

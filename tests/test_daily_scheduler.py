@@ -11,6 +11,8 @@ window) directly, without needing to run the real scheduler loop.
 from __future__ import annotations
 
 import sys
+import threading
+import time
 import unittest
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -144,6 +146,62 @@ class AlreadyRanTodaySuppressesReselectionTests(unittest.TestCase):
                     last_run_date[job_name] = simulated_now.date()
 
         self.assertEqual(run_count, 1)
+
+
+class JobTimeBudgetTests(unittest.TestCase):
+    """Section 21B: 'A model job must never delay risk-reducing execution.'
+
+    The scheduler's main loop is single-threaded — without a bound, a hang
+    inside model_retrain/intraday_retrain (e.g. the Angel One SDK never
+    returning) would starve every later job that day, including
+    mcx_eod_square_off at 23:25, a real risk-reducing close-out. These
+    tests guard _run_job_with_budget() directly, without needing the real
+    scheduler loop or real training code.
+    """
+
+    def tearDown(self):
+        daily_scheduler._in_flight_job_threads.clear()
+
+    def test_a_fast_job_returns_normally_within_budget(self):
+        calls = []
+        daily_scheduler._run_job_with_budget(lambda: calls.append(1), budget_seconds=5.0, job_name="fast_job")
+        self.assertEqual(calls, [1])
+
+    def test_a_job_exceeding_its_budget_does_not_block_the_caller(self):
+        release = threading.Event()
+
+        def _slow():
+            release.wait(timeout=5.0)  # would hang the caller without the budget
+
+        start = time.monotonic()
+        daily_scheduler._run_job_with_budget(_slow, budget_seconds=0.05, job_name="slow_job")
+        elapsed = time.monotonic() - start
+
+        self.assertLess(elapsed, 1.0)  # returned near-instantly, not after the 5s wait
+        release.set()  # let the background thread finish so it doesn't leak into other tests
+
+    def test_an_exception_inside_the_job_still_propagates_when_within_budget(self):
+        def _boom():
+            raise ValueError("synthetic training failure")
+
+        with self.assertRaises(ValueError):
+            daily_scheduler._run_job_with_budget(_boom, budget_seconds=5.0, job_name="failing_job")
+
+    def test_a_second_invocation_is_skipped_while_the_first_is_still_running_past_budget(self):
+        release = threading.Event()
+        call_count = 0
+
+        def _slow():
+            nonlocal call_count
+            call_count += 1
+            release.wait(timeout=5.0)
+
+        daily_scheduler._run_job_with_budget(_slow, budget_seconds=0.05, job_name="overlap_job")
+        # Second invocation while the first is still alive in the background.
+        daily_scheduler._run_job_with_budget(_slow, budget_seconds=0.05, job_name="overlap_job")
+
+        self.assertEqual(call_count, 1)  # the second call was skipped, not started
+        release.set()
 
 
 if __name__ == "__main__":
