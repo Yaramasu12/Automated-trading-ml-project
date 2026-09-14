@@ -330,3 +330,145 @@ on, neither of which exists yet in this deployment.
 Tests: `tests/test_runtime.py::test_daily_learning_report_reads_back_todays_model_runs`,
 `::test_daily_learning_report_has_required_top_level_sections`. Full suite:
 1469 passed.
+
+## Section 21B — bounded time budget for training jobs (fixed)
+
+`scripts/daily_scheduler.py`'s main loop is single-threaded and sequential
+with no timeout anywhere around a job call. `model_retrain` (16:15) and
+`intraday_retrain` (16:30) do real local compute (an Angel One candle fetch
+through the third-party SmartConnect SDK + a sklearn fit across up to 12
+symbols / 4 horizons), unlike every other job, which only makes a
+short-timeout HTTP call via `_api_post`. A hang in either — most plausibly
+a network stall inside the SDK, which this codebase doesn't control —
+would silently starve every job scheduled later that day, including
+`mcx_eod_square_off` at 23:25: a genuine risk-reducing close-out for
+commodity positions, not merely a stale model. This matches §21B almost
+verbatim: "Run CPU/GPU-heavy training away from the order/exit loop with
+explicit resource/time budgets ... A model job must never delay
+risk-reducing execution."
+
+Added `_run_job_with_budget()`: runs the job in a daemon thread and joins
+with a 30-minute budget (generous over the normal few-minute runtime,
+while guaranteeing the loop is free again hours before 23:25). If the
+budget is exceeded the main loop moves on instead of blocking; a
+re-entrancy guard prevents a second invocation from starting a concurrent
+second trainer if the first is still running past its budget. Scoped only
+to the two training jobs.
+
+Tests: `tests/test_daily_scheduler.py::JobTimeBudgetTests` (4 new). Full
+suite: 1473 passed. Deployed live (both containers rebuilt from the same
+commit, per this session's own established practice of not letting the
+two images drift — see the Ganesh Chaturthi incident).
+
+## Section 21D — audit: are labels only built when outcomes are observable?
+
+Checked `trading_platform/trace/label_factory.py::OutcomeFactory` (the only
+place trade outcome labels are computed) against §21D's requirement that
+open multi-day positions must stay pending, never get a manufactured label.
+
+**Compliant by construction.** `compute_exit_label()` is the only place an
+`OutcomeLabel` is created, and it does `self._pending.pop(symbol, None)` —
+if no exit fill has happened yet it returns `None` and the entry simply
+stays in `_pending` (exposed via `pending_symbols()`). Confirmed via grep
+that the only production caller is `runtime.py`'s `_on_fill`, gated on
+`intent.priority != OrderPriority.ENTRY` — i.e. a genuine exit fill, never
+a session-close snapshot or synthetic mark. No EOD/session-close code path
+calls `compute_exit_label()` at all.
+
+**Real gap found**: §21D also asks that horizon-based *forecast* labels
+("a five-session prediction issued today cannot become a realized target
+tonight") mature only after the full horizon elapses. No such mechanism
+exists anywhere — there is no code that logs a live forecast with its
+horizon and later, once enough sessions have passed, scores it against the
+realized outcome. `return_forecaster.py`/`intraday_forecaster.py`'s own
+validation is entirely offline (walk-forward backtest at training time);
+nothing scores predictions the running process actually issued live. Not
+fixed this pass — recorded as a genuine, scoped gap for a future session
+(needs a small forecast-log table + a scheduled maturity-check job, not a
+full rebuild).
+
+## Section 21H — audit: leakage-safe validation (real bug found and fixed)
+
+Checked `return_forecaster.py`/`intraday_forecaster.py`'s walk-forward
+validation against §21H: "Preserve time ordering; purge observations whose
+label intervals overlap evaluation boundaries ... A simple time-series
+split alone does not automatically solve all overlapping-label leakage."
+
+The split itself IS a proper expanding-window walk-forward (`X[:train_end]`
+train, `X[train_end:test_end]` test, strictly chronological, no shuffling)
+— time ordering is preserved. But `_build_rows()` computes each row `i`'s
+label from `closes[i + horizon]` — a forward-looking horizon. Without a
+purge, the training rows immediately before a fold boundary (`train_end -
+horizon` through `train_end - 1`) have labels computed from prices at or
+past `train_end` — i.e. inside the test block. This is a real overlapping-
+label leak, present in BOTH forecasters (identical code shape), for every
+horizon greater than 1 — which includes 3 of the 4 swept horizons in
+`RETRAIN_HORIZONS`/`INTRADAY_HORIZONS`.
+
+**Fix**: `_walk_forward_metrics()` in both files gained an `embargo`
+parameter; each fold's training slice is now `X[:train_end - embargo]`
+instead of `X[:train_end]` (the test slice is unchanged — only the
+contaminated training tail is cut). `_fit_validate()` in both classes now
+passes `embargo=self._horizon`. For the currently-used `DEFAULT_HORIZON=1`
+the practical effect is a 1-row purge per fold (negligible); the fix
+matters for the sweep's larger horizons (3/5/10), where it removes a
+real, previously-unaccounted-for source of optimistic bias in the walk-
+forward AUC estimate.
+
+Tests: `tests/test_return_forecaster.py::test_walk_forward_embargo_purges_the_contaminated_training_tail`,
+`tests/test_intraday_forecaster.py::test_walk_forward_embargo_purges_the_contaminated_training_tail`
+— both assert the exact purged training-set size per fold via a recording
+fake model, independent of stochastic classifier behavior. Full suite:
+1475 passed.
+
+## Sections 21E, F, G, I, K and the full §21B state machine — audited, not built
+
+- **21E** (separate evaluation from conditional retraining): the current
+  "daily candidate build" (unconditional nightly sweep + independent
+  validation/promotion gate) is one of §21E's two explicitly *permitted*
+  modes ("Permit a configured daily candidate build when enough
+  data/resources exist, while preserving independent validation and
+  promotion gates") — compliant. Not compliant: the per-model windows/
+  horizons/thresholds are hardcoded constants, not centrally configured
+  with documented units/rationale as §21E asks. Left as-is; a config
+  surface for these is real but lower-value work (nothing currently
+  depends on tuning them per-model).
+- **21F** (train model families appropriately): return/intraday direction
+  models already match 21F.1's requirements (baseline comparison,
+  cost-adjusted usefulness is implicit in the acceptance gate, absent
+  artifact stays absent). No meta-label ML model, execution model, or RL
+  policy is enabled by default — compliant with "do not enable every
+  family by default."
+- **21G** (agent learning definitions): `ReflectionEngine` already
+  implements bounded EMA agent-weight updates with shrinkage (see its own
+  `WEIGHT_MIN`/`WEIGHT_MAX`/`EMA_ALPHA`) — matches 21G's "agent scoring"
+  definition. No LLM fine-tuning exists anywhere (correct — 21G explicitly
+  prohibits nightly fine-tuning on a handful of trade summaries).
+- **21I** (immutable versioned promotion registry): `NeuralPredictionService`
+  in `serving.py` already has `ModelVersionRecord`/`pin_version`/
+  `promote_to_champion`/`WarmStandbyCache` — a real, if partial, version-
+  pinning and warm-standby-rollback mechanism — but it has no checksum
+  validation, no dataset-hash/code-revision stamping, and (per the
+  Section 21A fix) was until this session not even reachable from the
+  nightly retrain jobs. `StrategyPromotionService` separately tracks
+  strategy-level (not model-level) promotion with its own gate/rollback.
+  Two different registries at two different granularities; no single
+  registry authority as §21I asks for. Not unified this pass.
+- **21K** (acceptance tests for the full lifecycle): some of §21K's listed
+  scenarios are independently covered by existing/new tests (open trades
+  stay pending — `test_return_forecaster.py`/`test_intraday_forecaster.py`'s
+  random-walk rejection covers "no genuine edge produces a truthful skip,
+  not a fabricated pass"; §21H's embargo tests cover "training-only
+  preprocessing and purged label boundaries prevent leakage"). There is no
+  single test file demonstrating the full 9-state lifecycle end-to-end,
+  because that lifecycle (§21B) does not exist as one implemented thing to
+  test.
+- **§21B's actual state machine** (`SESSION_ACTIVE -> ... ->
+  NEXT_SESSION_READY`, DB leases, idempotent stages, checkpoints, resumable
+  stages) remains unbuilt. This is the one piece of Section 21 that is
+  genuinely new architecture, not integration repair — building it without
+  a second validated model or real option-chain data to exercise it against
+  would mean testing a lot of new machinery against the same "no edge
+  found yet" data this deployment already has, which does not by itself
+  justify the engineering cost right now. Recorded as the clear next step
+  if/when a second model family earns real promotion pressure.

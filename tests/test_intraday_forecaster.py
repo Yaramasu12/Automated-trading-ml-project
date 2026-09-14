@@ -8,10 +8,14 @@ predict from the wrong data frequency (daily bars → None).
 from __future__ import annotations
 
 from datetime import datetime, timedelta
+from unittest.mock import patch
 
 import numpy as np
 
-from trading_platform.neural.intraday_forecaster import IntradayReturnForecaster
+from trading_platform.neural.intraday_forecaster import (
+    IntradayReturnForecaster,
+    _walk_forward_metrics,
+)
 
 BARS_PER_DAY = 75   # ~09:15–15:30 in 5-min bars
 
@@ -111,6 +115,49 @@ def test_predict_shape_when_trained():
     assert 0.05 <= pred.direction_probability <= 0.95
     assert 0.0 <= pred.model_uncertainty <= 1.0
     assert pred.model_id == "intraday_gbm_v1"
+
+
+class _RecordingModel:
+    """Fake sklearn-compatible model recording the training-set size it was
+    fit on, so the purge boundary can be checked exactly without depending
+    on stochastic classifier behavior."""
+
+    fit_sizes: list[int] = []
+
+    def fit(self, X, y):
+        _RecordingModel.fit_sizes.append(len(X))
+        self.classes_ = np.array(sorted(set(y.tolist())))
+        return self
+
+    def predict_proba(self, X):
+        return np.full((len(X), len(self.classes_)), 1.0 / max(len(self.classes_), 1))
+
+
+def test_walk_forward_embargo_purges_the_contaminated_training_tail():
+    """Regression 2026-09-14 (Section 21H audit): same overlapping-label leak
+    as neural/return_forecaster.py's identical fix — each row's label looks
+    `horizon` bars ahead, so without a purge the training tail immediately
+    before a fold boundary peeks into the test block. embargo=N must drop
+    exactly the last N rows from every fold's training slice."""
+    n = 3000
+    rng = np.random.default_rng(0)
+    X = rng.normal(size=(n, 3))
+    y = rng.integers(0, 2, size=n)
+    n_splits = 6
+    fold = n // (n_splits + 1)
+    embargo = 12
+
+    _RecordingModel.fit_sizes = []
+    with patch(
+        "trading_platform.neural.intraday_forecaster._make_model",
+        return_value=_RecordingModel(),
+    ):
+        _walk_forward_metrics(X, y, n_splits, random_state=42, embargo=embargo)
+
+    assert _RecordingModel.fit_sizes
+    for k, observed_size in enumerate(_RecordingModel.fit_sizes, start=1):
+        train_end = fold * k
+        assert observed_size == train_end - embargo
 
 
 def test_save_load_roundtrip(tmp_path):

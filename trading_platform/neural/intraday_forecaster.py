@@ -184,8 +184,16 @@ def _make_model(random_state: int):
     )
 
 
-def _walk_forward_metrics(X: np.ndarray, y: np.ndarray, n_splits: int, random_state: int) -> dict | None:
-    """Expanding-window walk-forward: train on the past, score the next block."""
+def _walk_forward_metrics(
+    X: np.ndarray, y: np.ndarray, n_splits: int, random_state: int, embargo: int = 0,
+) -> dict | None:
+    """Expanding-window walk-forward: train on the past, score the next block.
+
+    embargo: see the identical parameter in neural/return_forecaster.py's
+    _walk_forward_metrics — each row's label looks `horizon` bars ahead, so
+    without a purge the last `horizon` training rows before a fold boundary
+    peek across it into the test block (Section 21H audit, 2026-09-14).
+    """
     try:
         from sklearn.metrics import roc_auc_score
     except Exception as exc:
@@ -207,7 +215,8 @@ def _walk_forward_metrics(X: np.ndarray, y: np.ndarray, n_splits: int, random_st
         test_end = min(fold * (k + 1), n)
         if test_end - train_end < 20:
             continue
-        X_tr, y_tr = X[:train_end], y[:train_end]
+        purged_train_end = max(0, train_end - embargo)
+        X_tr, y_tr = X[:purged_train_end], y[:purged_train_end]
         X_te, y_te = X[train_end:test_end], y[train_end:test_end]
         if len(np.unique(y_tr)) < 2 or len(np.unique(y_te)) < 2:
             continue
@@ -321,7 +330,7 @@ class IntradayReturnForecaster:
             self._accepted = False
             return False
 
-        metrics = _walk_forward_metrics(X, y, n_splits, random_state)
+        metrics = _walk_forward_metrics(X, y, n_splits, random_state, embargo=self._horizon)
         if metrics is None:
             self._last_metrics = {"rejected": True, "reason": "walk_forward_unavailable"}
             self._accepted = False
