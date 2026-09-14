@@ -91,6 +91,14 @@ class SimulatedBrokerClient(BrokerClient):
     _LIVE_PRICE_MAX_RATIO_VS_SIGNAL = 5.0
     _LIVE_PRICE_MIN_RATIO_VS_SIGNAL = 0.2
 
+    # AUDIT_REPORT.md section 6: "detect stale... quotes... assess freshness
+    # for each traded option leg". A tick this old during an active fill
+    # decision means the feed connection has effectively gone quiet for this
+    # symbol — generous on purpose (NSE options can legitimately go a minute
+    # or two between prints when illiquid) so this only catches a genuinely
+    # stopped/stuck feed, not normal quiet periods.
+    _LIVE_PRICE_MAX_STALENESS_SECONDS = 300.0
+
     def set_live_feed(self, live_feed) -> None:
         """Wire in the Angel One live tick feed for real-time fill prices."""
         self._live_feed = live_feed
@@ -109,6 +117,24 @@ class SimulatedBrokerClient(BrokerClient):
             tick = self._live_feed.latest_tick(symbol)
             if tick and getattr(tick, "last_price", 0) > 0:
                 price = float(tick.last_price)
+                tick_ts = getattr(tick, "timestamp", None)
+                if tick_ts is not None:
+                    # Missing tzinfo (a naive test double, or an upstream
+                    # parsing gap) is not itself grounds to reject the tick —
+                    # only a CONFIRMED stale age is.
+                    now = datetime.now(tick_ts.tzinfo) if tick_ts.tzinfo else datetime.now()
+                    age_seconds = (now - tick_ts).total_seconds()
+                    if age_seconds > self._LIVE_PRICE_MAX_STALENESS_SECONDS:
+                        logger.warning(
+                            "SimulatedBrokerClient: rejecting stale live tick for %s: "
+                            "%.0fs old (limit %.0fs) — using signal price instead",
+                            symbol, age_seconds, self._LIVE_PRICE_MAX_STALENESS_SECONDS,
+                        )
+                        note_swallowed(
+                            "simulated_broker.stale_live_price",
+                            ValueError(f"{symbol}: tick age {age_seconds:.0f}s exceeds {self._LIVE_PRICE_MAX_STALENESS_SECONDS:.0f}s"),
+                        )
+                        return None
                 if sanity_reference_price and sanity_reference_price > 0:
                     ratio = price / sanity_reference_price
                     if ratio > self._LIVE_PRICE_MAX_RATIO_VS_SIGNAL or ratio < self._LIVE_PRICE_MIN_RATIO_VS_SIGNAL:

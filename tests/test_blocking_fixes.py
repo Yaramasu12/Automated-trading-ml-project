@@ -406,6 +406,47 @@ class ImplausibleLivePriceRegressionTests(unittest.TestCase):
         result = broker.submit_order(intent)
         self.assertTrue(result.raw["live_price_used"])
 
+    class _TimestampedFeed:
+        """A fake feed whose tick carries a real timestamp, for the
+        staleness check -- audit_results/2026-09-13/AUDIT_REPORT.md section 6
+        ('detect stale... quotes... assess freshness for each traded option
+        leg')."""
+        def __init__(self, price: float, age_seconds: float):
+            from datetime import datetime, timedelta, timezone
+            self._price = price
+            self._ts = datetime.now(timezone.utc) - timedelta(seconds=age_seconds)
+
+        def latest_tick(self, symbol):
+            class _T:
+                pass
+            t = _T()
+            t.last_price = self._price
+            t.timestamp = self._ts
+            return t
+
+    def test_a_stale_tick_is_rejected_even_if_the_price_looks_plausible(self):
+        broker = SimulatedBrokerClient(spread_bps=0.0, impact_bps_per_unit=0.0, noise_bps=0.0)
+        broker.set_live_feed(self._TimestampedFeed(39.0, age_seconds=600))  # 10 min old
+        intent = _make_intent(Side.BUY, price=38.0, quantity=1)
+        result = broker.submit_order(intent)
+        self.assertFalse(result.raw["live_price_used"])
+
+    def test_a_fresh_tick_is_used_normally(self):
+        broker = SimulatedBrokerClient(spread_bps=0.0, impact_bps_per_unit=0.0, noise_bps=0.0)
+        broker.set_live_feed(self._TimestampedFeed(39.0, age_seconds=5))
+        intent = _make_intent(Side.BUY, price=38.0, quantity=1)
+        result = broker.submit_order(intent)
+        self.assertTrue(result.raw["live_price_used"])
+
+    def test_a_tick_with_no_timestamp_attribute_is_not_rejected_for_staleness(self):
+        # Backward compatible with any feed double/adapter that doesn't
+        # carry a timestamp at all -- absence is not evidence of staleness.
+        broker = SimulatedBrokerClient(spread_bps=0.0, impact_bps_per_unit=0.0, noise_bps=0.0)
+        broker.set_live_feed(self._FakeFeed(39.0))  # no .timestamp set
+        intent = _make_intent(Side.BUY, price=38.0, quantity=1)
+        result = broker.submit_order(intent)
+        self.assertTrue(result.raw["live_price_used"])
+
 
 # ---------------------------------------------------------------------------
 # M2 + B4 lookahead: BacktestEngine no longer trades at the same close used to

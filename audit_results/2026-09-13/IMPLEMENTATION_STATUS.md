@@ -67,6 +67,43 @@ test and the full backend suite (1454 tests) plus frontend build/tests
 were green after each one. Nothing here was merged into main without
 running the suite first.
 
+## Section 6/8 (data quality, execution realism) — started
+
+Triggered by a real live incident on 2026-09-14 (Ganesh Chaturthi — see
+memory `ganesh-chaturthi-holiday-incident-2026-09-14.md`): the calendar fix
+hadn't been deployed before the date it protected, and a live-feed
+auto-start gap let the feed run on a real holiday, producing a corrupted
+quote (~18x the strategy's own signal price) that a fill used verbatim,
+tripping the kill switch on a data-integrity artifact rather than a market
+loss. Both immediate triggers are fixed (commits `1fd783d`, `c753a5a`,
+deployed and verified), but the underlying "trust any live tick
+unconditionally" gap in `SimulatedBrokerClient._live_price()` was still
+live — fixed as its own, more general hardening:
+
+- **Implausible price rejection** (section 8): a live tick more than 5x
+  above or 1/5 below the strategy's own signal price for the same
+  instrument is rejected and the fill falls back to the signal price
+  instead — logged and recorded via `note_swallowed`, not silent. Wide
+  enough that real volatility (options doubling/tripling) is never
+  rejected. Applies to every fill path including the resting-limit
+  `order_status` poll.
+- **Staleness rejection** (section 6 — "detect stale... quotes... assess
+  freshness for each traded option leg"): a tick older than 5 minutes is
+  similarly rejected. Missing timestamp metadata (an adapter/test double
+  that doesn't carry one) is not itself grounds for rejection — only a
+  confirmed stale age is.
+
+Tests: `tests/test_blocking_fixes.py` (+12 across both checks). Full suite:
+1465 passed. Deployed and verified live (redeployed trading-api, confirmed
+healthy, kill switch stayed clear).
+
+**Not done**: the much larger remaining scope of sections 6/7/8 —
+exchange-vs-receive-vs-decision timestamps as distinct recorded fields,
+sequence-gap/duplicate/crossed-book detection, corporate-action/symbol-
+change point-in-time validation, and a real historical option-chain data
+source — are architecture-level programs, not follow-on patches to this
+one incident.
+
 ## Sections 12-21 (implementation prompt) — status
 
 **Not started.** These are not individual bugs — they are large, multi-week
