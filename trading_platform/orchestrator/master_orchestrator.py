@@ -1052,7 +1052,26 @@ class MasterOrchestrator:
 
     # ── Node 8: Goal Governor ──────────────────────────────────────────────────
 
-    # Map GoalGovernor recommendation strings to orchestrator sizing directives
+    # Map GoalGovernor recommendation strings to orchestrator sizing directives.
+    #
+    # SAFETY (audit finding, Section 19, 2026-09-14): GoalGovernor's own module
+    # docstring says "SAFETY: GoalGovernor can NEVER automatically raise hard
+    # risk limits. It can only recommend increasing research intensity or
+    # reducing risk" — but this node previously mapped its "increase_research"
+    # recommendation (falling behind the configurable YEARLY_PROFIT_TARGET) to
+    # "SCALE_UP", which multiplied position_size_multiplier up to 1.5x, which
+    # trading_agent.py multiplies directly into real order quantity. Falling
+    # behind an arbitrary, user-configurable profit target was silently
+    # widening real order sizes — exactly the "automatic risk escalation"
+    # Section 19 explicitly prohibits, and a direct contradiction of
+    # GoalGovernor's own contract. "Research intensity" must mean more
+    # backtesting/hypothesis generation (scripts/scheduled_research_session.py
+    # already exists for that), never bigger live orders. SCALE_UP is kept
+    # here only as a REPORTED label (dashboards can show "behind target,
+    # research recommended" per Section 19's "show why" requirement) — it no
+    # longer feeds the multiplier. REDUCE/PRESERVATION are unaffected: cutting
+    # size when behind target AND low on drawdown budget is risk reduction,
+    # not escalation, and stays.
     _GOAL_REC_MAP = {
         "normal": "MAINTAIN",
         "increase_research": "SCALE_UP",
@@ -1082,9 +1101,10 @@ class MasterOrchestrator:
                     recommendation = self._GOAL_REC_MAP.get(raw_rec, "MAINTAIN")
                     on_track = bool(gs.get("on_track", True))
 
-                if recommendation == "SCALE_UP":
-                    multiplier = min(1.5, 1.0 + (1.0 - state.neural_uncertainty) * 0.5)
-                elif recommendation == "REDUCE":
+                # SCALE_UP is deliberately NOT handled here — see the safety
+                # note above _GOAL_REC_MAP. Only REDUCE/PRESERVATION may move
+                # the multiplier, and only downward.
+                if recommendation == "REDUCE":
                     multiplier = max(0.5, state.neural_uncertainty)
                 elif recommendation == "PRESERVATION":
                     multiplier = 0.25

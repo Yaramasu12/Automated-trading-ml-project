@@ -498,3 +498,45 @@ fake model, independent of stochastic classifier behavior. Full suite:
   found yet" data this deployment already has, which does not by itself
   justify the engineering cost right now. Recorded as the clear next step
   if/when a second model family earns real promotion pressure.
+
+## Section 19 — real bug found and fixed: goal-shortfall was driving automatic risk escalation
+
+Auditing §19's explicit requirement ("Replace the hardcoded annual-profit
+target with a user-configurable planning input that **cannot drive
+automatic risk escalation**") surfaced a live, active violation, not a
+documentation gap: `YEARLY_PROFIT_TARGET` was already env-configurable
+(`config.py`), but `GoalGovernor.compute_state()`'s `"increase_research"`
+recommendation (emitted whenever the account is behind the yearly target)
+was mapped by `MasterOrchestrator._node_goal_governor()` to `"SCALE_UP"`,
+which multiplied `position_size_multiplier` up to **1.5x**, which
+`trading_agent.py:1068-1071` multiplies directly into real order quantity:
+`max(1, int(default_quantity * state.position_size_multiplier))`.
+
+In plain terms: falling behind an arbitrary, user-configurable profit
+target was silently widening real order sizes by up to 50% — the exact
+"automatic risk escalation" §19 prohibits, and a direct contradiction of
+`GoalGovernor`'s own module docstring ("SAFETY: GoalGovernor can NEVER
+automatically raise hard risk limits. It can only recommend increasing
+research intensity or reducing risk"). "Research intensity" was never
+actually about running more backtests/hypotheses
+(`scripts/scheduled_research_session.py` already exists for that); it was
+silently translated into bigger live bets. Currently reachable only when
+`AGENT_DIRECTIONAL_ENABLED=true` (off by default), but this deployment
+already runs live paper trading, and this was a landmine that would
+activate the moment directional trading is turned on — worth fixing
+regardless of today's gating, matching this session's established practice
+of not leaving a discovered risk path for later.
+
+**Fix**: `_node_goal_governor()` no longer has any code path that can
+raise the multiplier above 1.0 — the `SCALE_UP` branch's multiplier boost
+was deleted outright (not just remapped). `REDUCE`/`PRESERVATION` (which
+only ever shrink the multiplier) are unaffected — de-escalating size when
+behind target and low on drawdown budget is legitimate risk management,
+not the kind of escalation §19 prohibits. `"SCALE_UP"` is still reported in
+`goal_recommendation` for dashboard transparency (§19: "show why") — it
+simply no longer feeds sizing.
+
+Tests: `tests/test_master_orchestrator_goal_governor_node.py` (3 new) —
+directly assert `increase_research` can never push the multiplier above
+1.0, `reduce_risk` still shrinks it, and `normal` leaves it unchanged. Full
+suite: 1479 passed. Deployed live.
