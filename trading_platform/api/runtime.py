@@ -5177,10 +5177,25 @@ class TradingRuntime:
         """
         session_date = as_of or now_ist().date()
 
+        def _run_at_ist_date(run_at: Any) -> date | None:
+            # run_at is persisted as a UTC ISO timestamp (save_model_run());
+            # comparing its raw date substring against an IST session_date is
+            # wrong for roughly 5.5 hours a day (IST is UTC+5:30, so IST's
+            # calendar date rolls over to "tomorrow" while UTC's is still
+            # "today") — found while exercising this method for real during
+            # the 2026-09-14 audit session. No *scheduled* job can ever
+            # actually straddle that window (earliest is 08:55 IST = 03:25
+            # UTC, latest 23:25 IST = 17:55 UTC), but this must still use
+            # to_ist() like the rest of the codebase, not a string slice.
+            try:
+                return to_ist(datetime.fromisoformat(str(run_at))).date()
+            except (ValueError, TypeError):
+                return None
+
         model_runs = self.db.recent_model_runs(limit=100)
         todays_model_runs = [
             r for r in model_runs
-            if str(r.get("run_at", ""))[:10] == session_date.isoformat()
+            if _run_at_ist_date(r.get("run_at")) == session_date
         ]
 
         pnl_rows = self.db.daily_pnl_history(limit=1)

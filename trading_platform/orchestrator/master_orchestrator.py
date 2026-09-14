@@ -993,6 +993,13 @@ class MasterOrchestrator:
         uncertainty_penalty = max(0.0, state.neural_uncertainty - 0.5) * 0.5
         tail_risk_penalty = state.neural_tail_risk * 0.3
         correlation_penalty = state.neural_correlation_risk * 0.2
+        # Node 4 (_node_risk_critic) computes risk_score = max(drawdown, daily_loss_pct)
+        # specifically "so Node 7 can weight it" (see its own comment) — but nothing
+        # downstream ever read it (found in the 2026-09-14 Section 19 audit sweep for
+        # advisory signals with no real effect). The hard breach halts in Node 4 are
+        # unaffected either way; this makes the soft approach to those limits actually
+        # reduce confidence too, instead of a pure binary "breached / ignored" gap.
+        risk_penalty = state.risk_score * 0.3
 
         # ── Ensemble weights (adaptive) ──────────────────────────────────
         w_crew = sum(weights.get(n, 1.0) for n in ["TrendAnalyst", "MeanReversionSpecialist", "QuantitativeStrategist"]) / 3
@@ -1008,7 +1015,9 @@ class MasterOrchestrator:
         ) / w_total
 
         # Apply penalties
-        fusion_penalised = fusion_raw - uncertainty_penalty - tail_risk_penalty - correlation_penalty
+        fusion_penalised = (
+            fusion_raw - uncertainty_penalty - tail_risk_penalty - correlation_penalty - risk_penalty
+        )
 
         # Map to [0, 1] score
         fusion_score = (fusion_penalised + 1) / 2
@@ -1019,7 +1028,7 @@ class MasterOrchestrator:
             f"neural={neural_score:.3f}",
             f"rag={rag_score:.3f}",
             f"rl={rl_avg:.3f}(n={rl_vote_count})",
-            f"penalties={uncertainty_penalty + tail_risk_penalty + correlation_penalty:.3f}",
+            f"penalties={uncertainty_penalty + tail_risk_penalty + correlation_penalty + risk_penalty:.3f}",
             f"fusion={fusion_score:.3f}",
         ]
 

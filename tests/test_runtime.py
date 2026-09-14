@@ -4,7 +4,7 @@ import asyncio
 import dataclasses
 import tempfile
 import unittest
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 from unittest.mock import Mock
 
@@ -1015,6 +1015,40 @@ class RuntimeTests(unittest.TestCase):
             any(r["model_name"] == "return_forecaster" and r["signal"] == "rejected" for r in runs)
         )
         self.assertEqual(runs[0]["metadata"]["horizon"], 3)  # JSON round-trips as a dict, not a string
+
+    def test_daily_learning_report_matches_todays_model_runs_across_the_utc_ist_boundary(self):
+        """Regression 2026-09-14: found live while exercising daily_learning_report()
+        at 02:44 IST (21:14 UTC the previous day) — run_at is persisted as a UTC
+        ISO timestamp, so comparing its raw date substring against an IST
+        session_date is wrong for the ~5.5 hours/day where IST's calendar date has
+        already rolled to "tomorrow" while UTC's has not. No *scheduled* job can
+        ever straddle that window in practice (earliest 08:55 IST = 03:25 UTC,
+        latest 23:25 IST = 17:55 UTC), which is exactly why this shipped unnoticed
+        — but the comparison must use to_ist() like the rest of the codebase does,
+        not a string slice, for any manually-triggered or future ad-hoc use."""
+        runtime = TradingRuntime()
+        # 21:14 UTC = 02:44 IST the *next* calendar day.
+        run_at_utc = datetime(2026, 9, 14, 21, 14, 0, tzinfo=timezone.utc)
+        runtime.db.save_model_run(
+            model_name="intraday_forecaster", symbol="__POOLED__",
+            signal="accepted", confidence=0.53, metadata={},
+        )
+        # save_model_run() always stamps "now" — reach in and correct the one
+        # row's run_at to the exact boundary-straddling instant under test,
+        # via the same public read path daily_learning_report() itself uses.
+        raw_before = runtime.db.recent_model_runs(limit=1)
+        self.assertEqual(len(raw_before), 1)
+        with runtime.db._cursor() as cur:
+            cur.execute(
+                runtime.db._p("UPDATE model_runs SET run_at = ? WHERE id = ?"),
+                (run_at_utc.isoformat(), raw_before[0]["id"]),
+            )
+
+        ist_session_date = date(2026, 9, 15)  # the IST calendar date at that instant
+        report = runtime.daily_learning_report(as_of=ist_session_date)
+
+        runs = report["model_retrains_today"]["runs"]
+        self.assertTrue(any(r["model_name"] == "intraday_forecaster" for r in runs))
 
     def test_daily_learning_report_has_required_top_level_sections(self):
         runtime = TradingRuntime()

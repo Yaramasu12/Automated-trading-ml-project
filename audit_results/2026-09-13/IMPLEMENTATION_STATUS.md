@@ -540,3 +540,49 @@ Tests: `tests/test_master_orchestrator_goal_governor_node.py` (3 new) —
 directly assert `increase_research` can never push the multiplier above
 1.0, `reduce_risk` still shrinks it, and `normal` leaves it unchanged. Full
 suite: 1479 passed. Deployed live.
+
+## Follow-up sweep for other advisory-signal-with-no-effect gaps
+
+Having found the goal-governor escalation bug by asking "does an advisory
+signal quietly affect real risk beyond intended bounds," swept the rest of
+`master_orchestrator.py`'s 9 nodes for the same shape of bug (in both
+directions — a signal that should matter but doesn't, and one that
+shouldn't matter but does):
+
+- `_node_risk_critic` (Node 4) already halts directly and unconditionally
+  on drawdown/daily-loss breach — correct, no gap.
+- `_node_strategy_selection`'s validated-strategy quantity is correctly
+  NOT rescaled by `position_size_multiplier` in `_node_execution_plan` —
+  a real, risk-approved strategy quantity should not be arbitrarily
+  resized by an advisory goal signal. Correct as-is.
+- **Real gap found**: `_node_risk_critic` computes `risk_score = max(drawdown,
+  daily_loss_pct)` specifically "so Node 7 can weight it" per its own
+  comment — but nothing downstream ever read `state.risk_score`. Not a
+  safety hole (the hard breach halts happen inline, in the same node,
+  regardless), but a real gap between a documented design intent and the
+  actual code: the fusion score gave zero extra weight to drawdown/daily-
+  loss proximity below the hard breach threshold. Fixed by folding
+  `risk_score * 0.3` into `_node_consensus_fusion`'s existing penalty term
+  (same pattern as its uncertainty/tail-risk/correlation penalties) — a
+  rising risk_score now measurably reduces `fusion_score`, and can tip an
+  otherwise-proceeding signal into HOLD before any hard limit is breached.
+
+Tests: `tests/test_master_orchestrator_consensus_fusion_node.py` (2 new) —
+confirm a nonzero risk_score reduces fusion_score by the exact expected
+amount, and that a high (sub-breach) risk_score can tip a borderline signal
+below `FUSION_PROCEED_THRESHOLD` into a halt.
+
+**Also found and fixed while exercising the new report live**: a real
+UTC/IST timezone bug in `daily_learning_report()` itself (Section 21J,
+this session's own earlier work) — `model_runs.run_at` is persisted as a
+UTC timestamp, but the "today's runs" filter compared its raw date
+substring against an IST `session_date`, which is wrong for the ~5.5
+hours/day where IST's calendar date has already rolled to "tomorrow" while
+UTC's has not (IST = UTC+5:30). No *scheduled* job can ever straddle that
+window in practice (earliest 08:55 IST = 03:25 UTC, latest 23:25 IST =
+17:55 UTC) — this shipped unnoticed for exactly that reason, and was only
+caught because this session happened to still be running at 02:44 IST.
+Fixed to use `to_ist()` like the rest of the codebase, not a string slice.
+Test: `tests/test_runtime.py::test_daily_learning_report_matches_todays_model_runs_across_the_utc_ist_boundary`.
+
+Full suite: 1482 passed. Deployed live.
