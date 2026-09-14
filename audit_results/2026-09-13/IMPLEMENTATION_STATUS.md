@@ -211,6 +211,15 @@ Tests: `tests/test_runtime.py::test_reload_neural_models_is_a_noop_when_neural_l
 `::test_reload_neural_models_swaps_in_a_freshly_loaded_service`. Full suite:
 1467 passed.
 
+Deployed and verified live (2026-09-14, a non-trading day — Ganesh
+Chaturthi): rebuilt and recreated `trading-api` and `trading-scheduler`;
+`docker inspect trading-scheduler` confirms the new `./models:/app/models`
+mount; `trading-api` reports `healthy`; `POST /neural/reload-models`
+returns `{"reloaded": true, "before": {...}, "after": {...}}` — both
+forecasters correctly report `available: false` since neither has ever
+validated on real data yet, matching the "no artifact exists on disk"
+state noted above.
+
 ### Finding: two same-purpose-sounding "meta-labeling" modules — one live, one fully dead code
 
 - `trading_platform/ai/meta_labeler.py::MetaLabeler` — real, live, in-process
