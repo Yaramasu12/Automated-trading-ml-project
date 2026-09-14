@@ -137,3 +137,122 @@ Recommended next steps, in the prompt's own dependency order:
    authorization or scope to run; §15's "select at most three initial
    experiments" is the right-sized unit of work for a future session, not
    all of them at once.
+
+## Section 21A — audit of the existing daily-learning infrastructure (2026-09-14)
+
+Per the prompt's own explicit instruction, this ran *before* any new pipeline
+code: "Document what each job currently does, what data it consumes, whether
+it changes weights/artifacts, and whether its output reaches serving. Repair
+missing integration instead of creating a duplicate scheduler or an unused
+trainer."
+
+### Job-by-job
+
+| Job (scripts/daily_scheduler.py) | Data | Changes weights/artifacts? | Reaches serving? |
+|---|---|---|---|
+| `daily_ai_review` (15:40) | Local LLM review of the day's trades | No — writes `status='pending'` suggestions only | N/A by design, advisory only |
+| `model_retrain` (16:15) | Real Angel One daily candles, or cached CSV; never synthetic (deliberate — see docstring) | Yes, on a validated horizon: `winner.save(MODEL_PATH)` | **No — see finding below.** Now fixed. |
+| `intraday_retrain` (16:30) | Real 5-min candles, cached-symbols-only when Angel One isn't configured | Yes, on a validated horizon: same `save()` pattern | **No — same root cause.** Now fixed. |
+| `ReflectionEngine` (agent council voting weights, `orchestrator/reflection_engine.py`) | Every resolved trade, via `reflect()` | Yes — in-process EMA update, persisted via `set_db()`/`save`, restored at startup via `load_weights_from_db()` (`runtime.py:493-494`) | Yes — same object instance serves and learns, no cross-process handoff. Confirmed correctly wired. |
+| `MetaLabeler` champion/challenger (`trading_platform/ai/meta_labeler.py`) | Every fill, via `_on_fill` → `record_outcome()` | Yes — in-process EMA per (strategy, regime) | Yes — `champion_strategies()` reads the same in-memory state. No gap. |
+| `HAR_RVForecaster` / GARCH (vol forecasting used by short_vol when `SHORTVOL_USE_VOL_FORECAST=true`) | Live ticks/bars fed via `.update()` | Yes — online OLS refit, in-process | Yes — self-contained, no separate train-then-load cycle, so this class of bug structurally can't occur here. |
+
+### Finding: nightly model retrains could never reach the live process (fixed)
+
+Two compounding bugs meant `model_retrain`/`intraday_retrain` were completely
+disconnected from what `trading-api` actually serves — worse than the
+"needs a restart" the jobs' own log lines claimed:
+
+1. **`docker-compose.yml`'s `scheduler` service never mounted `./models`**
+   (only `./data`), while `trading-api` does (`./models:/app/models`,
+   line 71). `MODEL_PATH` in both `scripts/train_return_forecaster.py` and
+   `scripts/train_intraday_forecaster.py` resolves to `/app/models/...`
+   inside the container. Without the mount, `winner.save(...)` wrote into
+   the **scheduler container's own ephemeral layer** — the file never
+   reached the host `./models` directory, so no restart of `trading-api`,
+   however performed, could ever pick it up. A scheduler container
+   rebuild/redeploy (this happened twice earlier in this same session)
+   would silently destroy any such artifact.
+2. **`NeuralPredictionService` only ever loaded forecaster artifacts once**,
+   at construction (`trading_platform/neural/serving.py:300-308`), and
+   `TradingRuntime.__init__` constructs it exactly once, at process startup
+   (`runtime.py:445-449`). No reload endpoint, periodic re-check, or
+   file-watcher existed anywhere (confirmed by grep — the only "reload"
+   hits in the whole runtime are `TraceStore`'s own unrelated startup
+   reload). `GradientBoostedReturnForecaster.load()` (`return_forecaster.py:381`)
+   is a plain eager `joblib.load` into `self._model`, not a lazy/mtime-aware
+   loader.
+
+Net effect: even a genuinely validated, promoted model would sit on disk
+(or not even that, per #1) forever, while the live process kept serving the
+MA baseline — with no operator-visible signal that "promoted" didn't mean
+"live." This has not caused any wrong live decision to date, because every
+real run of both jobs has correctly found no OOS edge and declined to
+promote anything (daily-bar TA: AUC≈0.50; intraday as of 2026-07-26:
+0.4934-0.4970 vs a 0.5200 threshold) — `models/return_forecaster*` and
+`models/intraday_forecaster*` don't exist on disk today. This was a latent
+landmine for the day the research actually pays off, not an active loss.
+
+**Fix** (repair-in-place, not a new pipeline):
+- `docker-compose.yml`: added `./models:/app/models` to the `scheduler`
+  service's volumes.
+- `TradingRuntime.reload_neural_models()` (`runtime.py`): rebuilds
+  `self._neural_service` from the current `./models` files and swaps it in.
+- `POST /neural/reload-models` (`app.py`, auth-gated like the existing
+  `/neural/predict-preview`): exposes it.
+- `scripts/daily_scheduler.py`: `_reload_neural_models()` helper calls that
+  endpoint (via the same `_api_post` retry/auth pattern `eod_square_off`
+  already uses) right after `winner.save(...)` in both `model_retrain` and
+  `intraday_retrain`; a failed call logs a warning and explicitly states the
+  old model keeps serving until a manual restart, rather than silently
+  claiming success.
+
+Tests: `tests/test_runtime.py::test_reload_neural_models_is_a_noop_when_neural_lab_disabled`,
+`::test_reload_neural_models_swaps_in_a_freshly_loaded_service`. Full suite:
+1467 passed.
+
+### Finding: two same-purpose-sounding "meta-labeling" modules — one live, one fully dead code
+
+- `trading_platform/ai/meta_labeler.py::MetaLabeler` — real, live, in-process
+  champion/challenger EMA scorer. Correctly wired (see table above).
+- `trading_platform/ai/ml_features/meta_labeling.py::MetaLabelingConfig` +
+  its LightGBM pipeline — a complete, well-documented, walk-forward-gated
+  signal-filtering classifier (conformal prediction, isotonic calibration,
+  the platform's own deployment law spelled out in its docstring). Grepping
+  the entire tree for its class names turns up **zero callers anywhere**,
+  including its own tests.
+
+This is exactly the "unused trainer" the prompt's own audit language warns
+against building a duplicate of — one already exists, fully built, sitting
+inert. Not wiring it in now: doing so would mean putting an unvalidated
+LightGBM signal filter into the live decision path with no walk-forward run
+against real data backing it up, which is the "rushing it" trap section 20
+already warned about. Recorded here so it isn't mistaken for active
+infrastructure, and so a future session either validates and wires it
+properly or removes it — leaving inert ML code around unlabeled is itself
+a form of the "fake intelligence" this project's honesty discipline exists
+to prevent.
+
+### Confirmed healthy, no action needed
+`ReflectionEngine`, `MetaLabeler` (the real one), `HAR_RVForecaster`/GARCH —
+all in-process, self-updating, no cross-process artifact handoff, so this
+class of bug structurally cannot occur for them (see table above).
+`run_daily_ai_review` is advisory-only by design (writes `status='pending'`,
+never auto-applies) — not a gap, working as documented.
+
+### Explicitly out of scope for this pass
+`RegimeClassifier`/`MetaModel` (`runtime.py:172-178`, loaded once at startup
+gated by `settings.auto_load_models`) have the same "loaded once at
+construction" shape, but no scheduled job in `daily_scheduler.py` (or
+anywhere else) retrains them — whatever writes `models/regime_classifier*`/
+`models/meta_model.json` today is a manual/on-demand path via
+`api/regime_meta_service.py`, not part of the *daily* learning pipeline this
+section audits. Flagged for a future pass if/when that becomes automated.
+
+The rest of Section 21 (B-K: durable session-end workflow, label-maturation
+rules, a daily learning report, promotion/versioning beyond what
+`StrategyPromotionService`/`strategy_validator.py` already do) remains
+unstarted — it is new-architecture work, not integration repair, and per
+this section's own findings there is no evidence yet that the existing
+pieces need replacing rather than the specific connective-tissue gap fixed
+above.

@@ -1240,6 +1240,15 @@ def neural_predict_preview(payload: dict):
     return runtime.neural_predict_preview(payload)
 
 
+@app.post("/neural/reload-models", dependencies=[_AuthDep])
+def neural_reload_models():
+    """Re-load return_forecaster / intraday_forecaster artifacts from disk
+    into the running process, without a container restart. Called by
+    scripts/daily_scheduler.py right after a nightly retrain saves a new
+    validated artifact (see IMPLEMENTATION_STATUS.md, Section 21A)."""
+    return runtime.reload_neural_models()
+
+
 # ── Goal Governor ──────────────────────────────────────────────────────────────
 
 @app.get("/goal-governor/status")

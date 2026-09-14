@@ -209,6 +209,12 @@ services:
     command: ["python", "scripts/daily_scheduler.py"]
     volumes:
       - ./data:/app/data
+      # model_retrain / intraday_retrain save into /app/models. Without this
+      # mount they wrote into the scheduler container's own ephemeral layer —
+      # the artifact never reached trading-api's ./models mount, so the
+      # nightly retrain could never be served no matter what restarted
+      # (found 2026-09-14, Section 21A audit).
+      - ./models:/app/models
     # Inherit the same environment variables from host; no .env file mount.
     environment:
       - PYTHONUNBUFFERED=1

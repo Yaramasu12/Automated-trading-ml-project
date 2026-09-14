@@ -920,6 +920,37 @@ class RuntimeTests(unittest.TestCase):
 
         self.assertEqual(result["positions_targeted"], 1)   # only RELIANCE, not the option leg
 
+    def test_reload_neural_models_is_a_noop_when_neural_lab_disabled(self):
+        base = load_settings()
+        settings = dataclasses.replace(base, enable_neural_lab=False)
+        runtime = TradingRuntime(settings)
+
+        result = runtime.reload_neural_models()
+
+        self.assertEqual(result, {"reloaded": False, "reason": "enable_neural_lab is False"})
+        self.assertIsNone(runtime._neural_service)
+
+    def test_reload_neural_models_swaps_in_a_freshly_loaded_service(self):
+        """Regression 2026-09-14 (Section 21A audit): daily_scheduler.py's nightly
+        model_retrain / intraday_retrain jobs saved validated artifacts to disk but
+        NeuralPredictionService only ever loaded them once, at TradingRuntime
+        construction — there was no way for the already-running process to notice
+        a new file short of a full restart. reload_neural_models() (exposed as
+        POST /neural/reload-models, called by the scheduler right after save())
+        must actually replace the in-memory service, not just report status."""
+        base = load_settings()
+        settings = dataclasses.replace(base, enable_neural_lab=True)
+        runtime = TradingRuntime(settings)
+        original_service = runtime._neural_service
+        self.assertIsNotNone(original_service)
+
+        result = runtime.reload_neural_models()
+
+        self.assertTrue(result["reloaded"])
+        self.assertIn("before", result)
+        self.assertIn("after", result)
+        self.assertIsNot(runtime._neural_service, original_service)
+
 
 if __name__ == "__main__":
     unittest.main()

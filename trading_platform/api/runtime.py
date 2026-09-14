@@ -5111,6 +5111,36 @@ class TradingRuntime:
         bundle = service.predict(trace_id, symbols, {})
         return bundle.to_dict()
 
+    def reload_neural_models(self) -> dict:
+        """Re-read forecaster artifacts from disk into a fresh NeuralPredictionService.
+
+        Found in the 2026-09-13 audit (Section 21A): NeuralPredictionService only
+        ever loaded return_forecaster / intraday_forecaster once, at __init__ time —
+        scripts/daily_scheduler.py's nightly model_retrain / intraday_retrain jobs
+        wrote validated artifacts to disk but had no way to get the running process
+        to pick them up short of a full container restart. This closes that loop:
+        the scheduler calls POST /neural/reload-models right after a successful
+        save, and this swaps in a service built from the current files.
+        """
+        if not self.settings.enable_neural_lab:
+            return {"reloaded": False, "reason": "enable_neural_lab is False"}
+
+        before = self._neural_service
+        before_status = {
+            "return_forecaster_available": bool(before and before._gbm_forecaster.is_available()),
+            "intraday_forecaster_available": bool(before and before._intraday_forecaster.is_available()),
+        }
+        after = NeuralPredictionService(trace_store=self.trace_store, model_dir=self._model_dir)
+        self._neural_service = after
+        after_status = {
+            "return_forecaster_available": after._gbm_forecaster.is_available(),
+            "intraday_forecaster_available": after._intraday_forecaster.is_available(),
+        }
+        logger.info(
+            "reload_neural_models: before=%s after=%s", before_status, after_status,
+        )
+        return {"reloaded": True, "before": before_status, "after": after_status}
+
     def meta_labeler_status(self) -> dict:
         """Return champion/challenger summary for monitoring and policy UI."""
         return self._meta_labeler.summary()

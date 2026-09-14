@@ -157,6 +157,24 @@ def _api_post(path: str, payload: bytes, *, retries: int = 3, timeout: int = 5) 
     raise RuntimeError(f"API POST {path} failed after {retries} attempts: {last_exc}")
 
 
+def _reload_neural_models() -> None:
+    """Ask the running API to pick up a freshly-saved model artifact in-process.
+
+    Without this, a validated retrain sits on disk until someone manually
+    restarts trading-api — the nightly job's own promotion would be silently
+    inert until then. See IMPLEMENTATION_STATUS.md, Section 21A.
+    """
+    try:
+        _api_post("/neural/reload-models", b"{}")
+        logger.info("Requested in-process neural model reload via API")
+    except Exception as exc:
+        logger.warning(
+            "Neural model reload API call failed — new artifact is saved to disk "
+            "but the running API process will keep serving the old one until "
+            "manually restarted: %s", exc,
+        )
+
+
 def _checkpoint_sqlite_wal() -> None:
     for label, factory in (
         ("trading", _trading_db_factory),
@@ -490,10 +508,10 @@ def run_model_retrain() -> None:
         MODEL_PATH.parent.mkdir(parents=True, exist_ok=True)
         winner.save(str(MODEL_PATH))
         logger.info(
-            "model_retrain: PROMOTED horizon=%d (OOS AUC=%.4f) -> %s. "
-            "Restart the API to serve it; the running process loads models at startup.",
+            "model_retrain: PROMOTED horizon=%d (OOS AUC=%.4f) -> %s",
             best_horizon, best_metrics.get("oos_auc", float("nan")), MODEL_PATH,
         )
+        _reload_neural_models()
     except Exception as exc:
         logger.error("model_retrain failed: %s", exc, exc_info=True)
 
@@ -600,10 +618,11 @@ def run_intraday_retrain() -> None:
         MODEL_PATH.parent.mkdir(parents=True, exist_ok=True)
         winner.save(str(MODEL_PATH))
         logger.info(
-            "intraday_retrain: PROMOTED horizon=%d (%dmin, OOS AUC=%.4f) -> %s. Restart the API "
-            "to serve it; it also needs AGENT_DIRECTIONAL_ENABLED=true to affect orders.",
+            "intraday_retrain: PROMOTED horizon=%d (%dmin, OOS AUC=%.4f) -> %s. "
+            "Still needs AGENT_DIRECTIONAL_ENABLED=true to affect orders.",
             best_horizon, best_horizon * 5, best_metrics.get("oos_auc", float("nan")), MODEL_PATH,
         )
+        _reload_neural_models()
     except Exception as exc:
         logger.error("intraday_retrain failed: %s", exc, exc_info=True)
 
