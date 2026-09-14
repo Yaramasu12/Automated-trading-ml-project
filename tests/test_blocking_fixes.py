@@ -329,6 +329,84 @@ class SimulatedBrokerRestingLimitTests(unittest.TestCase):
         self.assertFalse(broker.cancel_order(result.broker_order_id))
 
 
+class ImplausibleLivePriceRegressionTests(unittest.TestCase):
+    """Found live 2026-09-14: on a real exchange holiday the calendar had
+    briefly misclassified as a trading day, a live feed produced a quote
+    ~18x the strategy's own signal_price for an illiquid option (an ~18x
+    move in ~20 seconds — no real market produces that). SimulatedBrokerClient
+    trusted it unconditionally, filling at the corrupted price instead of
+    the strategy's own sound estimate and causing a real (paper) loss.
+    """
+
+    class _FakeFeed:
+        def __init__(self, price: float):
+            self._price = price
+
+        def latest_tick(self, symbol):
+            class _T:
+                pass
+            t = _T()
+            t.last_price = self._price
+            return t
+
+    def test_implausibly_high_live_price_is_rejected_in_favor_of_signal_price(self):
+        broker = SimulatedBrokerClient(spread_bps=0.0, impact_bps_per_unit=0.0, noise_bps=0.0)
+        # The exact shape of the incident: signal ~38, live tick ~703 (18x).
+        broker.set_live_feed(self._FakeFeed(703.0))
+        intent = _make_intent(Side.BUY, price=38.0, quantity=1)
+        result = broker.submit_order(intent)
+        self.assertEqual(result.status, OrderStatus.FILLED)
+        self.assertFalse(result.raw["live_price_used"])
+        self.assertLess(result.average_price, 50.0)  # near signal price, not anywhere near 703
+
+    def test_implausibly_low_live_price_is_also_rejected(self):
+        broker = SimulatedBrokerClient(spread_bps=0.0, impact_bps_per_unit=0.0, noise_bps=0.0)
+        broker.set_live_feed(self._FakeFeed(2.0))  # 1/19th of signal price
+        intent = _make_intent(Side.BUY, price=38.0, quantity=1)
+        result = broker.submit_order(intent)
+        self.assertFalse(result.raw["live_price_used"])
+        self.assertGreater(result.average_price, 30.0)
+
+    def test_a_genuinely_large_but_plausible_move_is_still_trusted(self):
+        # The bound must not reject real volatility -- options doubling or
+        # roughly tripling in a fast session is real market behaviour, not
+        # data corruption.
+        broker = SimulatedBrokerClient(spread_bps=0.0, impact_bps_per_unit=0.0, noise_bps=0.0)
+        broker.set_live_feed(self._FakeFeed(95.0))  # 2.5x signal price
+        intent = _make_intent(Side.BUY, price=38.0, quantity=1)
+        result = broker.submit_order(intent)
+        self.assertTrue(result.raw["live_price_used"])
+        self.assertAlmostEqual(result.raw["reference_price"], 95.0, delta=0.01)
+
+    def test_a_normal_close_live_price_is_used_as_before(self):
+        broker = SimulatedBrokerClient(spread_bps=0.0, impact_bps_per_unit=0.0, noise_bps=0.0)
+        broker.set_live_feed(self._FakeFeed(39.5))
+        intent = _make_intent(Side.BUY, price=38.0, quantity=1)
+        result = broker.submit_order(intent)
+        self.assertTrue(result.raw["live_price_used"])
+
+    def test_resting_limit_order_status_poll_also_rejects_implausible_ticks(self):
+        broker = SimulatedBrokerClient(spread_bps=0.0, impact_bps_per_unit=0.0, noise_bps=0.0)
+        intent = _make_intent(Side.BUY, price=38.0, order_type=OrderType.LIMIT, limit_price=35.0)
+        result = broker.submit_order(intent)
+        order_id = result.broker_order_id
+
+        # A corrupted tick claiming the price crashed to 1.0 would otherwise
+        # spuriously "cross" this BUY limit at 35 and fill it early.
+        broker.set_live_feed(self._FakeFeed(1.0))
+        status = broker.order_status(order_id)
+        self.assertEqual(status["state"], "open")  # not spuriously filled
+
+    def test_no_signal_price_available_skips_the_sanity_check_gracefully(self):
+        # A zero/missing signal price must not crash the check or divide by
+        # zero -- falls back to trusting the live price as before.
+        broker = SimulatedBrokerClient(spread_bps=0.0, impact_bps_per_unit=0.0, noise_bps=0.0)
+        broker.set_live_feed(self._FakeFeed(100.0))
+        intent = _make_intent(Side.BUY, price=0.0, quantity=1)
+        result = broker.submit_order(intent)
+        self.assertTrue(result.raw["live_price_used"])
+
+
 # ---------------------------------------------------------------------------
 # M2 + B4 lookahead: BacktestEngine no longer trades at the same close used to
 # generate the signal.

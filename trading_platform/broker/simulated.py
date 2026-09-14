@@ -24,9 +24,14 @@ import math
 import random
 from datetime import datetime, timedelta, timezone
 
+import logging
+
 from trading_platform.broker.base import BrokerClient, BrokerResult
 from trading_platform.domain.enums import OrderStatus, OrderType, Side
 from trading_platform.domain.models import OrderIntent
+from trading_platform.logging_safety import note_swallowed
+
+logger = logging.getLogger(__name__)
 
 
 class SimulatedBrokerClient(BrokerClient):
@@ -64,18 +69,60 @@ class SimulatedBrokerClient(BrokerClient):
         # crosses it, exactly like a real resting order would.
         self._pending: dict[str, OrderIntent] = {}
 
+    # Found live 2026-09-14 (a real exchange holiday the calendar had briefly
+    # misclassified as a trading day — see agent/market_hours.py's _HOLIDAYS
+    # and the live-feed auto-start fix in api/runtime.py): the live feed came
+    # up with no real market open behind it and returned a quote for an
+    # illiquid option ~18x the strategy's own signal_price (computed moments
+    # earlier from the same underlying) — an ~18x move in ~20 seconds that no
+    # real market produces. _live_price() trusted it unconditionally, so the
+    # fill used the corrupted quote instead of the strategy's own sound
+    # estimate, producing a real (paper) loss that tripped the daily-loss
+    # kill switch. AUDIT_REPORT.md section 8 ("model uncertain fills...
+    # using observable data") and section 6 ("detect... invalid OHLC,
+    # impossible spreads") both point at exactly this: a live quote that
+    # merely EXISTS is not proof it is trustworthy. This bound doesn't
+    # replace fixing why a bad quote reached the feed in the first place
+    # (the holiday case is fixed at its source); it is defense in depth for
+    # every OTHER way a corrupted tick could reach this class in the future.
+    # Wide enough that a genuinely volatile session's real repricing
+    # (options can easily double or halve) is never rejected — an 18x
+    # deviation is not that.
+    _LIVE_PRICE_MAX_RATIO_VS_SIGNAL = 5.0
+    _LIVE_PRICE_MIN_RATIO_VS_SIGNAL = 0.2
+
     def set_live_feed(self, live_feed) -> None:
         """Wire in the Angel One live tick feed for real-time fill prices."""
         self._live_feed = live_feed
 
-    def _live_price(self, symbol: str) -> float | None:
-        """Return the latest Angel One live tick price for a symbol, or None."""
+    def _live_price(self, symbol: str, sanity_reference_price: float | None = None) -> float | None:
+        """Return the latest Angel One live tick price for a symbol, or None.
+
+        `sanity_reference_price` (typically the strategy's own just-computed
+        signal price for the same instrument): when given and positive, a
+        live tick implausibly far from it is treated as corrupted and
+        rejected — see the class-level comment above `_LIVE_PRICE_MAX_RATIO_
+        VS_SIGNAL` for why and the incident that found this gap."""
         if self._live_feed is None:
             return None
         try:
             tick = self._live_feed.latest_tick(symbol)
             if tick and getattr(tick, "last_price", 0) > 0:
-                return float(tick.last_price)
+                price = float(tick.last_price)
+                if sanity_reference_price and sanity_reference_price > 0:
+                    ratio = price / sanity_reference_price
+                    if ratio > self._LIVE_PRICE_MAX_RATIO_VS_SIGNAL or ratio < self._LIVE_PRICE_MIN_RATIO_VS_SIGNAL:
+                        logger.warning(
+                            "SimulatedBrokerClient: rejecting implausible live price for %s: "
+                            "tick=%.4f vs signal=%.4f (ratio=%.2fx) — using signal price instead",
+                            symbol, price, sanity_reference_price, ratio,
+                        )
+                        note_swallowed(
+                            "simulated_broker.implausible_live_price",
+                            ValueError(f"{symbol}: live={price} signal={sanity_reference_price} ratio={ratio:.2f}"),
+                        )
+                        return None
+                return price
         except Exception:
             pass
         return None
@@ -91,7 +138,7 @@ class SimulatedBrokerClient(BrokerClient):
         # Prefer live Angel One price; fall back to signal price. This is the
         # MARKET's reference price, distinct from intent.limit_price (the
         # order's own requested price) below.
-        live_px = self._live_price(intent.instrument.symbol)
+        live_px = self._live_price(intent.instrument.symbol, sanity_reference_price=intent.signal.price)
         market_price = live_px or intent.signal.price
 
         if intent.order_type == OrderType.LIMIT and intent.limit_price:
@@ -152,7 +199,7 @@ class SimulatedBrokerClient(BrokerClient):
         intent = self._pending.get(order_id)
         if intent is None:
             return None
-        live_px = self._live_price(intent.instrument.symbol)
+        live_px = self._live_price(intent.instrument.symbol, sanity_reference_price=intent.signal.price)
         market_price = live_px or intent.signal.price
         if not self._crosses(intent.signal.side, market_price, intent.limit_price):
             return {"state": "open", "average_price": 0.0, "filled_units": 0, "message": "resting"}
