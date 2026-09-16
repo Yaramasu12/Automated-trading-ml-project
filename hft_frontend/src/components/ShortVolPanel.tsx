@@ -79,18 +79,47 @@ export function ShortVolPanel() {
               <Metric label="VRP" value={num(data.vrp)} />
             </div>
 
-            <div className="flex items-center gap-2">
+            <div className="grid grid-cols-2 gap-2 text-center">
+              <Metric
+                label="IV Rank / Percentile"
+                value={
+                  data.iv_rank == null
+                    ? 'n/a'
+                    : `${num(data.iv_rank, 0)} / ${num(data.iv_percentile, 0)}`
+                }
+                sub={
+                  data.iv_rank == null
+                    ? `needs ${20 - (data.iv_rank_lookback_n ?? 0)} more day(s) of history`
+                    : `n=${data.iv_rank_lookback_n} observation(s)`
+                }
+              />
+              <Metric
+                label="Vol used for sizing"
+                value={data.forecast_vol != null ? `${num(data.forecast_vol)}%` : `${num(data.realized_vol)}%`}
+                sub={data.vol_reference === 'trailing_realized' ? 'trailing realized (no forecast)' : (data.vol_reference ?? '')}
+              />
+            </div>
+
+            <div className="flex items-center gap-2 flex-wrap">
               {data.enter
                 ? <Badge variant="green" dot>WOULD ENTER · {data.lots} lot(s)</Badge>
                 : <Badge variant="gray">WAITING</Badge>}
+              {data.goal_phase && data.goal_scaling_factor != null && data.goal_scaling_factor < 1 && (
+                <span title="Sizing reduced by goal-governance risk de-escalation, not by a hard limit">
+                  <Badge variant="orange">
+                    {data.goal_phase} · size ×{num(data.goal_scaling_factor, 2)}
+                  </Badge>
+                </span>
+              )}
               <span className="text-xs text-ink-faint">{data.reason}</span>
             </div>
 
             {data.enter && (
-              <div className="text-xs text-ink-muted flex gap-4">
+              <div className="text-xs text-ink-muted flex flex-wrap gap-4">
                 <span>Net credit: <b className="text-brand-green">{num(data.net_credit_pts)} pts</b></span>
                 <span>Max loss: <b className="text-brand-red">{num(data.max_loss_pts)} pts</b></span>
-                {data.expiry && <span>Expiry: {data.expiry}</span>}
+                {data.structure && <span>Structure: {data.structure}</span>}
+                {data.expiry && <span>Expiry: {data.expiry}{data.dte != null ? ` (${data.dte}d)` : ''}</span>}
               </div>
             )}
 
@@ -99,7 +128,7 @@ export function ShortVolPanel() {
                 <thead>
                   <tr className="text-ink-faint text-left">
                     <th className="py-1">Leg</th><th>Type</th><th>Strike</th>
-                    <th className="text-right">Price</th><th className="text-right">Qty</th>
+                    <th className="text-right">Price</th><th className="text-right">Model</th><th className="text-right">Qty</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -112,7 +141,13 @@ export function ShortVolPanel() {
                       </td>
                       <td>{leg.option_type}</td>
                       <td>{num(leg.strike)}</td>
-                      <td className="text-right">{num(leg.price)}</td>
+                      <td className="text-right" title={leg.priced_from === 'market' ? 'Real quoted/last-traded price' : 'No live quote — Black-Scholes theoretical price'}>
+                        {num(leg.price)}
+                        {leg.priced_from && leg.priced_from !== 'market' && <sup className="text-brand-orange ml-0.5">theo</sup>}
+                      </td>
+                      <td className="text-right text-ink-faint">
+                        {leg.theoretical != null ? num(leg.theoretical) : '—'}
+                      </td>
                       <td className="text-right">{leg.quantity}</td>
                     </tr>
                   ))}
@@ -126,11 +161,12 @@ export function ShortVolPanel() {
   )
 }
 
-function Metric({ label, value }: { label: string; value: string }) {
+function Metric({ label, value, sub }: { label: string; value: string; sub?: string }) {
   return (
     <div className="bg-surface-inset/50 rounded p-2">
       <div className="text-[10px] uppercase text-ink-faint">{label}</div>
       <div className="text-sm font-semibold text-ink">{value}</div>
+      {sub && <div className="text-[10px] text-ink-faint mt-0.5">{sub}</div>}
     </div>
   )
 }

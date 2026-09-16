@@ -700,6 +700,45 @@ class RuntimeTests(unittest.TestCase):
             self.assertEqual(journal["fill_count"], 1)
             self.assertEqual(journal["slippage_count"], 1)
 
+    def test_shadow_run_never_mutates_the_real_portfolio(self):
+        """Regression 2026-09-16 (Section 19 audit): shadow_run() used to route
+        through self.portfolio — the SAME ledger real forward-PAPER trading
+        uses, and the one /portfolio/positions reads from live. shadow_run's
+        own default window (2026-01-01, often synthetic bars) has nothing to
+        do with "today" — clicking "Shadow Run" on the live dashboard would
+        have silently injected backdated fills into the real paper track
+        record. This is the same class of production-state contamination
+        already found once before in this codebase (the shadow_run
+        feature-store incident) — this time in the portfolio ledger instead
+        of the feature store."""
+        runtime = TradingRuntime()
+        _isolate_feature_store(runtime, self)
+        runtime.set_execution_mode("PAPER")
+        import dataclasses as _dc
+        runtime.risk_engine.limits = _dc.replace(runtime.risk_engine.limits, block_futures_opening=False)
+
+        real_portfolio_before = runtime.portfolio
+        real_cash_before = runtime.portfolio.cash
+        real_trades_before = len(runtime.portfolio.trades)
+        real_positions_before = dict(runtime.portfolio.positions)
+
+        result = runtime.shadow_run(
+            {
+                "underlyings": ["NIFTY", "RELIANCE", "BANKNIFTY"],
+                "days": 60,
+                "strategy_names": ["futures_trend", "mean_reversion", "breakout"],
+            }
+        )
+        self.assertGreaterEqual(result["submitted_orders"], 1)  # the run did real work
+        self.assertTrue(result["is_shadow"])
+        self.assertIn("shadow_window", result)
+
+        # The real, shared portfolio object must be byte-for-byte untouched.
+        self.assertIs(runtime.portfolio, real_portfolio_before)
+        self.assertEqual(runtime.portfolio.cash, real_cash_before)
+        self.assertEqual(len(runtime.portfolio.trades), real_trades_before)
+        self.assertEqual(dict(runtime.portfolio.positions), real_positions_before)
+
     def test_monitoring_metrics_tracks_shadow_orders(self):
         runtime = TradingRuntime()
         _isolate_feature_store(runtime, self)

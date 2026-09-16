@@ -831,15 +831,21 @@ class TradingDatabase:
             return _row_to_dict(cur, row) if row else None
 
     def equity_curve(self, execution_mode: str | None = None, limit: int = 200) -> list[dict]:
+        """Each row carries its own execution_mode even when the caller
+        doesn't filter by one — found in the 2026-09-16 Section 19 audit:
+        without it, a PAPER and a future LIVE session's snapshots would
+        render as one unbroken, unlabeled equity line with no way for a
+        caller to tell them apart (dashboard truthfulness: never let a
+        forward-PAPER result be mistaken for a genuine LIVE one)."""
         if execution_mode:
             sql = self._p(
-                "SELECT recorded_at, equity, drawdown FROM portfolio_snapshots "
+                "SELECT recorded_at, equity, drawdown, execution_mode FROM portfolio_snapshots "
                 "WHERE execution_mode=? ORDER BY id DESC LIMIT ?"
             )
             params = (execution_mode, limit)
         else:
             sql = self._p(
-                "SELECT recorded_at, equity, drawdown FROM portfolio_snapshots "
+                "SELECT recorded_at, equity, drawdown, execution_mode FROM portfolio_snapshots "
                 "ORDER BY id DESC LIMIT ?"
             )
             params = (limit,)

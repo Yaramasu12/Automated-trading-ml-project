@@ -586,3 +586,125 @@ Fixed to use `to_ist()` like the rest of the codebase, not a string slice.
 Test: `tests/test_runtime.py::test_daily_learning_report_matches_todays_model_runs_across_the_utc_ist_boundary`.
 
 Full suite: 1482 passed. Deployed live.
+
+## Section 19 — dashboard/frontend truthfulness (2026-09-16)
+
+Dispatched a read-only audit (Explore agent) against the checklist in the
+implementation prompt's Section 19 — contract drift, distinguishing
+targets/simulations/theoretical prices/forward-paper/live results, showing
+block/rejection reasons, never presenting a target as expected income, data
+provenance/staleness, and hardcoded/fake data. It cross-referenced every
+view's API calls against the real `app.py` routes and DB schemas rather
+than reading the frontend in isolation. Findings, all verified and fixed:
+
+**1. Strategy filter chips never matched anything, since inception.**
+`Signals.tsx`'s hardcoded chip list (`ShortStraddleStrategy`,
+`IronCondorStrategy`, `CoveredCallStrategy`, ...) shares **zero** overlap
+with the real 19-strategy catalog (`iron_condor`, `long_straddle`, ...,
+confirmed live via `GET /strategies/catalog`) — different naming
+convention entirely (PascalCase class names vs. the catalog's snake_case).
+Every strategy-filtered scan has silently returned zero candidates since
+this UI was built. Fixed: chips are now sourced live from
+`getStrategyCatalog()`.
+
+**2. A real production-state contamination bug, same class as a prior
+incident.** `shadow_run()` — a "Shadow Run" button meant to preview a
+what-if scan — actually submitted real PAPER orders through the exact same
+shared `self.portfolio` ledger real forward-PAPER trading uses, over a
+fixed historical demo window (2026-01-01 by default, sometimes with
+synthetic bars) that has nothing to do with "today." `/portfolio/positions`
+reads that identical live object. Clicking "Shadow Run" on the live
+dashboard would have silently injected backdated demo fills into the real
+paper track record — the same failure shape as this codebase's own prior
+`shadow_run` feature-store contamination incident, just in the portfolio
+ledger instead. Fixed: `shadow_run()` now executes against a fresh, isolated
+`PortfolioLedger` scratch instance; the response carries `is_shadow: true`
+and the actual `shadow_window` (start/days/used_live_history) so the
+frontend can honestly label results and never conflate them with genuine
+paper P&L. Frontend: renamed the button, changed its icon away from the
+passive-implying "Eye", added a pre-run confirmation explaining what it
+actually does, and a result banner showing the real demo window and
+fill/reject counts. Test:
+`tests/test_runtime.py::test_shadow_run_never_mutates_the_real_portfolio`
+(asserts the real portfolio's cash/trades/positions are byte-for-byte
+unchanged after a shadow run that did real work).
+
+**3. OMS queue and risk-events table read the wrong column names.**
+`Execution.tsx`'s OMS panel read `e.status`/`e.ts`; the real `oms_events`
+columns are `event_type`/`occurred_at` — every row fell through to a blank
+status and blank time regardless of what actually happened. `Risk.tsx`'s
+"Risk Rejections" table read `timestamp` instead of `occurred_at` (same
+bug) and wasn't actually filtered to rejections — `risk_events` stores
+`event_type="order_evaluated"` for both approved AND rejected orders, so a
+table titled "Risk Rejections" could list approved orders. Fixed both
+column names; added an `approved !== true` client-side filter; added a
+`rejection_reason` display to the OMS panel (was captured by the backend,
+never shown) and an event-type column to the risk table.
+
+**4. Price provenance was collapsed to a meaningless binary.** The backend
+already computes a 4-tier price source per position via
+`PriceResolutionService` (`live` → `model` [Black-Scholes theoretical,
+never a real quote] → `sticky` [last known live price] → `entry` [no mark
+yet]) and a separate `price_is_stale` flag, but `LivePosition`'s TS type
+only declared `live: boolean` and the UI showed "Live"/"Stale" — a
+theoretical mark that was NEVER a real quote displayed identically to a
+merely-stale-but-once-real tick. Fixed: typed `price_source`/`price_is_stale`
+and render four distinct states ("Live", "Theoretical", "Last known
+(stale)", "No mark yet").
+
+**5. Equity curve could not distinguish PAPER from a future LIVE session.**
+`GET /db/equity-curve`'s unfiltered query selected `recorded_at, equity,
+drawdown` only — no `execution_mode` — so a PAPER and a LIVE session's
+snapshots would render as one unbroken, unlabeled line the first time this
+deployment ever runs LIVE (it never has yet, so not yet an active bug, but
+a real gap). Fixed: the column is now always selected; the dashboard shows
+an execution-mode badge on the Equity Curve card, or an explicit "Mixed —
+filter required" warning if it ever sees more than one mode's data in one
+unfiltered fetch.
+
+**6. A hardcoded capital constant silently diverged from the real number.**
+`CommandCenter.tsx` hardcoded `startCapital = 1_000_000` and derived
+"Total P&L" as `equity - startCapital`, ignoring `settings.initial_capital`
+(configurable) and the portfolio snapshot's own real
+`realized_pnl`/`unrealized_pnl` split (used two lines later in the same
+file for a different tile). An operator who changed the configured initial
+capital would see a silently wrong, authoritative-looking P&L figure.
+Fixed to sum the real realized+unrealized fields.
+
+**Checked and found NOT broken**: `Signals.tsx`/`Backtest.tsx` strategy
+filters ARE honored server-side (not client-side-only filtering);
+`Backtest.tsx` already clearly labels synthetic vs. historical data;
+`Signals.tsx` and `CommandCenter.tsx` already show real block/rejection
+reason strings for candidates and live-readiness gates; no view phrases
+the yearly target as "expected"/"projected" income anywhere (GoalGovernor.tsx
+was already audited and fixed for this in an earlier session); no
+fabricated/mocked data found beyond legitimate `<input placeholder>`
+attributes and one `Math.random()` used only as a React list-key fallback.
+
+Tests: `tests/test_runtime.py` (1 new, above). Frontend: `tsc --noEmit`
+clean, `npm run build` succeeds, `npm test` 7/7 passed (pre-existing
+suite, unaffected). Backend full suite: 1483 passed.
+
+**Not fixed this pass** (lower severity, cosmetic): two different
+components both titled "Command Center" (`Dashboard.tsx` and
+`CommandCenter.tsx`) presenting inconsistent feature sets under an
+identical on-screen name; `CommandCenter.tsx`'s own connection badge
+doesn't consult the same freshness signal `Dashboard.tsx`'s does. Neither
+is a truthfulness violation, just an operator-clarity nit.
+
+## Infrastructure note: Docker Desktop stopped and was restarted (2026-09-16)
+
+Discovered mid-session while verifying the frontend against the live
+backend: Docker Desktop's engine was not running (`docker ps` failed to
+reach the daemon; the `docker-desktop` WSL distro showed `Stopped`) — an
+OS/environment-level event, not something in this codebase. All containers
+carry `restart: unless-stopped`, so relaunching Docker Desktop brought
+`trading-api`, `trading-scheduler`, and the rest of the stack back up
+automatically within ~35 seconds, healthy. No code or config change
+resulted from this; noted here only because it explains a live-verification
+gap earlier in this session and as a reminder that this platform's uptime
+currently depends on Docker Desktop being running on a single Windows
+machine — a real operational fragility (Section 18's "reliable forward-paper
+operations") worth a future session's attention (e.g. a watchdog/alert if
+the containers go down, or moving off Docker Desktop to a service that
+survives a host reboot unattended), not something fixable in code alone.

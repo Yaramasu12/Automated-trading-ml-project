@@ -285,6 +285,16 @@ export interface SignalScanResult {
     selected_strategies: string[]
     candidates: Candidate[]
   }>
+  // Present only on a POST /shadow/run response, never a real scan — used
+  // to render it distinctly (Section 19: never let a demo/backtest result
+  // be mistaken for a live scan). shadow_run submits and fills real PAPER
+  // orders against an isolated scratch ledger over a fixed historical demo
+  // window (2026-01-01 by default), not "the last `days` days" the way a
+  // real scan reads its own `days` parameter.
+  is_shadow?: boolean
+  shadow_window?: { start: string; days: number; used_live_history: boolean }
+  filled_orders?: number
+  rejected_orders?: number
 }
 
 export interface StrategyScore {
@@ -411,6 +421,10 @@ export interface EquityCurvePoint {
   recorded_at: string
   equity: number
   drawdown: number
+  // Each row is now self-describing even on an unfiltered /db/equity-curve
+  // call (Section 19 audit, 2026-09-16) — a PAPER and a future LIVE
+  // session's snapshots must never render as one unbroken, unlabeled line.
+  execution_mode?: string
 }
 
 export interface DailyPnl {
@@ -473,7 +487,18 @@ export interface LivePosition {
   unrealized_pnl: number
   realized_pnl: number
   pnl_pct: number
+  // `live` collapses the richer signal below to a boolean for older
+  // callers — prefer price_source/price_is_stale for display (Section 19:
+  // "distinguish model-derived option prices" — 'model' is a Black-Scholes
+  // theoretical mark, never a real quote, and reads very differently from
+  // a merely-stale 'live'/'sticky' tick).
   live: boolean
+  // PriceResolutionService's fallback chain, in preference order:
+  // 'live' (real tick) -> 'model' (Black-Scholes theoretical, no live
+  // quote) -> 'sticky' (last known live price, now stale) -> 'entry'
+  // (no mark at all yet, showing the fill price). See price_service.py.
+  price_source?: 'live' | 'model' | 'sticky' | 'entry' | string
+  price_is_stale?: boolean
 }
 
 export interface LivePortfolioSnapshot {
@@ -566,6 +591,11 @@ export interface ShortVolLeg {
   is_wing: boolean
   price: number
   quantity: number
+  // Section 19 (dashboard truthfulness): distinguishes a real fill/quote
+  // price from a Black-Scholes theoretical one — 'market' vs 'theoretical'.
+  priced_from?: string
+  theoretical?: number
+  lot_size?: number
 }
 
 export interface ShortVolPreview {
@@ -582,6 +612,24 @@ export interface ShortVolPreview {
   max_loss_pts: number
   legs: ShortVolLeg[]
   expiry?: string
+  dte?: number
+  structure?: string
+  // Data provenance for the volatility figure actually used to size VRP:
+  // a GARCH-style forecast when available, else the trailing-realized
+  // fallback named in vol_reference.
+  forecast_vol?: number | null
+  vol_reference?: string
+  // null (not a low number) until options_chain_collector has accumulated
+  // MIN_IV_RANK_OBSERVATIONS (20) real EOD snapshots for this underlying —
+  // NIFTY borrows India VIX's own long published history instead.
+  // iv_rank_lookback_n discloses exactly how many observations back it,
+  // so a freshly-active rank (few observations) reads differently from an
+  // established one (see derivatives/engine.py's compute_iv_rank).
+  iv_rank?: number | null
+  iv_percentile?: number | null
+  iv_rank_lookback_n?: number
+  goal_phase?: string
+  goal_scaling_factor?: number
 }
 
 // ─── Vector memory / Qdrant persistence (2026-08-29) ──────────────────────────

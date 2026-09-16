@@ -49,14 +49,32 @@ function SideBadge({ side }: { side: string }) {
   )
 }
 
-function LiveDot({ live }: { live: boolean }) {
+// Section 19 (dashboard truthfulness): a 'model' mark is a Black-Scholes
+// theoretical price — it was never quoted by the exchange — which reads
+// very differently from a merely-stale-but-once-real 'live'/'sticky' tick.
+// Collapsing both to "Stale" (the old behavior) hid that distinction.
+function PriceSourceTag({ source, stale }: { source?: string; stale?: boolean }) {
+  if (source === 'model') {
+    return (
+      <span className="inline-flex items-center gap-1 text-xs text-brand-orange" title="Black-Scholes theoretical price — no live quote available">
+        <CircleDot size={9} />
+        Theoretical
+      </span>
+    )
+  }
+  if (source === 'live' && !stale) {
+    return (
+      <span className="inline-flex items-center gap-1 text-xs text-brand-green">
+        <CircleDot size={9} className="animate-pulse" />
+        Live
+      </span>
+    )
+  }
+  const label = source === 'entry' ? 'No mark yet' : source === 'sticky' ? 'Last known (stale)' : 'Stale'
   return (
-    <span className={clsx(
-      'inline-flex items-center gap-1 text-xs',
-      live ? 'text-brand-green' : 'text-ink-faint'
-    )}>
-      <CircleDot size={9} className={live ? 'animate-pulse' : ''} />
-      {live ? 'Live' : 'Stale'}
+    <span className="inline-flex items-center gap-1 text-xs text-ink-faint" title="Not a fresh live quote">
+      <CircleDot size={9} />
+      {label}
     </span>
   )
 }
@@ -134,7 +152,7 @@ function PositionsTable({ positions }: { positions: LivePosition[] }) {
     mark_price:     <span className="font-mono text-xs font-semibold">{inr(p.mark_price)}</span>,
     unrealized_pnl: <PnlCell value={p.unrealized_pnl} />,
     pnl_pct:        <PctCell value={p.pnl_pct} />,
-    live:           <LiveDot live={p.live} />,
+    live:           <PriceSourceTag source={p.price_source} stale={p.price_is_stale} />,
   }))
 
   return <Table columns={POS_COLS} rows={rows} keyFn={(_, i) => String(i)} />
@@ -209,6 +227,16 @@ function FeedStatusBar({
 
 // ── OMS queue ─────────────────────────────────────────────────────────────────
 
+// oms_events' real columns are event_type/occurred_at, not status/ts — this
+// panel previously read the wrong fields (Section 19 contract-drift audit,
+// 2026-09-16), so every row silently fell through to a blank status and a
+// blank timestamp regardless of what actually happened to the order.
+function omsDotColor(eventType: string): string {
+  if (eventType.includes('filled') || eventType.includes('approved')) return 'bg-brand-green'
+  if (eventType.includes('rejected') || eventType.includes('failed') || eventType.includes('cancelled')) return 'bg-brand-red'
+  return 'bg-brand-yellow animate-pulse'
+}
+
 function OmsPanel({ events }: { events: unknown[] }) {
   if (events.length === 0) {
     return <EmptyState icon={<Layers size={20} />} title="OMS queue is empty" />
@@ -216,18 +244,16 @@ function OmsPanel({ events }: { events: unknown[] }) {
   return (
     <div className="space-y-1 max-h-64 overflow-y-auto">
       {events.slice(0, 20).map((e: any, i) => (
-        <div key={i} className="flex items-center gap-2 text-xs px-3 py-1.5 bg-surface-inset rounded-lg border border-surface-border">
-          <span className={clsx(
-            'w-2 h-2 rounded-full flex-shrink-0',
-            e.status === 'FILLED' ? 'bg-brand-green' :
-            e.status === 'REJECTED' ? 'bg-brand-red' :
-            'bg-brand-yellow animate-pulse'
-          )} />
+        <div key={i} className="flex items-center gap-2 text-xs px-3 py-1.5 bg-surface-inset rounded-lg border border-surface-border flex-wrap">
+          <span className={clsx('w-2 h-2 rounded-full flex-shrink-0', omsDotColor(String(e.event_type ?? '')))} />
           <span className="font-mono text-brand-blue">{e.symbol ?? e.order_id ?? '—'}</span>
           <span className="text-ink-faint">{e.side ?? ''}</span>
-          <span className="text-ink-muted">{e.status ?? ''}</span>
-          {e.fill_price && <span className="font-mono text-ink-muted">@ {inr(e.fill_price)}</span>}
-          <span className="ml-auto text-ink-faint">{e.ts ? fmtDateTime(e.ts) : ''}</span>
+          <span className="text-ink-muted">{e.event_type ?? ''}</span>
+          {e.fill_price != null && <span className="font-mono text-ink-muted">@ {inr(e.fill_price)}</span>}
+          {e.rejection_reason && (
+            <span className="text-brand-red basis-full sm:basis-auto">{e.rejection_reason}</span>
+          )}
+          <span className="ml-auto text-ink-faint">{e.occurred_at ? fmtDateTime(e.occurred_at) : ''}</span>
         </div>
       ))}
     </div>

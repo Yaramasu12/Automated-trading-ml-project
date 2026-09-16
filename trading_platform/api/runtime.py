@@ -3680,10 +3680,23 @@ class TradingRuntime:
                     logger.warning("shadow_run: skipping %s after real-data failure: %s", underlying, exc)
         finally:
             self.decision_pipeline.history_provider = history_provider
+        # Section 19 audit (2026-09-16): this used to route through
+        # self.portfolio — the SAME ledger real forward-PAPER trading uses,
+        # and the one /portfolio/positions, /db/trades and /db/equity-curve
+        # all read from. shadow_run's own default window (2026-01-01, often
+        # with synthetic bars) has nothing to do with "today" — a demo/test
+        # run against the live dashboard would have silently injected
+        # backdated fills into the real paper track record, the same class
+        # of production-state contamination already found once before in
+        # this codebase's feature store (see the shadow_run test-suite
+        # incident memory). A scratch ledger keeps the exercise — real order/
+        # risk/broker logic, a genuine fill/reject outcome — without
+        # touching production state.
+        shadow_portfolio = PortfolioLedger(self.settings.initial_capital)
         router = ExecutionRouter(
             broker=self.paper_broker,
             risk_engine=self.risk_engine,
-            portfolio=self.portfolio,
+            portfolio=shadow_portfolio,
             execution_mode=ExecutionMode.PAPER,
             live_armed=False,
             kill_switch_active=self.kill_switch_active,
@@ -3763,9 +3776,11 @@ class TradingRuntime:
             for item in executions
             if item["order"]["latency_ms"] is not None
         ]
-        snapshot = self.portfolio.mark_to_market(datetime.now(timezone.utc), self._shadow_marks(scans))
+        snapshot = shadow_portfolio.mark_to_market(datetime.now(timezone.utc), self._shadow_marks(scans))
         return {
             "mode": self.execution_mode.value,
+            "is_shadow": True,
+            "shadow_window": {"start": start.isoformat(), "days": days, "used_live_history": use_live_history},
             "submitted_orders": len(executions),
             "filled_orders": filled,
             "rejected_orders": rejected,

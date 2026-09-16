@@ -555,6 +555,18 @@ export function Dashboard() {
             title="Equity Curve"
             subtitle={`${equityCurve.length} snapshots`}
             icon={<Activity size={14} />}
+            action={(() => {
+              // Section 19 audit (2026-09-16): each snapshot now carries its
+              // own execution_mode — surface it so a PAPER curve is never
+              // mistaken for a genuine LIVE one, and flag the (currently
+              // hypothetical, since this deployment has only ever run
+              // PAPER) case where the two would otherwise render as one
+              // unbroken, unlabeled line.
+              const modes = new Set(equityCurve.map((p) => p.execution_mode).filter(Boolean))
+              if (modes.size === 0) return null
+              if (modes.size === 1) return execModeBadge([...modes][0]!)
+              return <span className="text-xs text-brand-red font-semibold">Mixed {[...modes].join('/')} — filter required</span>
+            })()}
           />
           <CardBody className="h-56 !p-2">
             {equityCurve.length === 0 ? (

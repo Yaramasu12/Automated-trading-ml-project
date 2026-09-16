@@ -105,8 +105,12 @@ export function CommandCenter() {
 
   const pf = data.portfolio
   const equity = pf?.equity ?? null
-  const startCapital = 1_000_000
-  const totalPnl = equity != null ? equity - startCapital : null
+  // Section 19 audit (2026-09-16): was hardcoded to 1_000_000 and derived
+  // P&L as equity minus that constant — settings.initial_capital is
+  // configurable, so this silently diverged from the truth whenever an
+  // operator changed it, while still looking authoritative. The portfolio
+  // snapshot already carries the real realized+unrealized split.
+  const totalPnl = pf ? pf.realized_pnl + pf.unrealized_pnl : null
   const state = data.health?.state ?? {}
   const killActive = Boolean(state.kill_switch_active)
 

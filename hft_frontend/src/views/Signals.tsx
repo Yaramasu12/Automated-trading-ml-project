@@ -1,21 +1,23 @@
-import { useState, useCallback } from 'react'
-import { Zap, Loader2, ChevronDown, ChevronRight, Eye } from 'lucide-react'
+import { useState, useCallback, useEffect } from 'react'
+import { Zap, Loader2, ChevronDown, ChevronRight, AlertTriangle, PlayCircle } from 'lucide-react'
 import { clsx } from 'clsx'
 import { Card, CardBody, CardHeader } from '../components/shared/Card'
 import { PageHeader } from '../components/shared/PageHeader'
 import { Table } from '../components/shared/Table'
 import { Tag, regimeBadge } from '../components/shared/Badge'
 import { useStore } from '../store'
-import { scanSignals, runShadow } from '../api'
-import { pct } from '../utils'
+import { scanSignals, runShadow, getStrategyCatalog } from '../api'
+import { pct, fmtDate } from '../utils'
 import type { Candidate } from '../types'
+
+interface CatalogStrategy {
+  name?: string
+  strategy_name?: string
+  family?: string
+}
 
 const UNDERLYINGS = ['NIFTY', 'BANKNIFTY', 'FINNIFTY', 'MIDCPNIFTY', 'RELIANCE', 'TCS', 'INFY', 'HDFCBANK', 'ICICIBANK', 'SBIN']
 const DAY_OPTIONS = [7, 14, 30, 60]
-const STRATEGIES = [
-  'ShortStraddleStrategy', 'IronCondorStrategy', 'CoveredCallStrategy',
-  'BullCallSpreadStrategy', 'ProtectivePutStrategy', 'MomentumBreakoutStrategy',
-]
 
 export function Signals() {
   const signalResult    = useStore((s) => s.signalResult)
@@ -28,6 +30,18 @@ export function Signals() {
   const [days, setDays]                               = useState(14)
   const [selectedStrategies, setSelectedStrategies]   = useState<string[]>([])
   const [expandedIdx, setExpandedIdx]                 = useState<number | null>(null)
+  const [strategies, setStrategies]                   = useState<CatalogStrategy[]>([])
+
+  useEffect(() => {
+    // Section 19 audit (2026-09-16): this chip list used to be a hand-typed
+    // array of strategy class names (e.g. "ShortStraddleStrategy") that
+    // shared zero overlap with the real catalog's snake_case names (e.g.
+    // "iron_condor") — every filter selection silently matched nothing,
+    // since inception. Source it from the real catalog instead.
+    getStrategyCatalog()
+      .then((res) => setStrategies((res.strategies as CatalogStrategy[]) ?? []))
+      .catch(() => setStrategies([]))
+  }, [])
 
   function toggleUnderlying(u: string) {
     setSelectedUnderlyings(prev =>
@@ -43,6 +57,13 @@ export function Signals() {
 
   const runScan = useCallback(async (shadow = false) => {
     if (selectedUnderlyings.length === 0) return
+    if (shadow && !window.confirm(
+      'Shadow Run submits real PAPER orders against an isolated demo ledger over a fixed ' +
+      'historical window (2026-01-01 onward), not "the last ' + days + ' days" like Scan Signals. ' +
+      'It does not touch your live paper portfolio or equity curve. Continue?'
+    )) {
+      return
+    }
     setLoading('signals', true)
     setError(null)
     try {
@@ -157,26 +178,34 @@ export function Signals() {
             </div>
           </div>
 
-          {/* Strategy filter */}
+          {/* Strategy filter — sourced live from GET /strategies/catalog */}
           <div>
             <label className="block text-xs text-ink-muted mb-2 font-semibold uppercase tracking-wider">
               Strategies <span className="text-ink-faint normal-case">(optional)</span>
             </label>
             <div className="flex flex-wrap gap-1.5">
-              {STRATEGIES.map((s) => (
-                <button
-                  key={s}
-                  onClick={() => toggleStrategy(s)}
-                  className={clsx(
-                    'px-2 py-1 rounded text-[11px] font-mono border transition-colors',
-                    selectedStrategies.includes(s)
-                      ? 'bg-brand-purple/15 border-brand-purple/30 text-brand-purple'
-                      : 'bg-surface-elevated border-surface-border text-ink-faint hover:text-ink-muted',
-                  )}
-                >
-                  {s.replace('Strategy', '')}
-                </button>
-              ))}
+              {strategies.length === 0 && (
+                <span className="text-xs text-ink-faint">Loading catalog…</span>
+              )}
+              {strategies.map((cat) => {
+                const s = cat.name ?? cat.strategy_name ?? ''
+                if (!s) return null
+                return (
+                  <button
+                    key={s}
+                    onClick={() => toggleStrategy(s)}
+                    title={cat.family ? `family: ${cat.family}` : undefined}
+                    className={clsx(
+                      'px-2 py-1 rounded text-[11px] font-mono border transition-colors',
+                      selectedStrategies.includes(s)
+                        ? 'bg-brand-purple/15 border-brand-purple/30 text-brand-purple'
+                        : 'bg-surface-elevated border-surface-border text-ink-faint hover:text-ink-muted',
+                    )}
+                  >
+                    {s}
+                  </button>
+                )
+              })}
             </div>
           </div>
 
@@ -193,10 +222,11 @@ export function Signals() {
             <button
               onClick={() => runScan(true)}
               disabled={loading || selectedUnderlyings.length === 0}
+              title="Submits real PAPER orders against an isolated demo ledger over a fixed historical window — not a passive preview"
               className="flex items-center gap-2 px-4 py-2 rounded-md bg-brand-yellow/15 border border-brand-yellow/30 text-brand-yellow text-sm font-medium hover:bg-brand-yellow/25 disabled:opacity-50 transition-colors"
             >
-              {loading ? <Loader2 size={14} className="animate-spin" /> : <Eye size={14} />}
-              Shadow Run
+              {loading ? <Loader2 size={14} className="animate-spin" /> : <PlayCircle size={14} />}
+              Shadow Run (demo orders)
             </button>
           </div>
         </CardBody>
@@ -205,6 +235,19 @@ export function Signals() {
       {/* Results */}
       {signalResult && (
         <div className="space-y-4">
+          {signalResult.is_shadow && (
+            <div className="flex items-start gap-2 px-4 py-3 rounded-lg border border-brand-yellow/30 bg-brand-yellow/5 text-xs text-brand-yellow">
+              <AlertTriangle size={14} className="mt-0.5 flex-shrink-0" />
+              <div>
+                <span className="font-semibold">Demo shadow run</span> — {signalResult.filled_orders ?? 0} filled /{' '}
+                {signalResult.rejected_orders ?? 0} rejected against an isolated scratch ledger
+                {signalResult.shadow_window && (
+                  <> over the fixed historical window starting {fmtDate(signalResult.shadow_window.start)}
+                    {' '}({signalResult.shadow_window.days}d{signalResult.shadow_window.used_live_history ? ', live history' : ', demo bars'})</>
+                )}. Not your live paper portfolio or equity curve.
+              </div>
+            </div>
+          )}
           {/* Summary row */}
           <div className="flex items-center gap-3 flex-wrap">
             <span className="text-xs text-ink-muted">Mode: <span className="text-ink font-mono">{signalResult.mode}</span></span>

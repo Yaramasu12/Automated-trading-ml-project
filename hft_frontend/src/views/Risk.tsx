@@ -230,22 +230,36 @@ export function Risk() {
         </Card>
       </div>
 
-      {/* Risk Rejections Table */}
+      {/* Risk Rejections Table.
+          /db/risk-events is not pre-filtered to rejections — runtime.py
+          writes event_type="order_evaluated" for BOTH approved and rejected
+          orders into the same table, alongside kill-switch/square-off
+          events that have no `approved` field at all. A table titled "Risk
+          Rejections" showing every approved order too was real contract
+          drift (Section 19 audit, 2026-09-16) — exclude only rows explicitly
+          marked approved===true; kill-switch/other risk events (no
+          `approved` field) are still risk-relevant and stay. Also fixed:
+          the real column is occurred_at, not timestamp — every row's Time
+          cell was rendering the placeholder regardless of when it happened. */}
       <Card>
         <CardHeader
           title="Risk Rejections"
-          subtitle={`Last ${riskEvents.length} events`}
+          subtitle={`Last ${riskEvents.filter((r) => r.approved !== true).length} of ${riskEvents.length} events`}
           icon={<XCircle size={14} />}
         />
         <Table
           columns={[
             {
-              key: 'timestamp', label: 'Time',
+              key: 'occurred_at', label: 'Time',
               render: (v) => <span className="text-xs text-ink-faint">{fmtDateTime(String(v))}</span>,
             },
             {
               key: 'symbol', label: 'Symbol',
-              render: (v) => <span className="text-brand-blue font-semibold">{String(v)}</span>,
+              render: (v) => <span className="text-brand-blue font-semibold">{v ? String(v) : '—'}</span>,
+            },
+            {
+              key: 'event_type', label: 'Type',
+              render: (v) => <span className="text-xs text-ink-muted">{String(v ?? '')}</span>,
             },
             { key: 'reason', label: 'Reason' },
             {
@@ -260,8 +274,8 @@ export function Risk() {
               ) : '—',
             },
           ]}
-          rows={riskEvents.slice(0, 50)}
-          keyFn={(r) => String(r.id ?? r.timestamp ?? Math.random())}
+          rows={riskEvents.filter((r) => r.approved !== true).slice(0, 50)}
+          keyFn={(r) => String(r.id ?? r.occurred_at ?? Math.random())}
           emptyMessage="No risk rejections"
           compact
         />
