@@ -708,3 +708,71 @@ machine — a real operational fragility (Section 18's "reliable forward-paper
 operations") worth a future session's attention (e.g. a watchdog/alert if
 the containers go down, or moving off Docker Desktop to a service that
 survives a host reboot unattended), not something fixable in code alone.
+(It happened again during this same session, a second time, ~2 hours
+later — see the entry below.)
+
+## Section 19 follow-up: two more low-severity frontend fixes
+
+- `Dashboard.tsx`'s own `PageHeader` said "Command Center" (copy-paste
+  artifact — it already used the `LayoutDashboard` icon and "Dashboard" is
+  its own sidebar nav label; `CommandCenter.tsx`, a different view, is the
+  real "Command Center"). Retitled to "Dashboard".
+- `CommandCenter.tsx`'s connection indicator only echoed the raw WebSocket
+  status, never consulting the real freshness signal (`useConnectionStatus`)
+  `Dashboard.tsx` already uses — so its "Runtime health" card couldn't tell
+  an operator the tick feed had gone silent while the socket was still
+  nominally connected. Replaced with the shared `FreshnessBadge`.
+
+Frontend: `tsc --noEmit` clean, build succeeds, `npm test` 7/7.
+
+## Section 18 — real gap found and fixed: monitoring status could never report staleness
+
+Audited §18's "Track feed health, stale symbols... Separate technical
+health from economic performance" against `GET /monitoring/metrics`,
+which is the one general-purpose ops/health surface distinct from the
+dashboard's own `/ws/dashboard` snapshot.
+
+`TradingRuntime.monitoring_metrics()` called `self.monitor.snapshot(...,
+stale_market_data=False)` — hardcoded, unconditionally. `monitoring/
+metrics.py`'s own status rule (`elif stale_market_data or rejection_rate >
+0.10 or average_latency > 200: status = DEGRADED`) could therefore **never**
+report DEGRADED due to staleness, no matter how stale the feed actually
+was — a real "track feed health" gap, distinct from and not affecting the
+live order path's own staleness protection (`SimulatedBrokerClient`'s
+tick-age rejection, section 6/8 of this same status doc), which reads live
+ticks directly and was never touched by this bug.
+
+A real, already-computed freshness signal already exists —
+`live_feed_service.py`'s `_freshness_summary()` — and is exactly what the
+dashboard's own `useConnectionStatus()`/`FreshnessBadge` already trust (see
+the Section 19 audit above, which confirmed that specific signal genuinely
+wired, not decorative). `monitoring_metrics()` just never read it. Fixed:
+it now derives `stale_market_data` from that same `live_feed_snapshot()`
+call, so the two surfaces cannot disagree; any lookup failure fails open to
+`False` (an observability signal, not a safety gate) via `note_swallowed`.
+
+Also checked while here: `RiskSupervisorAgent.decide()`'s own
+`stale_market_data` halt path (`agents.py`) is reachable only via
+`POST /supervisor/decision` — an external-caller-triggered diagnostic
+endpoint, never invoked automatically from the live trading loop. Not a
+live safety gap (nothing currently depends on it firing automatically),
+but noted as inert/standalone infrastructure, matching this session's
+recurring "built but never wired" pattern (§21A's meta-labeling pipeline,
+§21I's forecaster promotion) — left as-is; wiring it in would be a
+judgment call about whether it should become a live gate, not a bug fix.
+
+Tests: `tests/test_runtime.py::test_monitoring_metrics_reflects_real_feed_staleness`
+(3 cases: stale→DEGRADED, fresh→HEALTHY-eligible, lookup failure fails
+open). Full suite: 1484 passed. Deployed live.
+
+## Infrastructure note: Docker Desktop stopped a second time (2026-09-16)
+
+Same signature as the earlier entry — `docker ps` failed, WSL's
+`docker-desktop` distro showed `Stopped` — approximately two hours after
+the first occurrence in this same session, unprompted by anything in this
+codebase. Restarted again; all containers recovered automatically within
+~10s (`restart: unless-stopped`). Two occurrences in one working session
+raises this from "noted" to a genuine pattern worth investigating — check
+Windows power/sleep settings, Docker Desktop's own update/crash logs, or
+consider a supervising watchdog, before assuming it won't recur a third
+time unattended.

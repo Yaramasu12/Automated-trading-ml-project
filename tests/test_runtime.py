@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from datetime import date, datetime, timezone
 from pathlib import Path
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 from trading_platform.ai.feature_store import FeatureStore
 from trading_platform.api.runtime import TradingRuntime
@@ -763,6 +763,29 @@ class RuntimeTests(unittest.TestCase):
         self.assertGreater(after["total_orders"], 0)
         self.assertIn(after["status"], {"HEALTHY", "DEGRADED"})
         self.assertGreater(events["count"], 0)
+
+    def test_monitoring_metrics_reflects_real_feed_staleness(self):
+        """Regression 2026-09-16 (Section 18 audit): monitoring_metrics()
+        hardcoded stale_market_data=False unconditionally, so /monitoring/
+        metrics' own DEGRADED-on-staleness rule could never fire no matter
+        how stale the feed actually was. Must now derive it from the same
+        freshness signal the dashboard's own live feed snapshot uses."""
+        runtime = TradingRuntime()
+
+        with patch.object(runtime, "live_feed_snapshot", return_value={"freshness": {"stale": True}}):
+            stale_metrics = runtime.monitoring_metrics()
+        self.assertTrue(stale_metrics["stale_market_data"])
+        self.assertEqual(stale_metrics["status"], "DEGRADED")
+
+        with patch.object(runtime, "live_feed_snapshot", return_value={"freshness": {"stale": False}}):
+            fresh_metrics = runtime.monitoring_metrics()
+        self.assertFalse(fresh_metrics["stale_market_data"])
+
+        # A broken freshness lookup must not crash monitoring_metrics — it
+        # is an observability signal, not a safety gate; fail open to False.
+        with patch.object(runtime, "live_feed_snapshot", side_effect=RuntimeError("boom")):
+            safe_metrics = runtime.monitoring_metrics()
+        self.assertFalse(safe_metrics["stale_market_data"])
 
     def test_shadow_run_skips_underlying_on_market_data_unavailable(self):
         """A per-underlying MarketDataUnavailable (real data was expected and

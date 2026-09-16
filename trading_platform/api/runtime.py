@@ -3792,11 +3792,24 @@ class TradingRuntime:
         }
 
     def monitoring_metrics(self) -> dict:
+        # Section 18 audit (2026-09-16): this hardcoded stale_market_data=False
+        # unconditionally, so /monitoring/metrics' own DEGRADED-on-staleness
+        # rule (monitoring/metrics.py) could never fire no matter how stale
+        # the feed actually was — a real "track feed health" gap, separate
+        # from the live order-path's own staleness rejection (SimulatedBroker
+        # Client's tick-age check), which was never affected by this. Reuses
+        # the same freshness computation the dashboard's own live feed
+        # snapshot already relies on, so the two surfaces cannot disagree.
+        stale_market_data = False
+        try:
+            stale_market_data = bool(self.live_feed_snapshot().get("freshness", {}).get("stale", False))
+        except Exception as exc:
+            note_swallowed("monitoring_metrics.freshness", exc)
         return self.monitor.snapshot(
             execution_mode=self.execution_mode.value,
             live_armed=self.live_armed,
             kill_switch_active=self.kill_switch_active,
-            stale_market_data=False,
+            stale_market_data=stale_market_data,
         ).to_dict()
 
     def monitoring_events(self, limit: int = 20) -> dict:
