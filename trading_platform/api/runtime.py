@@ -3836,6 +3836,20 @@ class TradingRuntime:
     def options_chain_collection_status(self) -> dict:
         return self.options_chain_collector.status()
 
+    def vol_surface_diagnostics(self, underlying: str) -> dict:
+        """Fit strategies/svi_surface.py's SVI model to the most recent real
+        chain snapshot options_chain_collector has captured for `underlying`
+        and classify each strike rich/cheap against it. Section 11 audit
+        (2026-09-16): this fitter existed, tested, with zero production
+        callers — the smile fits per-day-across-strikes, not across many
+        days of history like the IV-rank signal, so it has been fittable
+        since the first successful capture. Research/diagnostic only; see
+        vol_surface_diagnostics.py's own module docstring for why this must
+        not influence live strike selection without its own backtest.
+        """
+        from trading_platform.research.vol_surface_diagnostics import fit_latest_smile
+        return fit_latest_smile(self.options_chain_collector, underlying.strip().upper())
+
     def calculate_greeks(self, payload: dict) -> dict:
         return self._options_service.calculate_greeks(payload)
 

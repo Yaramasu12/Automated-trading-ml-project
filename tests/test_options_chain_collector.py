@@ -265,6 +265,85 @@ class AtmIvHistoryTests(unittest.TestCase):
         self.assertAlmostEqual(history[0], 15.0)  # only the PE leg counted
 
 
+class LatestSmileTests(unittest.TestCase):
+    """latest_smile() feeds research/vol_surface_diagnostics.py's SVI fit —
+    unlike atm_iv_history() it needs many STRIKES on one day, not many days
+    of history, since an SVI smile fits cross-sectionally per snapshot."""
+
+    def setUp(self):
+        self._tmpdir = tempfile.TemporaryDirectory()
+        self.out_dir = Path(self._tmpdir.name)
+
+    def tearDown(self):
+        self._tmpdir.cleanup()
+
+    def _write_rows(self, underlying: str, rows: list[dict]) -> None:
+        collector = OptionsChainCollector(SimpleNamespace(), out_dir=str(self.out_dir))
+        collector._append_csv(underlying, rows)
+
+    def _row(self, d, strike, otype, spot, iv, expiry="2100-01-01", dte=5):
+        return {"date": d, "underlying": "NIFTY", "expiry": expiry, "dte": dte,
+                "option_type": otype, "strike": strike, "spot": spot, "ltp": 100.0, "iv": iv, "delta": 0.5}
+
+    def test_no_file_yet_returns_none(self):
+        collector = OptionsChainCollector(SimpleNamespace(), out_dir=str(self.out_dir))
+        self.assertIsNone(collector.latest_smile("NIFTY"))
+
+    def test_returns_none_when_no_date_has_enough_strikes(self):
+        # Only 2 distinct strikes captured; default min_strikes=5.
+        self._write_rows("NIFTY", [
+            self._row("2026-08-01", 24000, "CE", 24000, 0.15),
+            self._row("2026-08-01", 24050, "CE", 24000, 0.14),
+        ])
+        collector = OptionsChainCollector(SimpleNamespace(), out_dir=str(self.out_dir))
+
+        self.assertIsNone(collector.latest_smile("NIFTY"))
+
+    def test_picks_most_recent_qualifying_date_skipping_a_sparse_later_one(self):
+        # 2026-08-02 is the most recent date but only has 2 strikes (e.g. a
+        # rate-limited sweep) — must fall back to 2026-08-01's full smile
+        # rather than report the sparse day or nothing at all.
+        rows = [self._row("2026-08-01", 24000 + i * 50, "CE", 24000, 0.15 - i * 0.005) for i in range(6)]
+        rows += [self._row("2026-08-02", 24000, "CE", 24010, 0.16),
+                 self._row("2026-08-02", 24050, "CE", 24010, 0.155)]
+        self._write_rows("NIFTY", rows)
+        collector = OptionsChainCollector(SimpleNamespace(), out_dir=str(self.out_dir))
+
+        smile = collector.latest_smile("NIFTY")
+
+        self.assertIsNotNone(smile)
+        self.assertEqual(smile["date"], "2026-08-01")
+        self.assertEqual(len(smile["strikes"]), 6)
+
+    def test_averages_ce_and_pe_and_multiple_intraday_snapshots_per_strike(self):
+        self._write_rows("NIFTY", [
+            self._row("2026-08-01", 24000, "CE", 24000, 0.14),
+            self._row("2026-08-01", 24000, "PE", 24000, 0.16),  # avg -> 15.0
+            self._row("2026-08-01", 24050, "CE", 24000, 0.13),
+            self._row("2026-08-01", 24100, "CE", 24000, 0.12),
+            self._row("2026-08-01", 24150, "CE", 24000, 0.11),
+            self._row("2026-08-01", 24200, "CE", 24000, 0.10),
+        ])
+        collector = OptionsChainCollector(SimpleNamespace(), out_dir=str(self.out_dir))
+
+        smile = collector.latest_smile("NIFTY")
+
+        self.assertEqual(smile["strikes"][0], 24000.0)
+        self.assertAlmostEqual(smile["ivs"][0], 15.0)  # (14+16)/2 vol points
+        self.assertEqual(smile["n_snapshots_that_day"], 6)
+
+    def test_rows_missing_iv_are_excluded_from_the_strike_count(self):
+        rows = [self._row("2026-08-01", 24000 + i * 50, "CE", 24000, 0.15 - i * 0.005) for i in range(5)]
+        rows.append(self._row("2026-08-01", 24300, "CE", 24000, ""))  # failed IV, must not count
+        self._write_rows("NIFTY", rows)
+        collector = OptionsChainCollector(SimpleNamespace(), out_dir=str(self.out_dir))
+
+        smile = collector.latest_smile("NIFTY", min_strikes=5)
+
+        self.assertEqual(len(smile["strikes"]), 5)
+        self.assertNotIn(24300.0, smile["strikes"])
+
+
 class ChainSnapshotWindowTests(unittest.TestCase):
     def test_window_is_before_entry_cutoff_and_eod_squareoff(self):
         from datetime import datetime

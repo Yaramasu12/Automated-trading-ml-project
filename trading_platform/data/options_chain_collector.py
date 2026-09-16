@@ -697,6 +697,67 @@ class OptionsChainCollector:
                 history.append(sum(ivs) / len(ivs))
         return history
 
+    def latest_smile(self, underlying: str, min_strikes: int = 5, max_days_back: int = 10) -> dict | None:
+        """Most recent captured day's cross-sectional smile (strike -> IV),
+        for fitting a vol surface (see research/vol_surface_diagnostics.py).
+
+        Unlike atm_iv_history() this needs many STRIKES on one day, not many
+        DAYS of history — a single EOD/intraday sweep already has enough
+        (capture() takes strikes_each_side=5 -> up to 11 strikes) to fit an
+        SVI smile the moment any capture succeeds. Scans backward from the
+        most recent captured date because a rate-limited sweep (see
+        _ChainRateLimited) can leave a given day with too few strikes for a
+        meaningful fit — that day is skipped rather than fit anyway. Returns
+        None, not a degenerate fit, if nothing in the lookback window
+        qualifies.
+
+        Averages IV per strike across every row captured that day (CE+PE,
+        and however many intraday snapshots the periodic capture loop took)
+        — same aggregation convention atm_iv_history() already uses.
+        """
+        path = self._csv_path(underlying)
+        if not path.exists():
+            return None
+        by_date: dict[str, list[dict]] = {}
+        try:
+            with path.open() as fh:
+                for row in csv.DictReader(fh):
+                    by_date.setdefault(row["date"], []).append(row)
+        except Exception as exc:
+            note_swallowed("options_chain_collector.latest_smile_read", exc)
+            return None
+        for d in sorted(by_date.keys(), reverse=True)[:max_days_back]:
+            rows = by_date[d]
+            try:
+                spot = float(rows[0]["spot"])
+                expiry = rows[0]["expiry"]
+                dte = int(rows[0]["dte"])
+            except (KeyError, ValueError, IndexError):
+                continue
+            by_strike: dict[float, list[float]] = {}
+            for r in rows:
+                try:
+                    if not r.get("iv"):
+                        continue
+                    k = float(r["strike"])
+                    by_strike.setdefault(k, []).append(float(r["iv"]) * 100.0)  # fraction -> vol points
+                except ValueError:
+                    continue
+            if len(by_strike) < min_strikes:
+                continue
+            strikes = sorted(by_strike.keys())
+            return {
+                "date": d,
+                "underlying": underlying,
+                "expiry": expiry,
+                "dte": dte,
+                "spot": spot,
+                "strikes": strikes,
+                "ivs": [sum(by_strike[k]) / len(by_strike[k]) for k in strikes],
+                "n_snapshots_that_day": len(rows),
+            }
+        return None
+
     def _csv_path(self, underlying: str) -> Path:
         return self._out_dir / f"{underlying}_chain_history.csv"
 

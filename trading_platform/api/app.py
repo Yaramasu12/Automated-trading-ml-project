@@ -296,6 +296,14 @@ def options_chain_collection_status():
     return runtime.options_chain_collection_status()
 
 
+@app.get("/derivatives/vol-surface-diagnostics/{underlying}")
+def vol_surface_diagnostics(underlying: str):
+    """SVI smile fitted to the most recent real captured chain snapshot,
+    with per-strike rich/cheap classification. Research/diagnostic only —
+    see vol_surface_diagnostics.py's module docstring."""
+    return runtime.vol_surface_diagnostics(underlying)
+
+
 @app.post("/derivatives/greeks")
 def greeks(payload: dict):
     try:

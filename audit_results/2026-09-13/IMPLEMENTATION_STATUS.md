@@ -776,3 +776,69 @@ raises this from "noted" to a genuine pattern worth investigating — check
 Windows power/sleep settings, Docker Desktop's own update/crash logs, or
 consider a supervising watchdog, before assuming it won't recur a third
 time unattended.
+
+## Section 11 — wired an already-built, never-called module to real live data
+
+Per the user's explicit direction to use the live/collected tick and
+option-chain data for sections 9-17: `trading_platform/strategies/
+svi_surface.py`'s SVI/SABR vol-surface fitter, `VolSurface`, and
+`assess_strikes()` rich/cheap classifier (REDESIGN_PROMPT.md §4.4a) were
+built and unit-tested (`tests/test_svi_surface.py`, fixed from a
+previously-broken state per an earlier session) but had **zero production
+callers** anywhere in the codebase — confirmed by grep. Unlike the IV-rank
+signal (which needed many *days* of history), an SVI smile fits
+cross-sectionally across *strikes* within a single day's snapshot, so it
+has been fittable from `options_chain_collector`'s real captured data
+(running since 2026-07-29) since the very first successful capture — it
+just never had anything wiring it in.
+
+Added `OptionsChainCollector.latest_smile()` (scans the real chain-history
+CSV backward from the most recent date for one with enough distinct
+strikes, skipping a rate-limited/sparse day rather than fitting it anyway)
+and `research/vol_surface_diagnostics.py` (fits SVI via the existing
+`fit_svi`, classifies each strike rich/cheap via the existing
+`assess_strikes`), exposed as `GET /derivatives/vol-surface-diagnostics/
+{underlying}`. Deliberately research/diagnostic only — does not feed any
+order path or change position sizing; `StrikeAssessment.recommended_action`
+is relabeled informational, not an instruction, since wiring rich/cheap
+deviations into actual strike selection would be a real strategy change
+needing its own backtest validation, which 1-2 months of chain history
+cannot honestly support yet.
+
+**A real, worth-recording finding surfaced while wiring it up**: fitted
+against this deployment's actual real August-September 2026 chain history,
+the SVI fit's own repricing accuracy was measurably poor — a well-behaved
+synthetic reference smile (matching `test_svi_surface.py`'s own validated
+fixture) reprices to ~0.05 mean-abs vol points, while the real captured
+NIFTY/BANKNIFTY/FINNIFTY smiles reprice to 0.53-0.71 — over 10x worse, a
+genuine degradation even though "0.7 vol points" sounds small in
+isolation, given the real smiles' own directly-observed skew spans only
+~2.5 vol points end to end. Root cause: `options_chain_collector.capture()`
+only takes strikes ±5 either side of spot, which for NIFTY/BANKNIFTY covers
+under 2.3% log-moneyness — too narrow to identify SVI's 5 free parameters
+independently (many distinct parameter combinations achieve near-identical
+squared error). An initial attempt to detect this by checking whether the
+fitted `b` parameter sat near its optimizer-bound floor turned out to be a
+dead end: that floor is common to `test_svi_surface.py`'s own validated
+*wide* reference fit too, so it isn't a reliable narrow-vs-wide
+discriminator — just a property of this smile shape/optimizer landscape.
+Replaced with a direct, principled check instead: does the fitted curve
+actually reprice the market IVs it was fitted to (the same check
+`test_svi_surface.py`'s own `test_fit_reproduces_the_input_smile` uses,
+just with a tighter bar appropriate to this deployment's much denser real
+strike spacing). The diagnostic now honestly reports `low_confidence_fit:
+true` with the specific reason whenever either check fails, rather than
+presenting an unidentified curve as a reliable smile — confirmed this
+correctly triggers for all three real underlyings today, and correctly
+does *not* trigger for a well-identified wide synthetic reference.
+Widening `strikes_each_side` in the live collector would address the root
+cause but increases Angel One API call volume against a rate limit this
+system has already had to build a circuit breaker around
+(`_run_chain_capture_tick`) — left as a deliberate, disclosed trade-off for
+a future explicit decision, not changed silently from a diagnostics
+feature.
+
+Tests: `tests/test_options_chain_collector.py::LatestSmileTests` (5 new),
+`tests/test_vol_surface_diagnostics.py` (5 new, including a direct
+wide-vs-narrow comparison against the exact synthetic-smile formula
+`test_svi_surface.py` already established). Full suite: 1494 passed.
