@@ -32,7 +32,7 @@ import { PageHeader } from '../components/shared/PageHeader'
 import { EmptyState } from '../components/shared/States'
 import { Table } from '../components/shared/Table'
 import { execModeBadge } from '../components/shared/Badge'
-import { useStore } from '../store'
+import { FreshnessBadge } from '../components/shared/Freshness'
 import { inr, pct, fmtDateTime } from '../utils'
 import {
   getEquityCurve, getPortfolioPositions, getDBSummary, getRecentTrades,
@@ -64,7 +64,6 @@ export function CommandCenter() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [lastLoad, setLastLoad] = useState<number | null>(null)
-  const wsStatus = useStore((s) => s.wsStatus)
 
   const load = useCallback(async () => {
     setError(null)
@@ -128,7 +127,7 @@ export function CommandCenter() {
         icon={<Gauge size={18} />}
         actions={
           <div className="flex items-center gap-3">
-            <ConnBadge status={wsStatus} />
+            <FreshnessBadge />
             {lastLoad && (
               <span className="text-[11px] text-ink-faint">
                 updated {fmtDateTime(new Date(lastLoad).toISOString())}
@@ -470,14 +469,3 @@ function Stat({ label, value, tone }: { label: string; value: string; tone?: 'go
   )
 }
 
-function ConnBadge({ status }: { status: string }) {
-  const tone =
-    status === 'connected' ? 'text-brand-green border-brand-green/40'
-    : status === 'error' ? 'text-brand-red border-brand-red/40'
-    : 'text-brand-yellow border-brand-yellow/40'
-  return (
-    <span className={clsx('rounded border px-2 py-0.5 text-[10px] uppercase tracking-wide', tone)}>
-      ws {status}
-    </span>
-  )
-}

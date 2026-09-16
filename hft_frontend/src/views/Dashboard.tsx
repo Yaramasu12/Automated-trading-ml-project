@@ -325,7 +325,7 @@ export function Dashboard() {
 
       {/* ── Header ──────────────────────────────────────────────────────────── */}
       <PageHeader
-        title="Command Center"
+        title="Dashboard"
         subtitle="Live performance · multi-agent overview"
         icon={<LayoutDashboard size={18} />}
         actions={
