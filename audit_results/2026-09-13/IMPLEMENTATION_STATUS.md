@@ -997,3 +997,73 @@ with nothing real to measure.
 Tests this round: 4 new files/additions (`test_multi_leg_manager.py`,
 `test_tca.py`, plus additions to `test_runtime.py` and
 `test_audit_fixes.py`). Full suite: 1506 passed. Deployed live.
+
+## Section 21B — a real, bounded slice of the durable state machine (built)
+
+The full spec (`SESSION_ACTIVE -> SESSION_CLOSED -> RECONCILED ->
+DATASET_READY -> EVALUATED -> TRAINED_OR_SKIPPED -> CANDIDATE_VALIDATED ->
+SHADOW_OR_PAPER_ELIGIBLE -> NEXT_SESSION_READY`, DB leases, idempotent
+stages, checkpoints) was previously deferred as "genuinely new
+architecture." Rather than build the whole exchange-session lifecycle at
+once — most of which (SESSION_ACTIVE/CLOSED/RECONCILED) belongs to other
+jobs (`daily_pnl_report`, `eod_square_off`) that already run and already
+have their own re-fire protection (the grace-window fix) — this pass built
+the concrete, high-value slice the spec explicitly motivates: durable,
+lease-protected tracking for the two jobs that actually run real training
+(`model_retrain`, `intraday_retrain`), closing a genuine, verifiable gap.
+
+**The gap**: `daily_scheduler.py`'s `main()` loop tracks "already ran
+today" via an in-memory `last_run_date` dict. That dict resets to empty on
+every process restart — so a scheduler crash/restart mid-day could
+re-trigger the same day's `model_retrain` a second time, directly
+contradicting the spec's "duplicate scheduler processes/restarts cannot
+double-count." Low probability, real consequence (wasted 30-minute compute
+budget, or worse, two concurrent trainers racing to save the same model
+artifact).
+
+**Fix**: a new `learning_runs` table (`UNIQUE (job_name, session_date)` is
+the actual idempotency mechanism) plus `TradingDatabase.claim_learning_run()`
+/ `update_learning_run()` / `recent_learning_runs()`. Claiming a run is one
+INSERT that either succeeds (this process owns today's run) or hits the
+constraint — the existing row's `state` and `lease_expires_at` then decide
+whether to refuse (already terminal today, or another process holds a
+still-valid lease) or take over (a crashed process's stale lease — the
+recovery path, not a duplicate-run risk, since the underlying training
+mutation is a pure refit from re-fetched data, safe to redo from scratch).
+`model_retrain`/`intraday_retrain` now claim before doing any work and
+record real state transitions at each existing decision point:
+`MISSING_DATA`, `DATASET_READY`, `EVALUATED`, `TRAINED_OR_SKIPPED`,
+`VALIDATION_REJECTED`, `CANDIDATE_VALIDATED` (saved but live-reload
+unconfirmed), `SHADOW_OR_PAPER_ELIGIBLE` (saved AND confirmed served —
+reusing the Section 21I `_reload_neural_models()` return value), or
+`OPERATIONAL_FAILURE` on an unexpected exception. Lease duration (30 min)
+matches the existing Section 21B time-budget fix
+(`_JOB_TIME_BUDGET_SECONDS`), so a legitimately-still-running job's lease
+is never mistakenly seen as expired.
+
+Exposed via `GET /learning/runs` (multi-day history) and folded into
+`GET /learning/daily-report`'s existing `learning_runs` section (today
+only). `daily_scheduler.py`'s own in-memory `last_run_date` dict is left
+in place unchanged — it still governs the *other* jobs (`instrument_refresh`,
+`eod_square_off`, etc.) that don't have this durable protection, and
+keeping it doesn't conflict with the new mechanism (the DB claim would
+refuse a re-run regardless of what the in-memory dict does).
+
+**Explicitly not built**: the full `SESSION_ACTIVE`/`SESSION_CLOSED`/
+`RECONCILED` exchange-session lifecycle, per-stage checkpointing within a
+single job (these two jobs' own training mutation is one atomic unit, not
+several resumable stages), and applying this pattern to jobs beyond the
+two training ones. Recorded as the clear next increment if a future
+session finds a concrete need (e.g., a third training job, or genuine
+partial-mutation resumability becoming necessary).
+
+Tests: `tests/test_learning_runs.py` (8 new — claim/refuse/lease-expiry-
+takeover/multi-job-multi-day isolation, directly against a throwaway
+SQLite-backed `TradingDatabase`), `tests/test_daily_scheduler.py::LearningRunWiringTests`
+(4 new — refused claim skips all real work; a real tiny-dataset run
+through the actual `GradientBoostedReturnForecaster` correctly records
+`DATASET_READY`/`EVALUATED`/`TRAINED_OR_SKIPPED`), `tests/test_runtime.py`
+(2 new — report/endpoint surface real claimed runs). Full suite: 1520
+passed. Deployed live (both `trading-api` and `trading-scheduler`, since
+both load `persistence.py` and the scheduler specifically needs the
+`daily_scheduler.py` changes).

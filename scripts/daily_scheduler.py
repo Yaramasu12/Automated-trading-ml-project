@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import logging
 import os
+import socket
 import sys
 import threading
 import time
@@ -158,22 +159,68 @@ def _api_post(path: str, payload: bytes, *, retries: int = 3, timeout: int = 5) 
     raise RuntimeError(f"API POST {path} failed after {retries} attempts: {last_exc}")
 
 
-def _reload_neural_models() -> None:
+# Section 21B: identifies which process/container instance claimed a given
+# day's learning run — purely for debugging/audit ("who ran this"), not a
+# uniqueness guarantee (a process could restart with the same hostname:pid
+# after a crash, but that's fine: it would just be re-claiming its own
+# expired lease, the intended recovery path).
+_LEASE_OWNER = f"{socket.gethostname()}:{os.getpid()}"
+# Generous relative to the ~30min job-time-budget these jobs already run
+# under (_JOB_TIME_BUDGET_SECONDS) — a legitimately-still-running job's
+# lease should never appear expired to a well-meaning second claim.
+_LEARNING_RUN_LEASE_SECONDS = 1800.0
+
+
+def _claim_learning_run(job_name: str, job_version: str):
+    """Durable, lease-protected claim for today's run of `job_name`
+    (Section 21B) — the replacement for the old in-memory last_run_date
+    dict in main()'s loop, which reset to empty on every scheduler
+    restart and so could not actually prevent a restart mid-day from
+    re-triggering the same training run a second time.
+
+    Returns (db, run_id) if this process may proceed, or None if it must
+    not (today's run already reached a terminal state, or another process
+    currently holds a valid lease on it) — caller should log and return.
+    """
+    from trading_platform.data.persistence import TradingDatabase
+    db = TradingDatabase()
+    session_date = _now_ist().date()
+    run = db.claim_learning_run(
+        job_name, session_date, job_version=job_version,
+        lease_owner=_LEASE_OWNER, lease_seconds=_LEARNING_RUN_LEASE_SECONDS,
+    )
+    if run is None:
+        logger.info(
+            "%s: today's (%s) run already completed or is actively owned by "
+            "another process — skipping", job_name, session_date,
+        )
+        return None
+    return db, run["id"]
+
+
+def _reload_neural_models() -> bool:
     """Ask the running API to pick up a freshly-saved model artifact in-process.
 
     Without this, a validated retrain sits on disk until someone manually
     restarts trading-api — the nightly job's own promotion would be silently
     inert until then. See IMPLEMENTATION_STATUS.md, Section 21A.
+
+    Returns whether the reload request was actually accepted — Section 21B's
+    learning_runs tracker uses this to distinguish CANDIDATE_VALIDATED
+    (saved, not yet confirmed served) from SHADOW_OR_PAPER_ELIGIBLE (saved
+    AND confirmed picked up by the live process).
     """
     try:
         _api_post("/neural/reload-models", b"{}")
         logger.info("Requested in-process neural model reload via API")
+        return True
     except Exception as exc:
         logger.warning(
             "Neural model reload API call failed — new artifact is saved to disk "
             "but the running API process will keep serving the old one until "
             "manually restarted: %s", exc,
         )
+        return False
 
 
 def _checkpoint_sqlite_wal() -> None:
@@ -449,8 +496,11 @@ def run_model_retrain() -> None:
     so the record shows what was actually tried rather than only what survived.
     """
     logger.info("JOB: model_retrain — re-validating the return forecaster")
+    claim = _claim_learning_run("model_retrain", job_version=f"horizons={list(RETRAIN_HORIZONS)}")
+    if claim is None:
+        return
+    db, run_id = claim
     try:
-        from trading_platform.data.persistence import TradingDatabase
         from trading_platform.neural.return_forecaster import GradientBoostedReturnForecaster
         from scripts.train_return_forecaster import MODEL_PATH
 
@@ -460,17 +510,23 @@ def run_model_retrain() -> None:
                 "model_retrain skipped: no Angel One credentials and no cached candles under "
                 "data/historical. Nothing real to train on — refusing to train on synthetic data."
             )
+            db.update_learning_run(run_id, "MISSING_DATA",
+                                    detail="no Angel One credentials and no cached candles")
             return
         bars_by_symbol, source = loaded
         if not bars_by_symbol:
             logger.warning("model_retrain skipped: %s returned no usable series", source)
+            db.update_learning_run(run_id, "MISSING_DATA", detail=f"{source} returned no usable series")
             return
 
         total_bars = sum(len(v) for v in bars_by_symbol.values())
         logger.info("Re-validating on %d symbols / %d bars from %s",
                     len(bars_by_symbol), total_bars, source)
+        db.update_learning_run(
+            run_id, "DATASET_READY",
+            metadata={"source": source, "n_symbols": len(bars_by_symbol), "total_bars": total_bars},
+        )
 
-        db = TradingDatabase()
         best: tuple[int, dict] | None = None
         for horizon in RETRAIN_HORIZONS:
             forecaster = GradientBoostedReturnForecaster(horizon=horizon)
@@ -489,6 +545,7 @@ def run_model_retrain() -> None:
                         f"{metrics['oos_auc']:.4f}" if "oos_auc" in metrics else "n/a")
             if accepted and (best is None or metrics.get("oos_auc", 0.0) > best[1].get("oos_auc", 0.0)):
                 best = (horizon, metrics)
+        db.update_learning_run(run_id, "EVALUATED", metadata={"horizons_tried": list(RETRAIN_HORIZONS)})
 
         if best is None:
             logger.info(
@@ -496,6 +553,8 @@ def run_model_retrain() -> None:
                 "artifact (if any) and continuing to serve the MA baseline. This is the "
                 "correct outcome, not a failure."
             )
+            db.update_learning_run(run_id, "TRAINED_OR_SKIPPED",
+                                    detail="no horizon cleared the OOS AUC acceptance threshold")
             return
 
         # Refit the winning horizon and persist it. save() records accepted=True in
@@ -505,6 +564,8 @@ def run_model_retrain() -> None:
         if not winner.train_pooled(bars_by_symbol):
             logger.warning("model_retrain: horizon %d did not re-validate on refit — not saving",
                            best_horizon)
+            db.update_learning_run(run_id, "VALIDATION_REJECTED",
+                                    detail=f"horizon {best_horizon} passed the sweep but not the refit")
             return
         MODEL_PATH.parent.mkdir(parents=True, exist_ok=True)
         winner.save(str(MODEL_PATH))
@@ -512,9 +573,22 @@ def run_model_retrain() -> None:
             "model_retrain: PROMOTED horizon=%d (OOS AUC=%.4f) -> %s",
             best_horizon, best_metrics.get("oos_auc", float("nan")), MODEL_PATH,
         )
-        _reload_neural_models()
+        reloaded = _reload_neural_models()
+        detail = f"horizon={best_horizon} OOS_AUC={best_metrics.get('oos_auc', float('nan')):.4f}"
+        if reloaded:
+            db.update_learning_run(run_id, "SHADOW_OR_PAPER_ELIGIBLE", detail=detail, metadata=best_metrics)
+        else:
+            db.update_learning_run(
+                run_id, "CANDIDATE_VALIDATED",
+                detail=f"{detail} (saved to disk; live reload not confirmed — may still need a manual restart)",
+                metadata=best_metrics,
+            )
     except Exception as exc:
         logger.error("model_retrain failed: %s", exc, exc_info=True)
+        try:
+            db.update_learning_run(run_id, "OPERATIONAL_FAILURE", detail=str(exc)[:500])
+        except Exception:
+            pass
 
 
 def _intraday_symbols() -> list[str]:
@@ -549,8 +623,11 @@ def run_intraday_retrain() -> None:
     serves the cached candles under data/intraday_research first.
     """
     logger.info("JOB: intraday_retrain — re-validating the intraday forecaster")
+    claim = _claim_learning_run("intraday_retrain", job_version=f"horizons={list(INTRADAY_HORIZONS)}")
+    if claim is None:
+        return
+    db, run_id = claim
     try:
-        from trading_platform.data.persistence import TradingDatabase
         from trading_platform.neural.intraday_forecaster import IntradayReturnForecaster
         from scripts.train_intraday_forecaster import MODEL_PATH, fetch_angel
 
@@ -560,6 +637,8 @@ def run_intraday_retrain() -> None:
                 "intraday_retrain skipped: no Angel One credentials and no cached 5-min "
                 "candles under data/intraday_research — nothing real to train on."
             )
+            db.update_learning_run(run_id, "MISSING_DATA",
+                                    detail="no Angel One credentials and no cached 5-min candles")
             return
 
         bars_by_symbol: dict[str, list[dict]] = {}
@@ -577,13 +656,17 @@ def run_intraday_retrain() -> None:
 
         if not bars_by_symbol:
             logger.warning("intraday_retrain skipped: no symbol had enough 5-min bars")
+            db.update_learning_run(run_id, "MISSING_DATA", detail="no symbol had enough 5-min bars")
             return
 
         total_bars = sum(len(v) for v in bars_by_symbol.values())
         logger.info("Re-validating intraday on %d symbols / %d 5-min bars",
                     len(bars_by_symbol), total_bars)
+        db.update_learning_run(
+            run_id, "DATASET_READY",
+            metadata={"n_symbols": len(bars_by_symbol), "total_bars": total_bars},
+        )
 
-        db = TradingDatabase()
         best: tuple[int, dict] | None = None
         for horizon in INTRADAY_HORIZONS:
             forecaster = IntradayReturnForecaster(horizon=horizon)
@@ -602,12 +685,15 @@ def run_intraday_retrain() -> None:
                         f"{metrics['oos_auc']:.4f}" if "oos_auc" in metrics else "n/a")
             if accepted and (best is None or metrics.get("oos_auc", 0.0) > best[1].get("oos_auc", 0.0)):
                 best = (horizon, metrics)
+        db.update_learning_run(run_id, "EVALUATED", metadata={"horizons_tried": list(INTRADAY_HORIZONS)})
 
         if best is None:
             logger.info(
                 "intraday_retrain: no horizon showed validated edge — nothing promoted. "
                 "This is the correct outcome, not a failure."
             )
+            db.update_learning_run(run_id, "TRAINED_OR_SKIPPED",
+                                    detail="no horizon cleared the OOS AUC acceptance threshold")
             return
 
         best_horizon, best_metrics = best
@@ -615,6 +701,8 @@ def run_intraday_retrain() -> None:
         if not winner.train_pooled(bars_by_symbol):
             logger.warning("intraday_retrain: horizon %d did not re-validate on refit — not saving",
                            best_horizon)
+            db.update_learning_run(run_id, "VALIDATION_REJECTED",
+                                    detail=f"horizon {best_horizon} passed the sweep but not the refit")
             return
         MODEL_PATH.parent.mkdir(parents=True, exist_ok=True)
         winner.save(str(MODEL_PATH))
@@ -623,9 +711,22 @@ def run_intraday_retrain() -> None:
             "Still needs AGENT_DIRECTIONAL_ENABLED=true to affect orders.",
             best_horizon, best_horizon * 5, best_metrics.get("oos_auc", float("nan")), MODEL_PATH,
         )
-        _reload_neural_models()
+        reloaded = _reload_neural_models()
+        detail = f"horizon={best_horizon} ({best_horizon * 5}min) OOS_AUC={best_metrics.get('oos_auc', float('nan')):.4f}"
+        if reloaded:
+            db.update_learning_run(run_id, "SHADOW_OR_PAPER_ELIGIBLE", detail=detail, metadata=best_metrics)
+        else:
+            db.update_learning_run(
+                run_id, "CANDIDATE_VALIDATED",
+                detail=f"{detail} (saved to disk; live reload not confirmed — may still need a manual restart)",
+                metadata=best_metrics,
+            )
     except Exception as exc:
         logger.error("intraday_retrain failed: %s", exc, exc_info=True)
+        try:
+            db.update_learning_run(run_id, "OPERATIONAL_FAILURE", detail=str(exc)[:500])
+        except Exception:
+            pass
 
 
 _JOB_FNS = {

@@ -204,5 +204,57 @@ class JobTimeBudgetTests(unittest.TestCase):
         release.set()
 
 
+class LearningRunWiringTests(unittest.TestCase):
+    """Section 21B: run_model_retrain/run_intraday_retrain must consult the
+    durable learning_runs claim before doing any real work, and record a
+    terminal state for each real outcome — not just the old in-memory
+    last_run_date dict, which reset on every scheduler restart."""
+
+    def test_model_retrain_does_nothing_when_the_claim_is_refused(self):
+        with mock.patch.object(daily_scheduler, "_claim_learning_run", return_value=None), \
+             mock.patch.object(daily_scheduler, "_retrain_bars") as mock_retrain_bars:
+            daily_scheduler.run_model_retrain()
+
+        mock_retrain_bars.assert_not_called()
+
+    def test_intraday_retrain_does_nothing_when_the_claim_is_refused(self):
+        with mock.patch.object(daily_scheduler, "_claim_learning_run", return_value=None), \
+             mock.patch.object(daily_scheduler, "_intraday_symbols") as mock_symbols:
+            daily_scheduler.run_intraday_retrain()
+
+        mock_symbols.assert_not_called()
+
+    def test_model_retrain_records_missing_data_when_no_series_is_available(self):
+        fake_db = mock.Mock()
+        with mock.patch.object(daily_scheduler, "_claim_learning_run", return_value=(fake_db, 42)), \
+             mock.patch.object(daily_scheduler, "_retrain_bars", return_value=None):
+            daily_scheduler.run_model_retrain()
+
+        fake_db.update_learning_run.assert_called_once()
+        args, kwargs = fake_db.update_learning_run.call_args
+        self.assertEqual(args[0], 42)
+        self.assertEqual(args[1], "MISSING_DATA")
+
+    def test_model_retrain_records_trained_or_skipped_when_no_horizon_clears_the_gate(self):
+        """Uses the real GradientBoostedReturnForecaster on a deliberately
+        tiny series — too few rows to ever clear MIN_TRAIN_ROWS, so every
+        horizon is honestly rejected. Exercises the real "no edge" path
+        without needing a large realistic fixture."""
+        fake_db = mock.Mock()
+        tiny_bars = {"RELIANCE": [
+            {"open": 100.0, "high": 101.0, "low": 99.0, "close": 100.0 + i * 0.1, "volume": 1000}
+            for i in range(40)
+        ]}
+        with mock.patch.object(daily_scheduler, "_claim_learning_run", return_value=(fake_db, 7)), \
+             mock.patch.object(daily_scheduler, "_retrain_bars", return_value=(tiny_bars, "csv_cache")):
+            daily_scheduler.run_model_retrain()
+
+        states = [c.args[1] for c in fake_db.update_learning_run.call_args_list]
+        self.assertIn("DATASET_READY", states)
+        self.assertIn("EVALUATED", states)
+        self.assertIn("TRAINED_OR_SKIPPED", states)
+        self.assertNotIn("OPERATIONAL_FAILURE", states)
+
+
 if __name__ == "__main__":
     unittest.main()

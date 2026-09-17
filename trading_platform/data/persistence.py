@@ -17,7 +17,7 @@ import os
 import sqlite3
 import threading
 from contextlib import contextmanager
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Generator
 
@@ -91,6 +91,32 @@ CREATE TABLE IF NOT EXISTS model_runs (
     signal         TEXT,
     confidence     DOUBLE PRECISION,
     metadata       JSONB
+);
+
+-- Implementation prompt Section 21B: a durable, lease-protected run record
+-- per (job, IST trading session date) so a scheduler restart cannot
+-- double-count a training run. daily_scheduler.py's own in-memory
+-- last_run_date dict already prevented re-selection within one process's
+-- lifetime, but resets to empty on every restart — a restart mid-day could
+-- re-trigger model_retrain/intraday_retrain a second time that day. The
+-- UNIQUE constraint below is the actual idempotency mechanism: claiming a
+-- run is one INSERT that either succeeds (this process owns today's run)
+-- or hits the constraint (a row already exists — inspect its state/lease
+-- to decide whether to refuse or take over a crashed process's stale lease).
+CREATE TABLE IF NOT EXISTS learning_runs (
+    id               BIGSERIAL   PRIMARY KEY,
+    job_name         TEXT        NOT NULL,
+    session_date     DATE        NOT NULL,
+    dataset_version  TEXT,
+    job_version      TEXT,
+    state            TEXT        NOT NULL,
+    lease_owner      TEXT,
+    lease_expires_at TIMESTAMPTZ,
+    detail           TEXT,
+    metadata         JSONB,
+    created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (job_name, session_date)
 );
 
 CREATE TABLE IF NOT EXISTS risk_events (
@@ -320,6 +346,22 @@ CREATE TABLE IF NOT EXISTS model_runs (
     signal        TEXT,
     confidence    REAL,
     metadata      TEXT
+);
+-- See the matching postgres table's comment above (Section 21B).
+CREATE TABLE IF NOT EXISTS learning_runs (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    job_name         TEXT NOT NULL,
+    session_date     TEXT NOT NULL,
+    dataset_version  TEXT,
+    job_version      TEXT,
+    state            TEXT NOT NULL,
+    lease_owner      TEXT,
+    lease_expires_at TEXT,
+    detail           TEXT,
+    metadata         TEXT,
+    created_at       TEXT NOT NULL,
+    updated_at       TEXT NOT NULL,
+    UNIQUE (job_name, session_date)
 );
 CREATE TABLE IF NOT EXISTS risk_events (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -973,6 +1015,122 @@ class TradingDatabase:
             params.append(since if self._mode == "postgres" else since.isoformat())
         where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
         sql = self._p(f"SELECT * FROM model_runs {where} ORDER BY id DESC LIMIT ?")
+        with self._cursor() as cur:
+            cur.execute(sql, [*params, limit])
+            rows = self._rows(cur, cur.fetchall())
+        for row in rows:
+            row["metadata"] = self._json_field(row.get("metadata"), default={})
+        return rows
+
+    # ------------------------------------------------------------------
+    # Learning runs (Section 21B: durable, lease-protected training-job
+    # state so a scheduler restart cannot double-count a run)
+    # ------------------------------------------------------------------
+
+    _LEARNING_RUN_IN_PROGRESS_STATE = "RUNNING"
+
+    def claim_learning_run(
+        self,
+        job_name: str,
+        session_date: date,
+        *,
+        dataset_version: str | None = None,
+        job_version: str | None = None,
+        lease_owner: str,
+        lease_seconds: float = 1800.0,
+    ) -> dict | None:
+        """Atomically claim ownership of `job_name`'s run for `session_date`.
+
+        Returns the claimed row (now leased to `lease_owner`) if this caller
+        may proceed, or None if it must not: either the run already reached
+        a terminal state today (the durable replacement for
+        daily_scheduler.py's in-memory last_run_date dict — that dict resets
+        on every process restart, so a restart mid-day could otherwise
+        re-trigger the same training run a second time), or another process
+        currently holds a still-valid lease on it.
+
+        A row with an EXPIRED lease (the process that claimed it crashed
+        without ever reaching a terminal state) is fair game — this is the
+        recovery path for a crashed scheduler, not a duplicate-run risk,
+        since the crashed run's own DB mutations (if any) are idempotent
+        writes keyed by this same (job_name, session_date) row.
+        """
+        now = datetime.now(timezone.utc)
+        now_val = now if self._mode == "postgres" else now.isoformat()
+        sd_val = session_date if self._mode == "postgres" else session_date.isoformat()
+        meta_val = json.dumps({})
+
+        insert_sql = self._p(
+            "INSERT INTO learning_runs "
+            "(job_name, session_date, dataset_version, job_version, state, "
+            " lease_owner, lease_expires_at, metadata, created_at, updated_at) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?) "
+            "ON CONFLICT (job_name, session_date) DO NOTHING"
+        )
+        lease_expires = now + timedelta(seconds=lease_seconds)
+        lease_expires_val = lease_expires if self._mode == "postgres" else lease_expires.isoformat()
+        with self._cursor() as cur:
+            cur.execute(insert_sql, (
+                job_name, sd_val, dataset_version, job_version,
+                self._LEARNING_RUN_IN_PROGRESS_STATE,
+                lease_owner, lease_expires_val, meta_val, now_val, now_val,
+            ))
+
+            select_sql = self._p("SELECT * FROM learning_runs WHERE job_name=? AND session_date=?")
+            cur.execute(select_sql, (job_name, sd_val))
+            row = _row_to_dict(cur, cur.fetchone())
+            if row is None:
+                return None  # should not happen; defensive
+
+            existing_lease_expires = self._parse_dt(row.get("lease_expires_at"))
+            lease_still_valid = bool(existing_lease_expires and existing_lease_expires > now)
+            is_running = row.get("state") == self._LEARNING_RUN_IN_PROGRESS_STATE
+
+            if not is_running:
+                return None  # already reached a terminal state today
+            if lease_still_valid and row.get("lease_owner") != lease_owner:
+                return None  # another process is actively holding this run
+
+            # Either freshly inserted by us, or a RUNNING row with an
+            # expired/absent lease — (re)claim it.
+            update_sql = self._p(
+                "UPDATE learning_runs SET lease_owner=?, lease_expires_at=?, updated_at=? "
+                "WHERE id=?"
+            )
+            cur.execute(update_sql, (lease_owner, lease_expires_val, now_val, row["id"]))
+            row["lease_owner"] = lease_owner
+            row["lease_expires_at"] = lease_expires_val
+            row["metadata"] = self._json_field(row.get("metadata"), default={})
+            return row
+
+    def update_learning_run(
+        self,
+        run_id: int,
+        state: str,
+        *,
+        detail: str | None = None,
+        metadata: dict | None = None,
+    ) -> None:
+        """Advance a claimed run's state. `state` is one of the
+        implementation-prompt-named milestones (DATASET_READY, EVALUATED,
+        TRAINED_OR_SKIPPED, CANDIDATE_VALIDATED, SHADOW_OR_PAPER_ELIGIBLE) or
+        a failure state (MISSING_DATA, VALIDATION_REJECTED, RESOURCE_TIMEOUT,
+        OPERATIONAL_FAILURE) — anything other than the internal RUNNING
+        marker is treated as terminal-for-today by claim_learning_run."""
+        now = datetime.now(timezone.utc)
+        now_val = now if self._mode == "postgres" else now.isoformat()
+        sql = self._p("UPDATE learning_runs SET state=?, detail=?, metadata=?, updated_at=? WHERE id=?")
+        meta_val = json.dumps(metadata) if metadata is not None else None
+        with self._cursor() as cur:
+            cur.execute(sql, (state, detail, meta_val, now_val, run_id))
+
+    def recent_learning_runs(self, job_name: str | None = None, limit: int = 50) -> list[dict]:
+        clauses, params = [], []
+        if job_name:
+            clauses.append("job_name = ?")
+            params.append(job_name)
+        where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+        sql = self._p(f"SELECT * FROM learning_runs {where} ORDER BY id DESC LIMIT ?")
         with self._cursor() as cur:
             cur.execute(sql, [*params, limit])
             rows = self._rows(cur, cur.fetchall())
@@ -1665,6 +1823,21 @@ class TradingDatabase:
         if isinstance(value, str):
             return json.loads(value) if value else default
         return value if value is not None else default
+
+    @staticmethod
+    def _parse_dt(value: Any) -> datetime | None:
+        """Decode a TIMESTAMPTZ column read back from either backend into a
+        real, comparable datetime — same backend-divergence shape as
+        _json_field (SQLite always returns the raw ISO string; psycopg2
+        auto-adapts TIMESTAMPTZ to an already-aware datetime object)."""
+        if value is None:
+            return None
+        if isinstance(value, datetime):
+            return value
+        try:
+            return datetime.fromisoformat(str(value))
+        except ValueError:
+            return None
 
     # ------------------------------------------------------------------
     # Daily AI review & tuning suggestions (post-market advisor)

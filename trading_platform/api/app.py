@@ -1273,6 +1273,14 @@ def daily_learning_report(session_date: str | None = None):
     return runtime.daily_learning_report(parsed)
 
 
+@app.get("/learning/runs", dependencies=[_AuthDep])
+def learning_runs(job_name: str | None = None, limit: int = 50):
+    """Durable learning-run history (Section 21B) — one row per (job, IST
+    trading session date), across multiple days (daily-report above only
+    covers one)."""
+    return runtime.learning_runs(job_name=job_name, limit=limit)
+
+
 # ── Goal Governor ──────────────────────────────────────────────────────────────
 
 @app.get("/goal-governor/status")

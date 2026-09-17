@@ -8,6 +8,7 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 from unittest.mock import Mock, patch
 
+from trading_platform.agent.market_hours import now_ist
 from trading_platform.ai.feature_store import FeatureStore
 from trading_platform.api.runtime import TradingRuntime
 from trading_platform.config import Settings, load_settings
@@ -1197,10 +1198,36 @@ class RuntimeTests(unittest.TestCase):
         report = runtime.daily_learning_report()
         for key in (
             "session_date", "is_trading_day", "data_quality", "pnl", "labels",
-            "model_retrains_today", "agent_learning", "neural_models",
+            "model_retrains_today", "learning_runs", "agent_learning", "neural_models",
             "strategy_promotions", "next_session",
         ):
             self.assertIn(key, report)
+
+    def test_daily_learning_report_surfaces_todays_learning_runs(self):
+        """Section 21B: daily_learning_report() must include today's durable
+        learning-run records (claim_learning_run/update_learning_run),
+        not just the older model_runs verdicts."""
+        runtime = TradingRuntime()
+        run = runtime.db.claim_learning_run(
+            "model_retrain", now_ist().date(), lease_owner="test-proc",
+        )
+        runtime.db.update_learning_run(run["id"], "TRAINED_OR_SKIPPED", detail="no edge found")
+
+        report = runtime.daily_learning_report()
+
+        runs = report["learning_runs"]["runs"]
+        self.assertTrue(any(r["job_name"] == "model_retrain" and r["state"] == "TRAINED_OR_SKIPPED" for r in runs))
+
+    def test_learning_runs_endpoint_method_reads_across_multiple_days(self):
+        runtime = TradingRuntime()
+        runtime.db.claim_learning_run("model_retrain", date(2026, 9, 15), lease_owner="p1")
+        runtime.db.claim_learning_run("model_retrain", date(2026, 9, 16), lease_owner="p1")
+        runtime.db.claim_learning_run("intraday_retrain", date(2026, 9, 16), lease_owner="p1")
+
+        result = runtime.learning_runs(job_name="model_retrain")
+
+        self.assertEqual(result["count"], 2)
+        self.assertTrue(all(r["job_name"] == "model_retrain" for r in result["runs"]))
 
 
 if __name__ == "__main__":

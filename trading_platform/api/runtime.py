@@ -5327,6 +5327,16 @@ class TradingRuntime:
             note_swallowed("daily_learning_report.promotions", exc)
             promotions = []
 
+        try:
+            all_learning_runs = self.db.recent_learning_runs(limit=100)
+            todays_learning_runs = [
+                r for r in all_learning_runs
+                if _run_at_ist_date(r.get("created_at")) == session_date
+            ]
+        except Exception as exc:
+            note_swallowed("daily_learning_report.learning_runs", exc)
+            todays_learning_runs = []
+
         return {
             "session_date": session_date.isoformat(),
             "is_trading_day": is_trading_day(session_date),
@@ -5359,6 +5369,18 @@ class TradingRuntime:
                                   "recorded via save_model_run and now readable here; no "
                                   "recorded compute-duration field yet (minor gap)",
             },
+            "learning_runs": {
+                "runs": todays_learning_runs,
+                "spec_coverage": "partial (Section 21B) — model_retrain/intraday_retrain now "
+                                  "claim a durable, lease-protected run record per (job, IST "
+                                  "session date) before doing any work, so a scheduler restart "
+                                  "mid-day cannot re-trigger the same day's run, and progress "
+                                  "through DATASET_READY -> EVALUATED -> TRAINED_OR_SKIPPED / "
+                                  "CANDIDATE_VALIDATED / SHADOW_OR_PAPER_ELIGIBLE (or a failure "
+                                  "state) is recorded. The full exchange-session lifecycle "
+                                  "(SESSION_ACTIVE -> SESSION_CLOSED -> RECONCILED) and other "
+                                  "jobs besides these two are not yet tracked this way.",
+            },
             "agent_learning": {
                 **reflection_stats,
                 "meta_labeler": self._meta_labeler.summary(),
@@ -5379,3 +5401,11 @@ class TradingRuntime:
                         "rollback (Section 21I) does not exist yet.",
             },
         }
+
+    def learning_runs(self, job_name: str | None = None, limit: int = 50) -> dict:
+        """Recent durable learning-run records (Section 21B) — one row per
+        (job, IST trading session date), showing what state each nightly
+        retrain reached and why, across as many days as `limit` covers
+        (unlike daily_learning_report(), which only shows one day)."""
+        runs = self.db.recent_learning_runs(job_name=job_name, limit=limit)
+        return {"count": len(runs), "runs": runs}
