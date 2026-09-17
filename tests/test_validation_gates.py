@@ -278,6 +278,41 @@ class GateEvaluatorTests(unittest.TestCase):
         evaluator.evaluate_cost_model(total_pnl=800.0, total_charges=200.0)  # ratio 0.8 < 0.9
         self.assertEqual(evaluator.results.cost_model.result, GateResult.FAIL)
 
+    def test_cpcv_gate_checks_auc_when_a_classifier_supplies_one(self):
+        """The original, classifier-shaped intent of evaluate_cpcv(): both
+        AUC and Sharpe must clear their thresholds."""
+        from types import SimpleNamespace
+        evaluator = GateEvaluator()
+        evaluator.evaluate_cpcv(SimpleNamespace(out_of_sample_metrics={
+            "mean_oos_auc": 0.60, "mean_oos_sharpe": 0.5,
+        }))
+        self.assertEqual(evaluator.results.cpcv.result, GateResult.PASS)
+
+        evaluator.evaluate_cpcv(SimpleNamespace(out_of_sample_metrics={
+            "mean_oos_auc": 0.40, "mean_oos_sharpe": 0.5,
+        }))
+        self.assertEqual(evaluator.results.cpcv.result, GateResult.FAIL)
+
+    def test_cpcv_gate_skips_auc_check_for_a_rule_based_strategy(self):
+        """Section 17 audit (2026-09-17): a rule-based options strategy (e.g.
+        short_vol's parameter sweep) has no predictive score to deflate --
+        out_of_sample_metrics carries no mean_oos_auc key at all. Defaulting
+        the absent AUC to 0.0 and comparing it against the 0.52 threshold
+        would fail this gate for every such strategy regardless of real
+        quality -- the AUC half of the check must be skipped, not fabricated."""
+        from types import SimpleNamespace
+        evaluator = GateEvaluator()
+        evaluator.evaluate_cpcv(SimpleNamespace(out_of_sample_metrics={
+            "mean_oos_sharpe": 0.5,
+        }), min_sharpe=0.3)
+        self.assertEqual(evaluator.results.cpcv.result, GateResult.PASS)
+        self.assertIn("Sharpe-only", evaluator.results.cpcv.message)
+
+        evaluator.evaluate_cpcv(SimpleNamespace(out_of_sample_metrics={
+            "mean_oos_sharpe": 0.1,
+        }), min_sharpe=0.3)
+        self.assertEqual(evaluator.results.cpcv.result, GateResult.FAIL)
+
     def test_all_passed_ignores_unevaluated_gates(self):
         evaluator = GateEvaluator()
         evaluator.evaluate_paper_days(45, 30)

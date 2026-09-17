@@ -126,6 +126,18 @@ class VariantRun:
         return mdd
 
 
+def _panel_sharpe(returns) -> float:
+    """Annualized Sharpe of a bare return array — same math as
+    VariantRun.sharpe(), for a returns-matrix slice (a CPCV fold's train/test
+    columns) that isn't a full VariantRun."""
+    r = [float(x) for x in returns]
+    if len(r) < 2:
+        return 0.0
+    m = sum(r) / len(r)
+    sd = math.sqrt(sum((x - m) ** 2 for x in r) / (len(r) - 1))
+    return (m / sd) * math.sqrt(TRADING_DAYS) if sd > 0 else 0.0
+
+
 @dataclass
 class HypothesisVerdict:
     name: str
@@ -239,6 +251,7 @@ class HypothesisHarness:
     ) -> HypothesisVerdict:
         import numpy as np
 
+        from trading_platform.validation.cpcv import CombinatorialPurgedCrossValidator
         from trading_platform.validation.gates import GateEvaluator
 
         runs: list[VariantRun] = []
@@ -274,6 +287,29 @@ class HypothesisHarness:
             matrix = np.column_stack([np.asarray(s[:width], float) for s in series])
             evaluator.evaluate_dsr(sharpes[best_i], sharpes, matrix[:, best_i])
             evaluator.evaluate_pbo(matrix)
+
+            # §5 gate 2: CPCV (combinatorial purged CV with embargo) — see
+            # backtesting.short_vol_backtest.evaluate_short_vol_gates for the
+            # full Section 17 audit rationale (2026-09-17); same gap, same
+            # fix, applied here since this is the twin gate-evaluation path
+            # the LLM hypothesis research loop uses.
+            cpcv = CombinatorialPurgedCrossValidator()
+            if cpcv.generate_folds(width):
+                oos_sharpes = []
+                for path in cpcv.get_combinatorial_paths(n_test_groups=2):
+                    built = cpcv.build_path(path, width)
+                    if len(built.train_indices) < cpcv.min_train_size or len(built.test_indices) < cpcv.min_test_size:
+                        continue
+                    train_sharpes = [_panel_sharpe(matrix[built.train_indices, j]) for j in range(matrix.shape[1])]
+                    best_train_variant = int(np.argmax(train_sharpes))
+                    oos_sharpes.append(_panel_sharpe(matrix[built.test_indices, best_train_variant]))
+                if oos_sharpes:
+                    from types import SimpleNamespace
+                    evaluator.evaluate_cpcv(SimpleNamespace(out_of_sample_metrics={
+                        "mean_oos_sharpe": float(np.mean(oos_sharpes)),
+                        "n_paths": len(oos_sharpes),
+                        "n_folds": cpcv.n_folds,
+                    }))
 
         evaluator.evaluate_monte_carlo(
             [{"pnl": p} for p in best.trade_pnls],

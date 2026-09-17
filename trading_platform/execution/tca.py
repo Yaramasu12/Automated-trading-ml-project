@@ -65,6 +65,15 @@ class TCAResult:
     total_cost_bps: float  # Total in basis points
     fill_ratio: float
     time_to_fill_ms: float
+    # Section 9 audit (2026-09-17): FillRecord already carries strategy/
+    # order_type on every real fill (see runtime.py's _record_fill_for_tca)
+    # but analyze_fill() below dropped both when building TCAResult, which
+    # is the actual root cause behind three separate-looking bugs: the
+    # strategies= filter on compute_summary() had nothing to filter on,
+    # per_strategy stayed permanently empty, and market_order_pct/
+    # limit_order_pct were hardcoded 0.0 for lack of an order_type to tally.
+    strategy: str = ""
+    order_type: str = ""
     quality_rating: str = "GOOD"  # EXCELLENT, GOOD, FAIR, POOR
     timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
@@ -173,6 +182,8 @@ class TransactionCostAnalyzer:
             total_cost_bps=total_bps,
             fill_ratio=fill.fill_ratio,
             time_to_fill_ms=fill.time_to_fill_ms,
+            strategy=fill.strategy,
+            order_type=fill.order_type,
             quality_rating=quality,
         )
 
@@ -220,7 +231,9 @@ class TransactionCostAnalyzer:
         if symbols:
             records = [r for r in records if r.symbol in symbols]
 
-        # Filter by strategies (would need strategy tag on TCAResult — add if needed)
+        # Filter by strategies
+        if strategies:
+            records = [r for r in records if r.strategy in strategies]
 
         if not records:
             return TCASummary(
@@ -284,7 +297,21 @@ class TransactionCostAnalyzer:
             per_symbol[sym]["max_cost_bps"] = max(cbs)
             del per_symbol[sym]["cost_bps"]  # Don't keep raw list
 
-        # Per-strategy breakdown (would need strategy field on TCAResult)
+        # Per-strategy breakdown
+        per_strategy: dict[str, dict] = {}
+        for r in records:
+            key = r.strategy or "unknown"
+            if key not in per_strategy:
+                per_strategy[key] = {"fills": 0, "volume": 0.0, "cost_bps": []}
+            per_strategy[key]["fills"] += 1
+            per_strategy[key]["volume"] += r.fill_price * r.quantity
+            per_strategy[key]["cost_bps"].append(abs(r.implementation_shortfall_bps))
+
+        for name in per_strategy:
+            cbs = per_strategy[name]["cost_bps"]
+            per_strategy[name]["avg_cost_bps"] = sum(cbs) / len(cbs)
+            per_strategy[name]["max_cost_bps"] = max(cbs)
+            del per_strategy[name]["cost_bps"]  # Don't keep raw list
 
         # Quality distribution
         quality_dist: dict[str, int] = {}
@@ -303,9 +330,10 @@ class TransactionCostAnalyzer:
             p5_cost_bps=percentile(costs_bps_sorted, 5),
             p95_cost_bps=percentile(costs_bps_sorted, 95),
             fill_rate=fill_rate,
-            market_order_pct=0.0,  # Would need order_type field on records
-            limit_order_pct=0.0,
+            market_order_pct=sum(1 for r in records if r.order_type == "MARKET") / len(records),
+            limit_order_pct=sum(1 for r in records if r.order_type == "LIMIT") / len(records),
             per_symbol=per_symbol,
+            per_strategy=per_strategy,
             quality_distribution=quality_dist,
         )
 
@@ -410,6 +438,8 @@ class TCAStore:
                 total_cost_bps NUMERIC(12,4),
                 fill_ratio NUMERIC(8,4),
                 time_to_fill_ms NUMERIC(12,2),
+                strategy TEXT,
+                order_type TEXT,
                 quality_rating TEXT,
                 created_at TIMESTAMPTZ DEFAULT NOW()
             );
@@ -428,8 +458,8 @@ class TCAStore:
                 implementation_shortfall_bps, spread_cost_bps,
                 impact_cost_bps, timing_cost_bps,
                 total_cost_inr, total_cost_bps,
-                fill_ratio, time_to_fill_ms, quality_rating
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+                fill_ratio, time_to_fill_ms, strategy, order_type, quality_rating
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
             ON CONFLICT (correlation_id) DO UPDATE SET
                 fill_price = EXCLUDED.fill_price,
                 benchmark_price = EXCLUDED.benchmark_price,
@@ -442,7 +472,8 @@ class TCAStore:
             result.implementation_shortfall_bps, result.spread_cost_bps,
             result.impact_cost_bps, result.timing_cost_bps,
             result.total_cost_inr, result.total_cost_bps,
-            result.fill_ratio, result.time_to_fill_ms, result.quality_rating,
+            result.fill_ratio, result.time_to_fill_ms,
+            result.strategy, result.order_type, result.quality_rating,
         )
 
     async def get_summary(

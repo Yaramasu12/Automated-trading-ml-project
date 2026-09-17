@@ -109,18 +109,58 @@ class ExitPlan:
         return plan
 
     def update_trailing(self, current_price: float) -> None:
+        # Section 12 audit (2026-09-17): _highest_price/_lowest_price used to
+        # update ONLY when a trailing stop was configured (this method
+        # returned immediately otherwise), so for every plan WITHOUT
+        # trailing_pct set — the common case; from_trade() only auto-enables
+        # it when partial_exit=True — both stayed frozen at entry_price for
+        # the plan's entire life. That's the same price-extremes data a real
+        # Maximum Adverse/Favorable Excursion (see max_adverse_excursion/
+        # max_favorable_excursion below) needs regardless of whether a
+        # trailing stop is in use, so tracking the extremes must not be
+        # gated behind trailing being enabled — only RAISING the stop from
+        # them should be.
+        if self.side == "BUY":
+            self._highest_price = max(self._highest_price, current_price)
+            self._lowest_price = min(self._lowest_price, current_price)
+        else:
+            self._lowest_price = min(self._lowest_price, current_price)
+            self._highest_price = max(self._highest_price, current_price)
+
         if self.trailing_pct is None:
             return
         if self.side == "BUY":
-            self._highest_price = max(self._highest_price, current_price)
             new_sl = self._highest_price * (1 - self.trailing_pct)
             if self.stop_loss_price is None or new_sl > self.stop_loss_price:
                 self.stop_loss_price = new_sl
         else:
-            self._lowest_price = min(self._lowest_price, current_price)
             new_sl = self._lowest_price * (1 + self.trailing_pct)
             if self.stop_loss_price is None or new_sl < self.stop_loss_price:
                 self.stop_loss_price = new_sl
+
+    def max_adverse_excursion(self) -> float:
+        """Real Maximum Adverse Excursion in rupees: the worst unrealized
+        loss reached at any point since entry, derived from the real price
+        extremes tracked above — not a placeholder. A BUY's adverse
+        direction is price falling (entry - lowest); a SELL's is price
+        rising (highest - entry). Always >= 0 by construction."""
+        lot_size = self.instrument.lot_size if self.instrument else 1
+        if self.side == "BUY":
+            adverse_price_move = max(0.0, self.entry_price - self._lowest_price)
+        else:
+            adverse_price_move = max(0.0, self._highest_price - self.entry_price)
+        return adverse_price_move * self.quantity * lot_size
+
+    def max_favorable_excursion(self) -> float:
+        """Real Maximum Favorable Excursion in rupees — the mirror of
+        max_adverse_excursion(): the best unrealized profit reached at any
+        point since entry."""
+        lot_size = self.instrument.lot_size if self.instrument else 1
+        if self.side == "BUY":
+            favorable_price_move = max(0.0, self._highest_price - self.entry_price)
+        else:
+            favorable_price_move = max(0.0, self.entry_price - self._lowest_price)
+        return favorable_price_move * self.quantity * lot_size
 
     def check_trigger(self, current_price: float, now: datetime) -> ExitTrigger | None:
         if not self.active:
@@ -183,4 +223,6 @@ class ExitPlan:
             "active": self.active,
             "triggered_by": self.triggered_by.value if self.triggered_by else None,
             "triggered_at": self.triggered_at.isoformat() if self.triggered_at else None,
+            "max_adverse_excursion": self.max_adverse_excursion(),
+            "max_favorable_excursion": self.max_favorable_excursion(),
         }

@@ -593,6 +593,7 @@ def evaluate_short_vol_gates(
     """
     import numpy as _np
 
+    from trading_platform.validation.cpcv import CombinatorialPurgedCrossValidator
     from trading_platform.validation.gates import GateEvaluator
 
     evaluator = GateEvaluator(settings=settings)
@@ -613,6 +614,40 @@ def evaluate_short_vol_gates(
         matrix = _np.column_stack([_np.asarray(s[:width], float) for s in series])
         evaluator.evaluate_dsr(sharpes[best_idx], sharpes, matrix[:, best_idx])
         evaluator.evaluate_pbo(matrix)
+
+        # §5 gate 2: CPCV (combinatorial purged CV with embargo). Section 17
+        # audit (2026-09-17): this was never called anywhere in the real
+        # pipeline (only in tests) — every recorded "PASS" for short_vol/
+        # BANKNIFTY/FINNIFTY reflected only 4 of the 7 documented gates
+        # (walk-forward and paper_days are legitimately evaluated
+        # elsewhere/later — see IMPLEMENTATION_STATUS.md Section 17 — but
+        # CPCV had no substitute anywhere). The DSR/PBO gates above use
+        # simple contiguous-block CSCV splits with no purge/embargo, so a
+        # trade whose holding period straddled a fold boundary could leak
+        # information across the IS/OOS split undetected. Reuses the real
+        # purge/embargo fold machinery already built and tested for ML-model
+        # validation (CombinatorialPurgedCrossValidator), applied here to
+        # the sweep's per-day returns panel instead of a classifier's
+        # features/labels — a rule-based options strategy has no predictive
+        # AUC to deflate, so this reports OOS Sharpe only (see
+        # GateEvaluator.evaluate_cpcv).
+        cpcv = CombinatorialPurgedCrossValidator()
+        if cpcv.generate_folds(width):
+            oos_sharpes = []
+            for path in cpcv.get_combinatorial_paths(n_test_groups=2):
+                built = cpcv.build_path(path, width)
+                if len(built.train_indices) < cpcv.min_train_size or len(built.test_indices) < cpcv.min_test_size:
+                    continue
+                train_sharpes = [_sharpe(list(matrix[built.train_indices, j])) for j in range(matrix.shape[1])]
+                best_train_variant = int(_np.argmax(train_sharpes))
+                oos_sharpes.append(_sharpe(list(matrix[built.test_indices, best_train_variant])))
+            if oos_sharpes:
+                from types import SimpleNamespace
+                evaluator.evaluate_cpcv(SimpleNamespace(out_of_sample_metrics={
+                    "mean_oos_sharpe": float(_np.mean(oos_sharpes)),
+                    "n_paths": len(oos_sharpes),
+                    "n_folds": cpcv.n_folds,
+                }))
 
     evaluator.evaluate_monte_carlo(
         [{"pnl": t.pnl} for t in best.trades],

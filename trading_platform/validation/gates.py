@@ -387,24 +387,42 @@ class GateEvaluator:
 
     def evaluate_cpcv(
         self,
-        cpcv_result: Any,  # validation.cpcv.CPCVResult
+        cpcv_result: Any,  # validation.cpcv.CPCVResult, or any object exposing
+                            # out_of_sample_metrics with the same keys
         min_auc: Optional[float] = None,
         min_sharpe: Optional[float] = None,
     ) -> None:
-        """Wraps the REAL (fixed) CPCVValidator.run_validation() output."""
+        """Wraps a REAL purge/embargo CPCV result: either
+        CPCVValidator.run_validation()'s classifier output (mean_oos_auc +
+        mean_oos_sharpe), or a rule-based strategy's purge/embargo OOS-Sharpe
+        result from CombinatorialPurgedCrossValidator applied directly to a
+        parameter sweep (see backtesting.short_vol_backtest
+        .evaluate_short_vol_gates) — a rule-based options strategy has no
+        predictive score to deflate, so it has no AUC.
+
+        AUC is only checked when out_of_sample_metrics actually carries
+        mean_oos_auc. Defaulting an absent AUC to 0.0 and comparing it
+        against the threshold would fail every rule-based-strategy result
+        regardless of real quality — exactly the fabricated-number problem
+        this module's gates exist to prevent, not a real check."""
         auc_threshold = min_auc if min_auc is not None else 0.52
         sharpe_threshold = min_sharpe if min_sharpe is not None else self._cfg("MIN_WALKFORWARD_SHARPE", 0.3)
         metrics = getattr(cpcv_result, "out_of_sample_metrics", {}) or {}
+        has_auc = "mean_oos_auc" in metrics
         mean_auc = float(metrics.get("mean_oos_auc", 0.0))
         mean_sharpe = float(metrics.get("mean_oos_sharpe", 0.0))
-        passed = mean_auc >= auc_threshold and mean_sharpe >= sharpe_threshold
+        passed = mean_sharpe >= sharpe_threshold and (not has_auc or mean_auc >= auc_threshold)
+        message = f"CPCV mean OOS Sharpe={mean_sharpe:.4f} (>= {sharpe_threshold})"
+        message += (
+            f", mean OOS AUC={mean_auc:.4f} (>= {auc_threshold})" if has_auc
+            else " (no predictive score for this strategy type — Sharpe-only check)"
+        )
         self.results.cpcv = GateOutcome(
             gate_name="cpcv",
             result=GateResult.PASS if passed else GateResult.FAIL,
-            metric=mean_auc,
-            threshold=auc_threshold,
-            message=f"CPCV mean OOS AUC={mean_auc:.4f} (>= {auc_threshold}), "
-                    f"mean OOS Sharpe={mean_sharpe:.4f} (>= {sharpe_threshold})",
+            metric=mean_auc if has_auc else mean_sharpe,
+            threshold=auc_threshold if has_auc else sharpe_threshold,
+            message=message,
             details=metrics,
         )
 

@@ -1143,4 +1143,163 @@ just wiring; an explicit `payload["margin_utilization"]` still overrides
 the computed value; a forced exception from `_real_exposure_metrics` fails
 safe (order still approved, doesn't crash); and an ordinary small order
 with no existing positions is still approved (no false-positive
-over-rejection). Full suite: 1520 passed, zero regressions.
+over-rejection). Full suite: 1527 passed, zero regressions. Deployed live
+to `trading-api`; verified healthy post-deploy (`/health`: `swallowed_errors:
+0`, `swallowed_by_component: {}`, normal dashboard/agent traffic, 4 exit
+plans carried over across the restart).
+
+## Sections 17, 9, 12 — three more real bugs found and fixed (2026-09-17)
+
+Continuing the sections 9-17 audit approach (find what's real and fixable
+now, per the user's "go ahead"), in the priority order recommended after
+Section 13: Section 17 (undermines confidence in every recorded strategy
+verdict) first, then Section 9 (a real attribution report is blocked on
+it), then Section 12 (smaller, self-contained).
+
+### Section 17 — CPCV gate wired in (was never called anywhere real)
+
+**The gap**: `validation/gates.py`'s own module docstring documents 7
+promotion gates; `GateEvaluator.evaluate_cpcv()` and `evaluate_paper_days()`
+both existed but grepping every real caller of `GateEvaluator` (`backtesting
+/evaluator.py`, `backtesting/short_vol_backtest.py`, `research/
+hypothesis_harness.py`, `api/runtime.py`'s walk-forward endpoint) found
+`evaluate_cpcv()` called nowhere outside tests. `BacktestGateResults
+.all_passed` silently excludes any gate that was never evaluated rather
+than failing it, so every recorded short_vol/BANKNIFTY/FINNIFTY "PASS"
+reflected only DSR + PBO + Monte Carlo + cost model — 4 of the 7 documented
+gates, with CPCV silently missing and nothing surfacing that omission.
+
+**`paper_days` is NOT the same kind of gap**: `StrategyPromotionService
+._paper_days()` (`api/strategy_promotion_service.py`) already enforces the
+real "≥30 paper days" requirement for real, via `db.distinct_paper_trading_days()`
+— a genuine query against real fill history, not a fake number. It's a
+separate, correctly-scoped promotion-ladder check that doesn't belong
+inside a *backtest*-time `GateEvaluator` run in the first place: paper-
+trading days are fundamentally unknowable before paper trading has started,
+so `GateEvaluator.evaluate_paper_days()` staying uncalled at backtest time
+is correct, not a bug. (This matches a documented prior decision at the top
+of `gates.py`: promotion enforcement intentionally lives in
+`strategy_promotion_service.py`, not in `GateEvaluator`.)
+
+**Fix**: `evaluate_short_vol_gates()` (`backtesting/short_vol_backtest.py`)
+and `HypothesisHarness.evaluate()` (`research/hypothesis_harness.py`, the
+LLM research loop's twin gate-evaluation path — same gap, same fix) now
+also run a real CPCV check inside their existing `width >= 30` block,
+reusing `validation.cpcv.CombinatorialPurgedCrossValidator`'s real,
+already-tested purge/embargo fold generation — applied directly to the
+sweep's T-day × N-variant returns panel instead of requiring the
+classifier-shaped `X_train/y_train` interface `CPCVValidator.run_validation()`
+expects (a rule-based options strategy has no features/labels to feed it).
+For each of the `C(n_folds, 2)` combinatorial paths: pick the best-Sharpe
+variant on the (purged + embargoed) train indices, score that SAME variant
+on the test indices, and report the mean OOS Sharpe across paths. This adds
+genuine purge/embargo protection the existing DSR/PBO gates lack — they use
+simple contiguous-block CSCV splits with no purge/embargo, so a trade whose
+holding period straddled a block boundary could leak information across
+the IS/OOS split undetected; CPCV's combinatorial paths purge/embargo
+around every path's own test boundary.
+
+`GateEvaluator.evaluate_cpcv()` itself had a latent bug that would have
+made this wiring actively wrong: it always compared `mean_oos_auc` (default
+0.0 when absent) against a 0.52 threshold, which would fail every
+rule-based-strategy result regardless of real quality, since a rule-based
+strategy has no predictive score to report an AUC for. Fixed to only check
+AUC when the caller's `out_of_sample_metrics` actually carries a
+`mean_oos_auc` key — otherwise it's a Sharpe-only check, honestly labelled
+in the gate's own message rather than silently comparing a fabricated 0.0.
+
+Tests: 2 new in `tests/test_validation_gates.py` (AUC checked when a
+classifier supplies one; AUC check skipped, not fabricated, for a
+rule-based result), 1 new in `tests/test_short_vol_backtest.py` (the real
+sweep-based pipeline now populates `res.cpcv` with real paths, no
+fabricated AUC), 1 new in `tests/test_hypothesis_harness.py` (same, via the
+LLM research loop's path). Manually confirmed on the existing 500-day
+synthetic sweep test fixture: 28 real combinatorial paths computed,
+`res.cpcv` populated, `res.all_passed` now correctly reflects it.
+
+### Section 9 — TCA per_strategy / strategies filter / order-type mix, real root cause
+
+**The gap**: three separate-looking bugs in `execution/tca.py` —
+`TCASummary.per_strategy` never populated, `compute_summary(strategies=...)`
+silently ignored, `market_order_pct`/`limit_order_pct` hardcoded `0.0` —
+all traced to ONE root cause: `FillRecord` (the input to `analyze_fill()`)
+already carries real `strategy` and `order_type` on every real fill
+(confirmed at the call site, `runtime.py`'s `_record_fill_for_tca`:
+`strategy=intent.signal.strategy_name`, `order_type=intent.order_type.value`,
+both real), but `analyze_fill()` dropped both fields when building the
+stored `TCAResult` — so the data was real at the door and thrown away
+before anything downstream could use it.
+
+**Fix**: added `strategy`/`order_type` fields to `TCAResult`, populated
+from the `FillRecord` in `analyze_fill()`. `compute_summary()`'s
+`strategies` filter now filters on `r.strategy`; `per_strategy` is now
+built the same way the existing `per_symbol` breakdown already was (fills/
+volume/avg/max cost per strategy); `market_order_pct`/`limit_order_pct` are
+now the real fraction of filtered records with `order_type == "MARKET"` /
+`"LIMIT"`. Also added the same two columns to `TCAStore`'s Postgres schema
+and `save()` call for consistency — `TCAStore` itself is currently unwired
+(`runtime.py` constructs `TransactionCostAnalyzer()` with no `store=`, so
+only the in-memory path is live today), but leaving its schema silently
+diverged from `TCAResult` would be a half-finished version of the same fix.
+
+Tests: 4 new in `tests/test_tca.py::StrategyAndOrderTypeAttributionTests` —
+`analyze_fill` preserves both fields; the `strategies` filter actually
+excludes non-matching fills; `per_strategy` reports correct per-strategy
+fill counts and costs; `market_order_pct`/`limit_order_pct` reflect a real
+2-MARKET/2-LIMIT mix (0.5/0.5), not 0.0/0.0.
+
+### Section 12 — real Maximum Adverse/Favorable Excursion, on the path that's actually live
+
+**The gap, more precisely than originally scoped**: `ai/llm_agents/
+journalist.py`'s `JournalistQuery.max_adverse_excursion`/
+`max_beneficial_excursion` default to `0.0` and are passed straight through
+to the LLM-facing `TradePostmortem.max_adverse_sec`/`max_beneficial_sec`
+with no independent computation — but grepping for `JournalistQuery(`
+across the entire codebase found **zero real construction sites**.
+`TradeJournalist.postmortem()` is not called anywhere in the live system —
+not the runtime, not the scheduler, not any test. So the fake stat lives
+inside an ALSO-dormant pipeline; fixing only the pass-through would fix a
+number nothing ever reads. Wiring a live per-trade LLM postmortem call into
+the real fill loop is a separate, materially larger architectural decision
+(latency, cost, an LLM call on every close) this pass does not make
+unilaterally.
+
+**What's genuinely fixable now, on a path that IS live**: `exit/exit_plan.py`'s
+`ExitPlan._highest_price`/`_lowest_price` — the real ingredients MAE/MFE
+need (the best/worst price reached since entry) — only updated when a
+trailing stop was configured (`update_trailing()` returned immediately
+otherwise). Since `from_trade()` only auto-enables trailing when
+`partial_exit=True`, most real exit plans never tracked these at all; they
+stayed frozen at `entry_price` for the plan's whole life. This is a real,
+independently-valuable bug on the currently-live exit-plan path (used by
+every real position, not a dormant one) regardless of the journalist
+question.
+
+**Fix**: extremes now update on every mark unconditionally; only the
+trailing-*stop-raising* logic stays gated behind `trailing_pct is not
+None`. Added `ExitPlan.max_adverse_excursion()`/`max_favorable_excursion()`
+— real rupee figures derived from `entry_price`, the tracked extremes, and
+`instrument.lot_size`, correctly sign-flipped for BUY vs SELL (a BUY's
+adverse direction is price falling; a SELL's is price rising). Both are
+now included in `ExitPlan.to_dict()`, which already flows into
+`db.save_exit_plan()` and the trace/event payload at the real fill path in
+`runtime.py` — a real, currently-live consumer, unlike the dormant
+journalist path. Deliberately did NOT extend `active_exit_plans`' DB schema
+in this pass — exit plans are restored from that table on every restart,
+and CLAUDE.md's own landmine notes schema changes there need migration
+thought; the two new fields are visible in the live in-memory/event payload
+today, durable persistence is a clean, separate next step if needed.
+
+Tests: 5 new in `tests/test_exit_profit_taking.py::MaxAdverseExcursionTests`
+— a BUY plan with no trailing configured still tracks a real dip-then-rally
+(MAE/MFE both correctly nonzero, proving the old frozen-at-entry bug is
+fixed); a SELL plan's adverse/favorable directions are correctly inverted;
+a trade that only ever moved favorably reports a real MAE of exactly 0.0
+(distinct from the old always-0.0 default, which was the same number
+regardless of what actually happened); `to_dict()` exposes both fields; and
+a regression guard confirming trailing-stop-raising behaviour is unchanged
+now that extremes-tracking and stop-raising are separate code paths.
+
+Full suite after all three sections: 1540 passed, zero regressions —
+13 new tests (4 Section 17 + 4 Section 9 + 5 Section 12) on top of the
+1527 baseline after Section 13.

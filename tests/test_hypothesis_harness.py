@@ -126,6 +126,26 @@ class DetectionTests(unittest.TestCase):
             HypothesisSpec("noise", coinflip, [{"seed": s} for s in range(4)]), bars)
         self.assertFalse(v.passed, "random noise cleared the gates")
 
+    def test_cpcv_gate_runs_alongside_dsr_and_pbo(self):
+        """Section 17 audit (2026-09-17): the CPCV gate existed in
+        validation/gates.py but was never called from this harness either
+        (same gap fixed in backtesting.short_vol_backtest
+        .evaluate_short_vol_gates) -- a wide enough, multi-variant run must
+        now populate gates.cpcv, and must not fabricate a predictive AUC for
+        a rule-based exposure function."""
+        import numpy as np
+        bars = _random_walk(600, seed=8)
+
+        def coinflip(bars, p):
+            r = np.random.default_rng(int(p["seed"]))
+            return [float(r.integers(0, 2)) for _ in bars]
+
+        v = HypothesisHarness().evaluate(
+            HypothesisSpec("noise", coinflip, [{"seed": s} for s in range(4)]), bars)
+        self.assertIsNotNone(v.gates.cpcv)
+        self.assertGreater(v.gates.cpcv.details["n_paths"], 0)
+        self.assertNotIn("mean_oos_auc", v.gates.cpcv.details)
+
 
 class HarnessContractTests(unittest.TestCase):
     def test_wrong_length_exposure_is_rejected_loudly(self):

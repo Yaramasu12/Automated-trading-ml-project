@@ -326,6 +326,24 @@ class SweepGateTests(unittest.TestCase):
         res = evaluate_short_vol_gates([], strategy_id="short_vol")
         self.assertEqual(res.strategy_id, "short_vol")
 
+    def test_cpcv_gate_now_actually_runs(self):
+        """Section 17 audit (2026-09-17): evaluate_cpcv() existed in
+        validation/gates.py but nothing in the real pipeline ever called it
+        -- every recorded short_vol/BANKNIFTY/FINNIFTY "PASS" reflected only
+        4 of the 7 documented §5 gates, with CPCV silently excluded from
+        all_passed rather than evaluated. Real purge/embargo combinatorial
+        paths must now be computed from the sweep's own returns panel."""
+        bars = _synthetic_series(n=500, seed=21)
+        vix = {b.day: 20.0 for b in bars}
+        grid = [{"sd": sd, "min_vrp": 1.0, "kelly_fraction": 0.3} for sd in (1.0, 1.25, 1.5)]
+        sweep = run_sweep(bars, vix, underlying="NIFTY", grid=grid)
+        res = evaluate_short_vol_gates(sweep, strategy_id="short_vol")
+        self.assertIsNotNone(res.cpcv)
+        self.assertGreater(res.cpcv.details["n_paths"], 0)
+        # A rule-based strategy has no predictive AUC -- must not be
+        # fabricated into the gate's real/threshold reporting.
+        self.assertNotIn("mean_oos_auc", res.cpcv.details)
+
 
 if __name__ == "__main__":
     unittest.main()
