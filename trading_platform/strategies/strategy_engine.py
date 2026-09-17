@@ -466,4 +466,12 @@ class PortfolioAllocator:
     def reset_peak(self) -> None:
         """Reset peak equity (e.g., at day start or equity milestone)."""
         self._peak_equity = self._calculate_equity()
-        logger.info(f"[ALLOCATOR] Peak equity reset to ₹{self._peak_equity:,.2f}")
+        # Section 18 audit (2026-09-16): this used to interpolate the real
+        # rupee figure into an INFO-level log line, which lands in persisted
+        # container logs with no auth gate at all — inconsistent with how
+        # carefully REST/WebSocket already gate the same account data (e.g.
+        # /portfolio/positions, the WS snapshot's auth-gated `portfolio`
+        # field). Log that a reset happened; the figure itself is available
+        # through the already-gated API for anyone authorized to see it.
+        logger.info("[ALLOCATOR] Peak equity reset")
+        logger.debug("[ALLOCATOR] Peak equity reset to ₹%.2f", self._peak_equity)

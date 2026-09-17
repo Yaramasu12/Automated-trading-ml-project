@@ -155,6 +155,42 @@ class LiveFillTrackingTests(unittest.IsolatedAsyncioTestCase):
             self.assertAlmostEqual(fills[0].price, 2805.0)
             self.assertIn("RELIANCE", portfolio.position_symbols())
 
+    async def test_duplicate_complete_status_does_not_double_book_the_fill(self):
+        """Section 18 audit (2026-09-16): the spec asks for fault-injection
+        coverage of a duplicate broker callback delivering the same fill
+        twice. This codebase has no separate order-update webhook — the
+        broker's terminal state is discovered by polling order_status()
+        inside _track_order_until_terminal(), which returns immediately
+        once it sees "complete" — so a second "complete" response, however
+        it might arrive, is never even polled for. Scripting order_status()
+        to keep returning "complete" repeatedly (the closest reproduction
+        of "the broker reports the fill more than once" available at this
+        interface) proves that structurally: the fill callback and the
+        ledger must reflect exactly one fill, not two."""
+        lot = _MASTER.get("RELIANCE").lot_size
+        broker = _AckThenStatusBroker([
+            {"state": "complete", "average_price": 2805.0, "filled_units": 2 * lot, "message": ""},
+            {"state": "complete", "average_price": 2805.0, "filled_units": 2 * lot, "message": ""},
+            {"state": "complete", "average_price": 2805.0, "filled_units": 2 * lot, "message": ""},
+        ])
+        portfolio = PortfolioLedger(10_000_000)
+        with _scheduler_in_tmpdir(broker, portfolio) as sched:
+            fills: list[Trade] = []
+
+            async def on_fill(trade, intent):
+                fills.append(trade)
+
+            sched.register_fill_callback(on_fill)
+            await sched._submit_to_broker(_intent(quantity=2))
+            await _wait_for(lambda: bool(fills))
+            await asyncio.sleep(0.05)  # let any second fill/poll surface if it were going to
+
+            self.assertEqual(len(fills), 1, "duplicate broker status double-booked the fill")
+            self.assertEqual(len(broker.statuses), 2, "polling loop kept going after the first 'complete'")
+            positions = portfolio.position_symbols()
+            self.assertIn("RELIANCE", positions)
+            self.assertEqual(portfolio.positions["RELIANCE"].quantity, 2)  # not 4 or 6
+
     async def test_unresolved_order_raises_oms_alarm(self):
         broker = _AckThenStatusBroker([])  # order book never answers
         with _scheduler_in_tmpdir(broker) as sched:

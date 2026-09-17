@@ -3805,10 +3805,21 @@ class TradingRuntime:
             stale_market_data = bool(self.live_feed_snapshot().get("freshness", {}).get("stale", False))
         except Exception as exc:
             note_swallowed("monitoring_metrics.freshness", exc)
+        # unresolved_orders: real detection already existed (scheduler.py's
+        # fill_unresolved/fill_price_missing OMS events, surfaced via
+        # GET /execution/unresolved-orders) but nothing periodic ever read
+        # it — an order could sit unresolved indefinitely without moving
+        # /monitoring/metrics off HEALTHY (Section 18 audit, 2026-09-16).
+        unresolved_count = 0
+        try:
+            unresolved_count = int(self.unresolved_orders().get("count", 0))
+        except Exception as exc:
+            note_swallowed("monitoring_metrics.unresolved_orders", exc)
         return self.monitor.snapshot(
             execution_mode=self.execution_mode.value,
             live_armed=self.live_armed,
             kill_switch_active=self.kill_switch_active,
+            unresolved_orders=unresolved_count,
             stale_market_data=stale_market_data,
         ).to_dict()
 

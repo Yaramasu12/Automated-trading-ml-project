@@ -44,6 +44,7 @@ class OperationalSnapshot:
     live_armed: bool
     kill_switch_active: bool
     stale_market_data: bool
+    unresolved_orders: int
     total_orders: int
     filled_orders: int
     rejected_orders: int
@@ -135,6 +136,7 @@ class OperationalMonitor:
         live_armed: bool,
         kill_switch_active: bool,
         stale_market_data: bool = False,
+        unresolved_orders: int = 0,
     ) -> OperationalSnapshot:
         now = datetime.now(timezone.utc)
         rejection_rate = self.rejected_orders / self.total_orders if self.total_orders else 0.0
@@ -144,7 +146,12 @@ class OperationalMonitor:
         status = "HEALTHY"
         if kill_switch_active:
             status = "HALTED"
-        elif stale_market_data or rejection_rate > 0.10 or average_latency > 200:
+        # unresolved_orders: Section 18 audit (2026-09-16) — a position may
+        # exist at the broker with no confirmed ledger/exit tracking
+        # (scheduler.py's fill_unresolved/fill_price_missing OMS events).
+        # That is a real operational fault, not merely a stale-feed-shaped
+        # one, so it belongs in the same DEGRADED signal.
+        elif stale_market_data or unresolved_orders > 0 or rejection_rate > 0.10 or average_latency > 200:
             status = "DEGRADED"
         strategy_metrics = [
             StrategyMetrics(
@@ -167,6 +174,7 @@ class OperationalMonitor:
             live_armed=live_armed,
             kill_switch_active=kill_switch_active,
             stale_market_data=stale_market_data,
+            unresolved_orders=unresolved_orders,
             total_orders=self.total_orders,
             filled_orders=self.filled_orders,
             rejected_orders=self.rejected_orders,

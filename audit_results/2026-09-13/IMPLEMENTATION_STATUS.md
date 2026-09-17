@@ -842,3 +842,70 @@ Tests: `tests/test_options_chain_collector.py::LatestSmileTests` (5 new),
 `tests/test_vol_surface_diagnostics.py` (5 new, including a direct
 wide-vs-narrow comparison against the exact synthetic-smile formula
 `test_svi_surface.py` already established). Full suite: 1494 passed.
+
+## Section 18 — dispatched audit, three real findings fixed, rest documented
+
+Dispatched a read-only audit (Explore agent) against Section 18's full
+checklist (unresolved orders, blocked exits, unexpected exposure, session
+baseline integrity, cost drift, fault-injection coverage for 6 named
+failure modes, account-data protection across REST/WS/logs) — deliberately
+scoped to exclude the `stale_market_data` finding already fixed earlier
+this session. Findings and what was done with each:
+
+1. **Unresolved orders — real gap, fixed.** Detection was already real and
+   automatic (`scheduler.py`'s `_track_order_until_terminal` records
+   `fill_unresolved`/`fill_price_missing` OMS events), surfaced on-demand
+   via `GET /execution/unresolved-orders`, but nothing periodic ever read
+   it — an order could sit unresolved indefinitely without moving
+   `/monitoring/metrics` off `HEALTHY`. Fixed: `monitoring_metrics()` now
+   passes the real count into `monitor.snapshot()`, and
+   `monitoring/metrics.py`'s `OperationalSnapshot` gained an
+   `unresolved_orders` field feeding the same `DEGRADED` rule staleness
+   already does. Test:
+   `tests/test_runtime.py::test_monitoring_metrics_reflects_real_unresolved_orders`.
+2. **Blocked exits — compliant**, with a caveat: `ExitManager._monitor_loop`
+   really does run continuously and escalates to `logger.critical` after
+   `MAX_EXIT_RETRIES`, which reaches the runtime-monitor digest via the
+   existing WARNING+ log handler — but there is no dedicated counter/
+   endpoint the way `unresolved_orders` now has. Not fixed this pass;
+   recorded as a smaller follow-on for symmetry with the fix above.
+3. **Unexpected exposure (broker reconciliation) — compliant for LIVE,
+   architecturally a no-op in PAPER** ("the paper broker IS the ledger" —
+   a reasonable design choice, not a bug, since this deployment has never
+   run LIVE).
+4. **Session baseline integrity — confirmed intact**, no regression.
+5. **Cost drift — real gap, not fixed.** `execution/tca.py` only computes
+   point-in-time aggregates; nothing compares real transaction costs
+   against the costs *modeled* in backtesting/validation over time, and
+   `export_for_backtest_calibration()` (meant to feed that comparison back
+   in) has zero callers anywhere — dead code. Left for a future session:
+   building genuine trend/alerting here is a real feature, not a bounded
+   fix, and this deployment's short real trading history wouldn't yet
+   support a meaningful drift baseline.
+6. **Fault-injection coverage — mixed.** Restart/crash recovery, feed gaps,
+   and inference-unavailable all have real tests. Investigated the
+   "duplicate broker callback" gap specifically since a double-booked fill
+   would corrupt real portfolio state: traced the actual delivery path
+   (`_track_order_until_terminal`'s polling loop, single tracking task per
+   acknowledged order, immediate `return` after the first terminal
+   detection, idempotency-key dedup at submission) and confirmed by direct
+   grep that **no separate order-update webhook exists in this codebase at
+   all** — the polling loop *is* the only delivery path, and it structurally
+   cannot double-fire for one order. Added
+   `tests/test_audit_fixes.py::LiveFillTrackingTests::test_duplicate_complete_status_does_not_double_book_the_fill`
+   (scripts the fake broker to report "complete" three times in a row —
+   the closest reproduction available at this interface — and asserts
+   exactly one fill reaches the ledger) to lock in that guarantee against
+   a future refactor, rather than writing a test for a webhook mechanism
+   that doesn't exist. Missing options legs and general DB-write-failure
+   fault injection remain real, unaddressed gaps — left for a future
+   session (both need real scoping, not a quick patch).
+7. **Account-data protection — real gap, fixed.** WebSocket/REST auth
+   gating is real and precise, but `strategies/strategy_engine.py`'s
+   `reset_peak()` interpolated the real rupee equity figure into an
+   INFO-level log line — unauth-gated, unlike every other surface exposing
+   the same figure. Fixed: logs that a reset happened at INFO, the figure
+   itself at DEBUG only.
+
+Tests: 2 new (above) plus the duplicate-callback regression. Full suite:
+1496 passed. Deployed live.

@@ -787,6 +787,29 @@ class RuntimeTests(unittest.TestCase):
             safe_metrics = runtime.monitoring_metrics()
         self.assertFalse(safe_metrics["stale_market_data"])
 
+    def test_monitoring_metrics_reflects_real_unresolved_orders(self):
+        """Regression 2026-09-16 (Section 18 audit): scheduler.py already
+        recorded fill_unresolved/fill_price_missing OMS events (surfaced
+        on-demand via GET /execution/unresolved-orders), but nothing
+        periodic ever fed that into /monitoring/metrics — an order could
+        sit unresolved indefinitely without moving status off HEALTHY."""
+        runtime = TradingRuntime()
+
+        with patch.object(runtime, "unresolved_orders", return_value={"count": 2}):
+            metrics = runtime.monitoring_metrics()
+        self.assertEqual(metrics["unresolved_orders"], 2)
+        self.assertEqual(metrics["status"], "DEGRADED")
+
+        with patch.object(runtime, "unresolved_orders", return_value={"count": 0}):
+            clean_metrics = runtime.monitoring_metrics()
+        self.assertEqual(clean_metrics["unresolved_orders"], 0)
+
+        # An observability signal, not a safety gate — a broken lookup
+        # fails open rather than crashing monitoring_metrics.
+        with patch.object(runtime, "unresolved_orders", side_effect=RuntimeError("boom")):
+            safe_metrics = runtime.monitoring_metrics()
+        self.assertEqual(safe_metrics["unresolved_orders"], 0)
+
     def test_shadow_run_skips_underlying_on_market_data_unavailable(self):
         """A per-underlying MarketDataUnavailable (real data was expected and
         every real attempt failed) must not abort the whole shadow run —
