@@ -837,6 +837,14 @@ def active_exit_plans():
     return runtime.active_exit_plans()
 
 
+@app.get("/execution/blocked-exits", dependencies=[_AuthDep])
+def blocked_exit_plans():
+    """Positions whose exit has repeatedly failed to confirm — the monitor
+    loop already CRITICAL-logs these as possibly stuck open; this is the
+    same signal as a real endpoint (Section 18 audit, 2026-09-16)."""
+    return runtime.blocked_exit_plans()
+
+
 @app.post("/execution/exit-marks", dependencies=[_AuthDep])
 def update_exit_marks(payload: dict[str, float]):
     # dict[str, float] makes FastAPI reject non-numeric marks with a clean 422

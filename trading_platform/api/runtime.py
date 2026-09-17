@@ -810,6 +810,29 @@ class TradingRuntime:
         )
         return self.state_payload()
 
+    @staticmethod
+    async def _persist_async(component: str, fn, *args, **kwargs) -> None:
+        """Run a blocking DB write off the event loop without blocking the
+        fill-processing hot path, but still observe a failure.
+
+        Section 18 audit (2026-09-16): _on_fill's DB persistence used bare
+        `asyncio.ensure_future(asyncio.to_thread(...))` — fire-and-forget
+        with nothing ever awaiting the resulting Task or checking
+        `task.exception()`. The fill itself was never at risk (the ledger
+        is already updated in-memory by the scheduler before _on_fill even
+        runs), but a real DB failure during save_trade/save_snapshot/
+        save_positions would silently vanish: not logged, not counted via
+        note_swallowed, not visible in /health's swallowed-error counter —
+        a genuine "database failure" blind spot the fault-injection
+        checklist asks about. Keeps the same non-blocking shape (the
+        caller still doesn't await this), just makes a failure observable.
+        """
+        import asyncio as _aio
+        try:
+            await _aio.to_thread(fn, *args, **kwargs)
+        except Exception as exc:
+            note_swallowed(component, exc)
+
     async def _on_fill(self, trade, intent: OrderIntent) -> None:
         """Fill callback: creates ExitPlan on entry fills; records ML feedback on exit fills."""
         now_ts = datetime.now(timezone.utc).isoformat()
@@ -885,15 +908,23 @@ class TradingRuntime:
                     )
             except Exception as exc:
                 note_swallowed("trade_feature_vector", exc)
-            _aio.ensure_future(_aio.to_thread(self.db.save_trade, trade, execution_mode=exec_mode, feature_vector=_fv, exit_reason=exit_reason))
+            _aio.ensure_future(self._persist_async(
+                "on_fill.save_trade", self.db.save_trade, trade,
+                execution_mode=exec_mode, feature_vector=_fv, exit_reason=exit_reason,
+            ))
             mark_prices: dict[str, float] = {}
             for sym in list(self.portfolio.positions.keys()):
                 tick = self.live_feed.latest_tick(sym)
                 if tick and tick.last_price > 0:
                     mark_prices[sym] = tick.last_price
             snap = self.portfolio.mark_to_market(datetime.now(timezone.utc), mark_prices)
-            _aio.ensure_future(_aio.to_thread(self.db.save_snapshot, snap, execution_mode=exec_mode))
-            _aio.ensure_future(_aio.to_thread(self.db.save_positions, dict(self.portfolio.positions), execution_mode=exec_mode))
+            _aio.ensure_future(self._persist_async(
+                "on_fill.save_snapshot", self.db.save_snapshot, snap, execution_mode=exec_mode,
+            ))
+            _aio.ensure_future(self._persist_async(
+                "on_fill.save_positions", self.db.save_positions,
+                dict(self.portfolio.positions), execution_mode=exec_mode,
+            ))
             self.monitor.record_order({"status": "FILLED"})
         except Exception as _persist_err:
             logger.warning("_on_fill DB persist error: %s", _persist_err)
@@ -3815,11 +3846,21 @@ class TradingRuntime:
             unresolved_count = int(self.unresolved_orders().get("count", 0))
         except Exception as exc:
             note_swallowed("monitoring_metrics.unresolved_orders", exc)
+        # blocked_exits: a position whose exit has failed to confirm
+        # MAX_EXIT_RETRIES+ times — ExitManager's monitor loop already
+        # CRITICAL-logs this as possibly stuck open, but had no dedicated
+        # counter the way unresolved_orders now does (Section 18 follow-up).
+        blocked_exits_count = 0
+        try:
+            blocked_exits_count = int(self.blocked_exit_plans().get("count", 0))
+        except Exception as exc:
+            note_swallowed("monitoring_metrics.blocked_exits", exc)
         return self.monitor.snapshot(
             execution_mode=self.execution_mode.value,
             live_armed=self.live_armed,
             kill_switch_active=self.kill_switch_active,
             unresolved_orders=unresolved_count,
+            blocked_exits=blocked_exits_count,
             stale_market_data=stale_market_data,
         ).to_dict()
 
@@ -4243,6 +4284,13 @@ class TradingRuntime:
 
     def active_exit_plans(self) -> dict:
         plans = self.exit_manager.active_plans()
+        return {"count": len(plans), "plans": plans}
+
+    def blocked_exit_plans(self) -> dict:
+        """Positions whose exit has repeatedly failed to confirm — a plan
+        the monitor loop already CRITICAL-logs as possibly stuck open,
+        exposed as a real endpoint (Section 18 audit, 2026-09-16)."""
+        plans = self.exit_manager.blocked_exit_plans()
         return {"count": len(plans), "plans": plans}
 
     def update_exit_marks(self, prices: dict[str, float]) -> dict:

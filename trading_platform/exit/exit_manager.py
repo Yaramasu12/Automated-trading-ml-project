@@ -290,3 +290,29 @@ class ExitManager:
 
     def active_plans(self) -> list[dict]:
         return [p.to_dict() for p in self._plans.values() if p.active]
+
+    def blocked_exit_plans(self) -> list[dict]:
+        """Plans whose exit order has failed to confirm MAX_EXIT_RETRIES or
+        more times — the `logger.critical("...may be STUCK OPEN...")` case
+        in _monitor_loop, exposed as a real signal instead of only a log
+        line (Section 18 audit, 2026-09-16: this mechanism already ran
+        automatically, but a "position stuck open, unprotected" condition
+        had no dedicated counter/endpoint the way unresolved_orders now
+        does). A plan here is still being retried (on the long backoff),
+        not abandoned — this just says a human should look."""
+        out = []
+        for plan_id, retries in self._exit_retry_count.items():
+            if retries < MAX_EXIT_RETRIES:
+                continue
+            plan = self._plans.get(plan_id)
+            if plan is None or not plan.active:
+                continue
+            pending = self._pending_exits.get(plan_id)
+            out.append({
+                "plan_id": plan_id,
+                "symbol": plan.symbol,
+                "retries": retries,
+                "last_trigger": pending[1].value if pending else None,
+                "last_attempt_at": pending[0].isoformat() if pending else None,
+            })
+        return out

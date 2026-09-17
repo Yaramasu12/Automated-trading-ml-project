@@ -810,6 +810,63 @@ class RuntimeTests(unittest.TestCase):
             safe_metrics = runtime.monitoring_metrics()
         self.assertEqual(safe_metrics["unresolved_orders"], 0)
 
+    def test_persist_async_reports_a_db_failure_instead_of_losing_it_silently(self):
+        """Regression 2026-09-16 (Section 18 audit): _on_fill's DB
+        persistence (save_trade/save_snapshot/save_positions) used bare
+        asyncio.ensure_future(asyncio.to_thread(...)) — nothing ever
+        awaited the resulting Task or checked its exception, so a real DB
+        failure during a fill would silently vanish: not logged, not
+        counted, invisible in /health's swallowed-error counter. The fill
+        itself was never at risk (the ledger updates in-memory before
+        _on_fill runs) — this is specifically about the persistence step
+        going dark on failure."""
+        from trading_platform.logging_safety import swallowed_errors_by_component
+
+        before = swallowed_errors_by_component().get("test_persist_async_probe", 0)
+
+        def _boom(*args, **kwargs):
+            raise RuntimeError("db down")
+
+        async def run() -> None:
+            await TradingRuntime._persist_async("test_persist_async_probe", _boom, 1, key="v")
+
+        asyncio.run(run())
+
+        after = swallowed_errors_by_component().get("test_persist_async_probe", 0)
+        self.assertEqual(after, before + 1)
+
+        # A successful write must not be reported as swallowed.
+        calls: list[tuple] = []
+
+        async def run_ok() -> None:
+            await TradingRuntime._persist_async(
+                "test_persist_async_probe", lambda *a, **kw: calls.append((a, kw)), 2,
+            )
+
+        asyncio.run(run_ok())
+        self.assertEqual(calls, [((2,), {})])
+        self.assertEqual(swallowed_errors_by_component().get("test_persist_async_probe", 0), after)
+
+    def test_monitoring_metrics_reflects_real_blocked_exits(self):
+        """Regression 2026-09-16 (Section 18 follow-up): ExitManager's own
+        monitor loop already CRITICAL-logs a position as possibly stuck
+        open after MAX_EXIT_RETRIES unconfirmed exit attempts, but nothing
+        periodic fed that into /monitoring/metrics either."""
+        runtime = TradingRuntime()
+
+        with patch.object(runtime, "blocked_exit_plans", return_value={"count": 1}):
+            metrics = runtime.monitoring_metrics()
+        self.assertEqual(metrics["blocked_exits"], 1)
+        self.assertEqual(metrics["status"], "DEGRADED")
+
+        with patch.object(runtime, "blocked_exit_plans", return_value={"count": 0}):
+            clean_metrics = runtime.monitoring_metrics()
+        self.assertEqual(clean_metrics["blocked_exits"], 0)
+
+        with patch.object(runtime, "blocked_exit_plans", side_effect=RuntimeError("boom")):
+            safe_metrics = runtime.monitoring_metrics()
+        self.assertEqual(safe_metrics["blocked_exits"], 0)
+
     def test_shadow_run_skips_underlying_on_market_data_unavailable(self):
         """A per-underlying MarketDataUnavailable (real data was expected and
         every real attempt failed) must not abort the whole shadow run —

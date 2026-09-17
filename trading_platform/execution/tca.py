@@ -239,7 +239,19 @@ class TransactionCostAnalyzer:
                 limit_order_pct=0.0,
             )
 
-        costs_bps = [r.total_cost_bps for r in records]
+        # Section 18 audit (2026-09-16): this used to aggregate
+        # r.total_cost_bps for every headline stat here — but analyze_fill's
+        # own comment says total_cost_bps "is a DIAGNOSTIC decomposition
+        # only ... and must never be used as 'the cost'", because its three
+        # components use different sign conventions (impact_bps is
+        # positive-means-FAVOURABLE, the other two are positive-means-cost).
+        # A favourable impact partially cancels real spread/timing cost in
+        # the sum — understating true cost, or even going negative — while
+        # `total_inr` a few lines above analyze_fill already correctly uses
+        # abs(implementation_shortfall_bps) instead. Match that convention
+        # here so the summary's avg/median/percentile "cost" figures mean
+        # what they claim to.
+        costs_bps = [abs(r.implementation_shortfall_bps) for r in records]
         costs_bps_sorted = sorted(costs_bps)
         volumes = [r.fill_price * r.quantity for r in records]
 
@@ -264,7 +276,7 @@ class TransactionCostAnalyzer:
                 per_symbol[r.symbol] = {"fills": 0, "volume": 0.0, "cost_bps": []}
             per_symbol[r.symbol]["fills"] += 1
             per_symbol[r.symbol]["volume"] += r.fill_price * r.quantity
-            per_symbol[r.symbol]["cost_bps"].append(r.total_cost_bps)
+            per_symbol[r.symbol]["cost_bps"].append(abs(r.implementation_shortfall_bps))
 
         for sym in per_symbol:
             cbs = per_symbol[sym]["cost_bps"]

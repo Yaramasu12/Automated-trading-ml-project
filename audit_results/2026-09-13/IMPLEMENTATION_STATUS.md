@@ -909,3 +909,91 @@ this session. Findings and what was done with each:
 
 Tests: 2 new (above) plus the duplicate-callback regression. Full suite:
 1496 passed. Deployed live.
+
+## Section 18 — remaining documented gaps, closed out
+
+Continuing from the previous round's punch list (blocked-exits counter,
+cost-drift tracking, missing-legs and DB-write-failure fault injection):
+
+**Blocked exits — fixed.** Added `ExitManager.blocked_exit_plans()`
+(positions whose exit has failed to confirm `MAX_EXIT_RETRIES`+ times —
+the same condition the monitor loop already `logger.critical`s as "may be
+STUCK OPEN"), exposed via `TradingRuntime.blocked_exit_plans()`,
+`GET /execution/blocked-exits`, and wired into `monitoring_metrics()`'s
+`DEGRADED` rule alongside `unresolved_orders` (both `OperationalSnapshot`
+and `monitor.snapshot()` gained matching parameters). Tests:
+`tests/test_audit_fixes.py::ExitPlanLifecycleTests::test_blocked_exit_plans_reports_a_stuck_position`,
+`tests/test_runtime.py::test_monitoring_metrics_reflects_real_blocked_exits`.
+
+**DB-write-failure fault injection — real gap found and fixed, beyond
+what was previously scoped.** Investigating this surfaced something the
+prior audit agent's one-narrow-call-site finding didn't catch:
+`_on_fill`'s DB persistence (`save_trade`/`save_snapshot`/`save_positions`)
+used bare `asyncio.ensure_future(asyncio.to_thread(...))` — fire-and-forget
+with nothing ever awaiting the resulting `Task` or checking
+`task.exception()`. The fill itself was never at risk (the ledger updates
+in-memory before `_on_fill` even runs), but a genuine DB failure during
+that persistence step would vanish completely: not logged, not counted via
+`note_swallowed`, invisible in `/health`'s swallowed-error counter — a real
+"database failure" blind spot. Added `TradingRuntime._persist_async()`
+(same non-blocking shape, but the failure is now observed) and switched
+all three call sites to it. Test:
+`tests/test_runtime.py::test_persist_async_reports_a_db_failure_instead_of_losing_it_silently`.
+
+**Missing options legs — fixed.** `MultiLegOrderManager` already has real
+leg-timeout/rollback logic (`submit()`'s `asyncio.wait_for` + `_rollback()`)
+but every existing multi-leg test stubbed `submit()` wholesale, never
+exercising it. New `tests/test_multi_leg_manager.py` drives the real
+manager directly with a fake `enqueue_fn` that intentionally never
+confirms one leg's fill — proving the manager times out, marks that leg
+`FAILED`, and reverses the already-filled leg with an opposite-side
+`EMERGENCY_EXIT` intent, rather than leaving a naked half-open spread.
+
+**Cost drift — investigated further; a real, separate bug found and fixed
+in the process, but the drift-tracking feature itself is not buildable
+yet, precisely (not just "not enough data").** Building the comparison
+required first establishing what "the real cost" even means in this
+codebase, which led to `execution/tca.py::TransactionCostAnalyzer.
+compute_summary()`: its avg/median/percentile/per-symbol headline "cost"
+stats aggregated `TCAResult.total_cost_bps` — but `analyze_fill()`'s own
+comment says that field "is a DIAGNOSTIC decomposition only ... and must
+never be used as 'the cost'", because its three components use different
+sign conventions (`impact_bps` is positive-means-*favourable*, the other
+two are positive-means-cost). A large favourable price move after a fill
+inflated the reported cost rather than netting against it — one
+constructed scenario (real shortfall ≈100bps) reported ≈4089bps, a >40x
+overstatement. `total_cost_inr` a few lines below in the same function
+already correctly used `abs(implementation_shortfall_bps)`;
+`compute_summary()` just never matched it. Fixed to use the same
+convention throughout. No test file existed for this module at all before
+now — added `tests/test_tca.py` (5 new tests) covering both the fixed
+aggregation and the underlying per-fill computation.
+
+Separately flagged, not fixed (uncertain, needs fresh verification):
+`analyze_fill()`'s `impact_bps` formula doesn't branch on `side` the way
+`implementation_shortfall_bps`/`spread_bps` do, and the function's own
+comment describes the "positive = favourable" convention only for the BUY
+case — a SELL where price *drops* after the fill (favourable — sold high
+before a decline) may compute a *negative* impact_bps under the same
+formula, the opposite sign from the documented BUY convention. Not
+confirmed as a bug (didn't want to rush a fix to a subtle sign-convention
+question without being certain), but worth a future session's careful,
+side-by-side verification.
+
+**Why cost-drift-vs-model tracking specifically isn't buildable yet**:
+not merely "too little data" (the framing used in the previous round) —
+this deployment's `execution_mode` has only ever been `PAPER`
+(`fills_analyzed: 0` right now, confirmed live), and PAPER fills are
+generated *by* `SimulatedBrokerClient._apply_slippage()`'s own modeled
+spread/impact assumptions (`spread_bps=4.0` default). Comparing those
+fills against the same model they were generated from would be
+tautological, not a genuine drift signal — this needs real LIVE broker
+fills to mean anything at all, which requires LIVE trading to be armed, a
+decision already explicitly deferred by the user earlier in this session.
+Recorded here so a future session builds this against the right data
+source once it exists, rather than building a plausible-looking feature
+with nothing real to measure.
+
+Tests this round: 4 new files/additions (`test_multi_leg_manager.py`,
+`test_tca.py`, plus additions to `test_runtime.py` and
+`test_audit_fixes.py`). Full suite: 1506 passed. Deployed live.

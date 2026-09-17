@@ -29,7 +29,7 @@ from trading_platform.execution.fill_processor import FillProcessor
 from trading_platform.execution.lock_manager import InstrumentLockManager
 from trading_platform.execution.oms_store import OMSEventStore
 from trading_platform.execution.scheduler import ExecutionScheduler
-from trading_platform.exit.exit_manager import ExitManager, PENDING_EXIT_RETRY_SECONDS
+from trading_platform.exit.exit_manager import ExitManager, MAX_EXIT_RETRIES, PENDING_EXIT_RETRY_SECONDS
 from trading_platform.exit.exit_plan import ExitPlan, ExitTrigger
 from trading_platform.portfolio.ledger import PortfolioLedger
 
@@ -478,6 +478,32 @@ class ExitPlanLifecycleTests(unittest.IsolatedAsyncioTestCase):
         # Confirmed fill is what releases it.
         mgr.on_exit_fill("RELIANCE", plan_id=plan.plan_id, trigger="STOP_LOSS")
         self.assertEqual(mgr.active_plan_count, 0)
+
+    async def test_blocked_exit_plans_reports_a_stuck_position(self):
+        """Section 18 audit (2026-09-16): a position whose exit fails to
+        confirm MAX_EXIT_RETRIES+ times was already CRITICAL-logged as
+        "may be STUCK OPEN" by the monitor loop, but had no dedicated
+        counter/endpoint the way unresolved_orders now does."""
+        mgr = ExitManager(lambda i: None)
+        plan = self._plan()
+        mgr.register(plan)
+
+        # Below the threshold: not reported.
+        mgr._exit_retry_count[plan.plan_id] = MAX_EXIT_RETRIES - 1
+        mgr._pending_exits[plan.plan_id] = (datetime.now(timezone.utc), ExitTrigger.STOP_LOSS)
+        self.assertEqual(mgr.blocked_exit_plans(), [])
+
+        # At/above the threshold: reported, with the symbol and last trigger.
+        mgr._exit_retry_count[plan.plan_id] = MAX_EXIT_RETRIES
+        blocked = mgr.blocked_exit_plans()
+        self.assertEqual(len(blocked), 1)
+        self.assertEqual(blocked[0]["symbol"], "RELIANCE")
+        self.assertEqual(blocked[0]["retries"], MAX_EXIT_RETRIES)
+        self.assertEqual(blocked[0]["last_trigger"], "STOP_LOSS")
+
+        # A confirmed fill clears it, same as any other plan.
+        mgr.on_exit_fill("RELIANCE", plan_id=plan.plan_id, trigger="STOP_LOSS")
+        self.assertEqual(mgr.blocked_exit_plans(), [])
 
     async def test_exit_intent_product_type_matches_position(self):
         """Regression 2026-08-03: closing a CARRYFORWARD (options) position
