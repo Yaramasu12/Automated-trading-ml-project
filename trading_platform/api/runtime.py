@@ -36,7 +36,7 @@ from trading_platform.risk.historical_var import HistoricalVarCalculator
 from trading_platform.risk.portfolio_greeks import PortfolioGreeksCalculator
 from pathlib import Path
 
-from trading_platform.domain.enums import ExecutionMode, OptionType, OrderPriority, OrderType, ProductType, Segment, Side
+from trading_platform.domain.enums import ExecutionMode, InstrumentType, OptionType, OrderPriority, OrderType, ProductType, Segment, Side
 from trading_platform.domain.models import OrderIntent, Signal
 from trading_platform.domain.order_classification import derive_true_opens_position
 from trading_platform.event_bus import InMemoryEventBus
@@ -67,7 +67,7 @@ from trading_platform.news.calendar import EconomicCalendar
 from trading_platform.news.feed import NewsFeedFetcher
 from trading_platform.news.intelligence import NewsIntelligence
 from trading_platform.portfolio.target import AnnualTargetTracker
-from trading_platform.portfolio.ledger import PortfolioLedger
+from trading_platform.portfolio.ledger import PortfolioLedger, PortfolioSnapshot
 from trading_platform.risk.capital_protection import CapitalProtection
 from trading_platform.risk.compliance import ComplianceGuard
 from trading_platform.risk.engine import RiskEngine, RiskLimits
@@ -2846,6 +2846,23 @@ class TradingRuntime:
             session_start = float(getattr(self.scheduler, "_session_start_equity", 0.0) or 0.0) if hasattr(self, "scheduler") else 0.0
             gate_daily_pnl = (snapshot.equity - session_start) if session_start > 0 else 0.0
 
+        # Section 13 audit (2026-09-17): margin_utilization/correlated_exposure_pct/
+        # options_short_exposure/symbol_exposure_pct used to default straight to
+        # 0.0/None here with nothing on the real order path ever overriding
+        # them — confirmed by grep, no caller anywhere in the codebase ever
+        # populated these payload keys with a real value. The corresponding
+        # RiskEngine limits (max_margin_utilization, max_correlated_exposure_pct,
+        # max_options_short_exposure_pct) therefore compared 0.0 against a
+        # positive threshold on every real order and could never fire.
+        # _real_exposure_metrics() computes real figures from the current
+        # portfolio; an explicit payload value (e.g. from a test or a future
+        # caller with a more precise figure) still takes priority.
+        try:
+            real_exposure = self._real_exposure_metrics(intent, snapshot)
+        except Exception as exc:
+            note_swallowed("final_gate.real_exposure_metrics", exc)
+            real_exposure = {}
+
         risk_decision = self.risk_engine.evaluate(
             intent=intent,
             portfolio=snapshot,
@@ -2855,7 +2872,9 @@ class TradingRuntime:
             kill_switch_active=self.kill_switch_active,
             daily_pnl=gate_daily_pnl,
             strategy_daily_pnl=float(payload.get("strategy_daily_pnl", 0.0)),
-            options_short_exposure=float(payload.get("options_short_exposure", 0.0)),
+            options_short_exposure=float(
+                payload.get("options_short_exposure", real_exposure.get("options_short_exposure", 0.0))
+            ),
             held_quantity=held_quantity,
             gamma_exposure=(
                 float(payload["gamma_exposure"])
@@ -2865,10 +2884,14 @@ class TradingRuntime:
             symbol_exposure_pct=(
                 float(payload["symbol_exposure_pct"])
                 if payload.get("symbol_exposure_pct") is not None
-                else None
+                else real_exposure.get("symbol_exposure_pct")
             ),
-            correlated_exposure_pct=float(payload.get("correlated_exposure_pct", 0.0)),
-            margin_utilization=float(payload.get("margin_utilization", 0.0)),
+            correlated_exposure_pct=float(
+                payload.get("correlated_exposure_pct", real_exposure.get("correlated_exposure_pct", 0.0))
+            ),
+            margin_utilization=float(
+                payload.get("margin_utilization", real_exposure.get("margin_utilization", 0.0))
+            ),
             orders_sent_today=self.compliance.orders_today,
             trades_today=int(self.scheduler.stats.get("processed", 0)),
         )
@@ -4399,6 +4422,83 @@ class TradingRuntime:
             near_expiry_positions, self._position_spot_price, self._position_mark_price, as_of=today
         )
         return snapshot.net_gamma
+
+    def _real_exposure_metrics(self, intent: OrderIntent, snapshot: PortfolioSnapshot) -> dict:
+        """Real, computed-from-current-positions values for the final risk
+        gate's margin_utilization / correlated_exposure_pct /
+        options_short_exposure / symbol_exposure_pct parameters.
+
+        Section 13 audit (2026-09-17): these four RiskEngine parameters all
+        default to 0.0 (or fall back to a single-order estimate for
+        symbol_exposure_pct) and NOTHING on the real order path — confirmed
+        by grep across the whole codebase — ever supplied a real computed
+        value in the final-gate payload. max_margin_utilization (0.60),
+        max_correlated_exposure_pct (0.25), and max_options_short_exposure_pct
+        (0.10) therefore compared 0.0 against their thresholds on every real
+        order and could never fire; symbol_exposure_pct silently ignored the
+        portfolio's EXISTING exposure to that symbol, checking only the new
+        order's own size. This computes real figures directly from
+        self.portfolio.positions, reusing the exact margin-proxy convention
+        CapitalProtection.check() already uses for a single order (futures:
+        notional * futures_margin_pct; options/equity: notional /
+        margin_multiplier) so the two do not disagree about what "margin"
+        means, and the exact notional formula OrderIntent.notional_value
+        already uses (abs(quantity * mark_price * lot_size)).
+
+        "Correlated" is scoped conservatively to positions sharing the same
+        underlying as `intent` — a true subset of any broader cross-index
+        correlation (e.g. NIFTY/BANKNIFTY moving together), not a complete
+        model of it, but a real, defensible, easily-audited figure instead
+        of the previous permanent zero.
+        """
+        equity = max(snapshot.equity, 1.0)
+        symbol = intent.instrument.symbol
+        underlying = intent.instrument.underlying or symbol
+
+        symbol_notional = 0.0
+        underlying_notional = 0.0
+        short_options_notional = 0.0
+        margin_used = 0.0
+
+        for pos in self.portfolio.positions.values():
+            if pos.quantity == 0:
+                continue
+            mark = self._position_mark_price(pos) or pos.average_price
+            if not mark or mark <= 0:
+                continue
+            inst = pos.instrument
+            notional = abs(pos.quantity * mark * inst.lot_size)
+
+            if inst.symbol == symbol:
+                symbol_notional += notional
+            if (inst.underlying or inst.symbol) == underlying:
+                underlying_notional += notional
+            if inst.instrument_type == InstrumentType.OPTION and pos.quantity < 0:
+                short_options_notional += notional
+
+            if inst.instrument_type == InstrumentType.FUTURE:
+                margin_used += notional * self.capital_protection.futures_margin_pct if self.capital_protection else notional * 0.12
+            else:
+                margin_used += notional / self.capital_protection.margin_multiplier if self.capital_protection else notional / 5.0
+
+        # Include the prospective new order itself — margin_utilization and
+        # correlated_exposure_pct both ask "would allowing this push the
+        # book over the limit," not just "is the book already over," the
+        # same framing max_position_pct/max_symbol_exposure_pct already use.
+        new_notional = intent.notional_value
+        new_is_future = intent.instrument.instrument_type == InstrumentType.FUTURE
+        new_margin = (
+            new_notional * (self.capital_protection.futures_margin_pct if self.capital_protection else 0.12)
+            if new_is_future
+            else new_notional / (self.capital_protection.margin_multiplier if self.capital_protection else 5.0)
+        )
+
+        return {
+            "margin_utilization": (margin_used + new_margin) / equity,
+            "correlated_exposure_pct": (underlying_notional + new_notional) / equity,
+            "options_short_exposure": short_options_notional,  # absolute Rs, matches RiskEngine's own comparison
+            "symbol_exposure_pct": (symbol_notional + new_notional) / equity,
+        }
 
     def portfolio_greeks_snapshot(self) -> dict:
         """Net delta/gamma/theta/vega across every open OPTION position —

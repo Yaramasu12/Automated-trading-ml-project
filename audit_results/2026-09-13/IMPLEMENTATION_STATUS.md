@@ -1067,3 +1067,80 @@ through the actual `GradientBoostedReturnForecaster` correctly records
 passed. Deployed live (both `trading-api` and `trading-scheduler`, since
 both load `persistence.py` and the scheduler specifically needs the
 `daily_scheduler.py` changes).
+
+## Section 13 — real bug found and fixed: four RiskEngine exposure limits were structurally inert (2026-09-17)
+
+Requested approach for sections 9-17 ("suggest the best approach... I'm not
+sure what to provide"): rather than the large research/data-gathering
+program those sections describe wholesale, apply the same "find what's real
+and buildable now" pattern that worked for section 11 (SVI surface) — audit
+each section's premise against the actual code first, and fix whatever
+turns out to be a genuine, fixable bug rather than a research gap. Section
+13 (portfolio concentration / margin controls) was the first hit.
+
+**The gap**: `RiskEngine.evaluate()` (`risk/engine.py`) takes four exposure
+parameters — `margin_utilization`, `correlated_exposure_pct`,
+`options_short_exposure`, and `symbol_exposure_pct` — that gate three
+configured limits (`max_margin_utilization=0.60`,
+`max_correlated_exposure_pct=0.25`, `max_options_short_exposure_pct=0.10`)
+plus a symbol-concentration cap (`max_symbol_exposure_pct=0.10`). All four
+default to `0.0` (or `None`, which `symbol_exposure_pct` falls back from to
+the single new order's own `position_pct` — never the real portfolio
+aggregate). Grepped the entire codebase for every call site of
+`risk_engine.evaluate(` and `_evaluate_final_execution_gate(`: nothing on
+the real order path — not the scheduler, not the agent loop, not
+`execution/router.py`'s own secondary check — ever populated these payload
+keys with a real computed value. Three configured risk limits that exist
+specifically to cap margin/correlation/short-options concentration could
+never fire, on any order, in this deployment's entire history. Same
+severity class as this session's earlier goal-governor and TCA findings:
+config that looks like a safety net but was never wired to anything real.
+
+**Fix**: a new `TradingRuntime._real_exposure_metrics(intent, snapshot)`
+(`api/runtime.py`, right after the existing `_near_expiry_gamma_exposure` —
+the one exposure metric that *was* already wired, behind its own opt-in
+flag) walks `self.portfolio.positions`, resolving each position's mark
+price the same way `PortfolioGreeksCalculator`/`HistoricalVarCalculator`
+already do (`_position_mark_price`, falling back to `average_price`), and
+computes real notional-based aggregates: same-symbol notional
+(`symbol_exposure_pct`), same-underlying notional including the new order
+(`correlated_exposure_pct`, deliberately scoped to same-underlying only — a
+true, defensible subset of full cross-index correlation, not presented as
+a complete correlation model), short-option notional
+(`options_short_exposure`), and total margin used (`margin_utilization`),
+reusing `CapitalProtection`'s own established margin-proxy convention
+(futures = notional × `futures_margin_pct` (0.12), everything else =
+notional / `margin_multiplier` (5.0)) rather than inventing a new formula.
+`_evaluate_final_execution_gate` now calls this (wrapped in
+`try`/`except` + `note_swallowed`, falling back to the pre-fix zero-default
+behaviour on any computation error — a deliberate non-regression
+guarantee, this can only make the gate as permissive as before, never more)
+and feeds the result into `risk_engine.evaluate()`, with an explicit
+`payload` value still taking priority over the computed real value so any
+existing/future caller that supplies a more precise figure isn't
+overridden.
+
+**Explicitly not touched**: `execution/router.py`'s own, separate
+`risk_engine.evaluate()` call (line 65) has the same gap, but it only runs
+as a secondary check *after* `final_gate` (now fixed) has already approved
+the order — lower priority, left for a future consistency pass rather than
+risking two simultaneous changes to the money path in one pass.
+
+Tests: 7 new in `tests/test_runtime.py::FinalGateRealExposureMetricsTests`,
+each seeding a real position via `portfolio.apply_fill` (the same
+bypass-risk-checks pattern the existing kill-switch reduction tests use)
+and proving the gate now actually rejects what the pre-fix zero-default
+behaviour would have silently approved: margin utilization pushed to 67%
+by an oversized RELIANCE position rejects a new order
+(`max_margin_utilization_breached`); two different NIFTY option strikes
+sharing 34% combined same-underlying exposure rejects
+(`correlated_exposure_exceeds_limit`); a 15%-of-equity short NIFTY option
+position rejects a new, unrelated order (`options_short_exposure_exceeds_limit`);
+a second RELIANCE order that alone would pass (3.08%, under the pre-fix
+single-order fallback) but pushes the real aggregate to 10.92% correctly
+rejects (`symbol_exposure_exceeds_limit`) — proving real aggregation, not
+just wiring; an explicit `payload["margin_utilization"]` still overrides
+the computed value; a forced exception from `_real_exposure_metrics` fails
+safe (order still approved, doesn't crash); and an ordinary small order
+with no existing positions is still approved (no false-positive
+over-rejection). Full suite: 1520 passed, zero regressions.

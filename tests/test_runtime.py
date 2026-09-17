@@ -1230,5 +1230,135 @@ class RuntimeTests(unittest.TestCase):
         self.assertTrue(all(r["job_name"] == "model_retrain" for r in result["runs"]))
 
 
+class FinalGateRealExposureMetricsTests(unittest.TestCase):
+    """Section 13 audit (2026-09-17): margin_utilization/correlated_exposure_pct/
+    options_short_exposure/symbol_exposure_pct used to default straight to
+    0.0/None in _evaluate_final_execution_gate's risk_engine.evaluate() call,
+    with nothing on the real order path ever populating them -- the three
+    corresponding RiskLimits (max_margin_utilization=0.60,
+    max_correlated_exposure_pct=0.25, max_options_short_exposure_pct=0.10)
+    could never fire. _real_exposure_metrics() now computes real figures from
+    the currently-held portfolio; these tests seed a real position via
+    apply_fill (bypassing risk checks, exactly like the existing kill-switch
+    reduction tests above) and prove each limit now actually rejects an order
+    that the pre-fix zero-default behaviour would have silently approved."""
+
+    def _seed_fill(self, runtime: "TradingRuntime", symbol: str, side: str, quantity: int, price: float):
+        from trading_platform.domain.enums import OrderStatus
+        from trading_platform.domain.models import Order
+        entry = runtime._intent_from_payload({
+            "symbol": symbol, "side": side, "quantity": quantity, "price": price,
+            "strategy_name": "test", "metadata": {"hedged": True},
+        })
+        runtime.portfolio.apply_fill(
+            Order(entry, status=OrderStatus.FILLED), price, datetime.now(timezone.utc), 0.0,
+        )
+
+    def test_seeded_position_breaches_margin_utilization(self):
+        runtime = TradingRuntime()
+        # notional = 1200 * 2800 = 3,360,000 -> margin (equity/options formula,
+        # notional / 5) = 672,000 = 67.2% of the default 1,000,000 equity.
+        self._seed_fill(runtime, "RELIANCE", "BUY", 1200, 2800.0)
+
+        new_order = runtime._intent_from_payload({
+            "symbol": "TCS", "side": "BUY", "quantity": 1, "price": 3800.0,
+            "strategy_name": "test", "metadata": {},
+        })
+        decision = runtime._evaluate_final_execution_gate(new_order)
+        self.assertFalse(decision.approved)
+        self.assertEqual(decision.reason, "max_margin_utilization_breached")
+
+    def test_seeded_same_underlying_position_breaches_correlated_exposure(self):
+        from trading_platform.domain.enums import Segment
+        runtime = TradingRuntime()
+        nifty_options = runtime.instrument_master.by_underlying("NIFTY", segment=Segment.OPTIONS)
+        strikes = sorted({inst.strike for inst in nifty_options})
+        leg_a = next(i for i in nifty_options if i.strike == strikes[0])
+        leg_b = next(
+            i for i in nifty_options
+            if i.strike == strikes[1] and i.option_type == leg_a.option_type
+        )
+        # notional = 60 * 100 * 50 (NIFTY lot size) = 300,000 = 30% of equity,
+        # all under the same "NIFTY" underlying as the new order below.
+        self._seed_fill(runtime, leg_a.symbol, "BUY", 60, 100.0)
+
+        new_order = runtime._intent_from_payload({
+            "symbol": leg_b.symbol, "side": "BUY", "quantity": 8, "price": 100.0,
+            "strategy_name": "test", "metadata": {},
+        })
+        # new notional = 8*100*50 = 40,000 (4% -- passes its own position-size
+        # and symbol-exposure checks alone). Combined same-underlying exposure
+        # = (300,000+40,000)/1,000,000 = 34% > the 25% correlated-exposure cap.
+        decision = runtime._evaluate_final_execution_gate(new_order)
+        self.assertFalse(decision.approved)
+        self.assertEqual(decision.reason, "correlated_exposure_exceeds_limit")
+
+    def test_seeded_short_option_breaches_options_short_exposure_limit(self):
+        from trading_platform.domain.enums import Segment
+        runtime = TradingRuntime()
+        nifty_options = runtime.instrument_master.by_underlying("NIFTY", segment=Segment.OPTIONS)
+        leg = nifty_options[0]
+        # short notional = 30*100*50 = 150,000 = 15% of equity, over the 10% cap.
+        self._seed_fill(runtime, leg.symbol, "SELL", 30, 100.0)
+
+        new_order = runtime._intent_from_payload({
+            "symbol": "RELIANCE", "side": "BUY", "quantity": 1, "price": 2800.0,
+            "strategy_name": "test", "metadata": {},
+        })
+        decision = runtime._evaluate_final_execution_gate(new_order)
+        self.assertFalse(decision.approved)
+        self.assertEqual(decision.reason, "options_short_exposure_exceeds_limit")
+
+    def test_symbol_exposure_aggregates_with_existing_same_symbol_position(self):
+        runtime = TradingRuntime()
+        # existing notional = 28*2800 = 78,400 (7.84% of equity)
+        self._seed_fill(runtime, "RELIANCE", "BUY", 28, 2800.0)
+
+        new_order = runtime._intent_from_payload({
+            "symbol": "RELIANCE", "side": "BUY", "quantity": 11, "price": 2800.0,
+            "strategy_name": "test", "metadata": {},
+        })
+        # New order's OWN notional alone = 11*2800 = 30,800 (3.08%) -- under the
+        # pre-fix single-order fallback (symbol_exposure_pct defaults to this
+        # order's own position_pct when nothing supplies a real figure) this
+        # would have passed the 10% symbol-exposure cap. The real aggregate,
+        # (78,400+30,800)/1,000,000 = 10.92%, must not.
+        decision = runtime._evaluate_final_execution_gate(new_order)
+        self.assertFalse(decision.approved)
+        self.assertEqual(decision.reason, "symbol_exposure_exceeds_limit")
+
+    def test_explicit_payload_value_still_overrides_computed_real_value(self):
+        runtime = TradingRuntime()
+        order = runtime._intent_from_payload({
+            "symbol": "RELIANCE", "side": "BUY", "quantity": 1, "price": 2800.0,
+            "strategy_name": "test", "metadata": {},
+        })
+        # No existing positions -> real computed margin_utilization is ~0%,
+        # nowhere near the 60% limit. An explicit payload value must still win,
+        # preserving any existing/future caller that supplies its own figure.
+        decision = runtime._evaluate_final_execution_gate(order, payload={"margin_utilization": 0.99})
+        self.assertFalse(decision.approved)
+        self.assertEqual(decision.reason, "max_margin_utilization_breached")
+
+    def test_real_exposure_computation_failure_fails_safe_instead_of_crashing(self):
+        runtime = TradingRuntime()
+        order = runtime._intent_from_payload({
+            "symbol": "RELIANCE", "side": "BUY", "quantity": 1, "price": 2800.0,
+            "strategy_name": "test", "metadata": {},
+        })
+        with patch.object(runtime, "_real_exposure_metrics", side_effect=RuntimeError("boom")):
+            decision = runtime._evaluate_final_execution_gate(order)
+        self.assertTrue(decision.approved, decision.reason)
+
+    def test_ordinary_small_order_with_no_existing_positions_still_approved(self):
+        runtime = TradingRuntime()
+        order = runtime._intent_from_payload({
+            "symbol": "RELIANCE", "side": "BUY", "quantity": 5, "price": 2800.0,
+            "strategy_name": "test", "metadata": {},
+        })
+        decision = runtime._evaluate_final_execution_gate(order)
+        self.assertTrue(decision.approved, decision.reason)
+
+
 if __name__ == "__main__":
     unittest.main()
