@@ -138,7 +138,27 @@ class TradingRuntime:
         self.portfolio_greeks_calculator = PortfolioGreeksCalculator()
         self.historical_var_calculator = HistoricalVarCalculator()
         self.rollover_planner = RolloverPlanner(self.instrument_master)
-        self.target_tracker = AnnualTargetTracker()
+        # 2026-09-18: AnnualTargetTracker's and GoalGovernor's own defaults
+        # (both YEARLY_PROFIT_TARGET / 50_000_000) are a hardcoded absolute
+        # rupee figure completely disconnected from the real initial_capital
+        # (typically 1,000,000 here) -- a 50x/year target, unreachable by
+        # construction. goal/governance.py's GoalGovernance (the one that
+        # actually sizes real short-vol entries) was already fixed to derive
+        # its target from annual_target_pct x initial_capital instead of a
+        # hardcoded constant; these two dashboard-facing trackers (GET
+        # /goal-governor/status, GET /portfolio/target-progress) were missed
+        # in that pass and still show a permanently "off track" / massive-gap
+        # picture that has nothing to do with real performance -- Section 19
+        # (2026-09-14) already made sure this target can't drive automatic
+        # risk escalation, but a misleadingly impossible number is still a
+        # real, user-visible honesty gap on its own. An explicit
+        # YEARLY_PROFIT_TARGET env var, if genuinely set, still wins.
+        _env_yearly_target = os.getenv("YEARLY_PROFIT_TARGET")
+        self._yearly_target = (
+            float(_env_yearly_target) if _env_yearly_target
+            else self.settings.initial_capital * self.settings.annual_target_pct
+        )
+        self.target_tracker = AnnualTargetTracker(annual_target=self._yearly_target)
         self.portfolio = PortfolioLedger(self.settings.initial_capital)
         self.paper_broker = SimulatedBrokerClient()
         self.broker_capabilities = BrokerCapabilityRegistry()
@@ -453,7 +473,10 @@ class TradingRuntime:
         # Ensemble engine and goal governor are lightweight; always instantiate.
         self._ensemble_engine = EnsembleDecisionEngine()
         self._goal_governor = GoalGovernor(
-            yearly_target=self.settings.yearly_profit_target,
+            # See the target_tracker note near this runtime's construction
+            # for why this is no longer the raw, capital-disconnected
+            # settings.yearly_profit_target default.
+            yearly_target=self._yearly_target,
             initial_capital=self.settings.initial_capital,
         )
 

@@ -186,7 +186,12 @@ services:
       - QDRANT_ENABLED=${QDRANT_ENABLED:-true}
       - QDRANT_HOST=${QDRANT_HOST:-qdrant}
       - QDRANT_PORT=${QDRANT_PORT:-6333}
-      - YEARLY_PROFIT_TARGET=${YEARLY_PROFIT_TARGET:-50000000}
+      # No default here: runtime.py now derives the yearly profit target from
+      # INITIAL_CAPITAL * ANNUAL_TARGET_PCT when this is unset, instead of a
+      # hardcoded absolute figure disconnected from real capital (2026-09-18
+      # fix — see config.py's comment). Set this explicitly only if an
+      # absolute rupee target is genuinely wanted.
+      - YEARLY_PROFIT_TARGET=${YEARLY_PROFIT_TARGET:-}
       - TRADING_API_BASE_URL=${TRADING_API_BASE_URL:-http://trading-api:8000}
     depends_on:
       timescaledb:

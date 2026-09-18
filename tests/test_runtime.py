@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import os
 import tempfile
 import unittest
 from datetime import date, datetime, timezone
@@ -951,6 +952,36 @@ class RuntimeTests(unittest.TestCase):
         self.assertGreater(expiries["count"], 0)
         self.assertGreater(chain["call_count"], 0)
         self.assertIn("delta", greeks)
+
+    def test_goal_tracking_targets_scale_with_real_capital_not_a_fixed_50m(self):
+        """2026-09-18: decision_fusion.GoalGovernor (GET /goal-governor/status)
+        and portfolio.target.AnnualTargetTracker (GET /portfolio/target-progress)
+        both defaulted to a hardcoded YEARLY_PROFIT_TARGET/annual_target of
+        50,000,000 -- completely disconnected from initial_capital (1,000,000
+        by default here), a permanent ~50x/year target unreachable by
+        construction. goal.governance.GoalGovernance (the one that actually
+        sizes real short-vol entries) was already fixed to derive its target
+        from annual_target_pct * initial_capital; these two dashboard-facing
+        trackers were missed in that pass. Both must now agree with each
+        other and with the real capital, not each show a different,
+        misleadingly impossible number."""
+        runtime = TradingRuntime(Settings(initial_capital=1_000_000, annual_target_pct=0.35))
+        expected_target = 1_000_000 * 0.35
+
+        self.assertAlmostEqual(runtime.goal_governor_status()["yearly_target"], expected_target)
+        self.assertAlmostEqual(runtime.target_tracker.annual_target, expected_target)
+        # The old default (50,000,000) must be gone, not just coincidentally
+        # different from this particular capital.
+        self.assertNotAlmostEqual(runtime.goal_governor_status()["yearly_target"], 50_000_000.0)
+
+    def test_explicit_yearly_profit_target_env_override_still_works(self):
+        """An operator who genuinely wants an absolute rupee target can still
+        set YEARLY_PROFIT_TARGET explicitly -- only the unhelpful DEFAULT
+        changed, not the override mechanism."""
+        with patch.dict(os.environ, {"YEARLY_PROFIT_TARGET": "2500000"}):
+            runtime = TradingRuntime(Settings(initial_capital=1_000_000, annual_target_pct=0.35))
+        self.assertAlmostEqual(runtime.goal_governor_status()["yearly_target"], 2_500_000.0)
+        self.assertAlmostEqual(runtime.target_tracker.annual_target, 2_500_000.0)
 
     def test_target_progress_and_supervisor_payloads(self):
         runtime = TradingRuntime()

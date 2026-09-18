@@ -278,7 +278,18 @@ class Settings:
 
     # Goal governor — see GoalGovernance (goal/governance.py); annual_target_pct
     # is the one that actually scales live short-vol position sizing.
-    yearly_profit_target: float = field(default_factory=lambda: _env_float("YEARLY_PROFIT_TARGET", 50_000_000.0))
+    #
+    # There used to be a separate `yearly_profit_target` field here
+    # (YEARLY_PROFIT_TARGET, default 50,000,000) feeding the *other* two
+    # goal-tracking objects (decision_fusion.GoalGovernor's dashboard status,
+    # portfolio.target.AnnualTargetTracker's /portfolio/target-progress) —
+    # an absolute rupee figure completely disconnected from initial_capital,
+    # a permanent ~50x/year target no real account could ever hit. Removed
+    # 2026-09-18: runtime.py now derives both objects' target from
+    # initial_capital * annual_target_pct (same source as GoalGovernance
+    # above), reading YEARLY_PROFIT_TARGET directly via os.getenv only as an
+    # explicit absolute-rupee override, so the env var still works exactly
+    # as before if anyone has actually set it.
     annual_target_pct: float = field(default_factory=lambda: _env_float("ANNUAL_TARGET_PCT", 0.35))
 
     # Database (empty = SQLite fallback; set DATABASE_URL for PostgreSQL) —
