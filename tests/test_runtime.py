@@ -1230,6 +1230,59 @@ class RuntimeTests(unittest.TestCase):
         self.assertTrue(all(r["job_name"] == "model_retrain" for r in result["runs"]))
 
 
+class AgentTradeLogHydrationTests(unittest.TestCase):
+    """2026-09-18: a user reported real orders vanishing from the dashboard's
+    "Recent Agent Trades" panel (GET /agent/trades) right after a routine
+    redeploy, despite trading having genuinely continued. Root cause:
+    _agent_trade_log is an in-memory-only deque, appended to solely by
+    _on_fill() -- never persisted, never restored -- so every container
+    restart wiped it back to empty even though the real trade history
+    survived untouched in the DB (GET /db/trades). restore_state() now
+    hydrates it from the DB on startup, same as positions/exit plans."""
+
+    def test_agent_trades_empty_before_restore(self):
+        runtime = TradingRuntime()
+        self.assertEqual(runtime.agent_trade_log()["count"], 0)
+
+    def test_restore_state_hydrates_agent_trade_log_from_db(self):
+        from trading_platform.domain.enums import Side
+        from trading_platform.domain.models import Trade
+
+        runtime = TradingRuntime()
+        trade = Trade(
+            "t1", "o1", "RELIANCE", Side.BUY, 10, 2800.0, 20.0,
+            datetime.now(timezone.utc), "short_vol_condor",
+        )
+        runtime.db.save_trade(trade, execution_mode=runtime.execution_mode.value)
+        self.assertEqual(runtime.agent_trade_log()["count"], 0)  # nothing in memory yet
+
+        asyncio.run(runtime.restore_state())
+
+        result = runtime.agent_trade_log()
+        self.assertEqual(result["count"], 1)
+        self.assertEqual(result["trades"][0]["symbol"], "RELIANCE")
+        self.assertEqual(result["trades"][0]["trade_id"], "t1")
+
+    def test_hydration_does_not_leak_test_fixture_trades(self):
+        """save_trade() marks manual_preview/trace_fill_test rows is_test=True,
+        and db.trades() excludes them by default -- confirm the hydration
+        path respects that, so test/preview noise never appears in the real
+        activity feed."""
+        from trading_platform.domain.enums import Side
+        from trading_platform.domain.models import Trade
+
+        runtime = TradingRuntime()
+        trade = Trade(
+            "t2", "o2", "RELIANCE", Side.BUY, 10, 2800.0, 20.0,
+            datetime.now(timezone.utc), "manual_preview",
+        )
+        runtime.db.save_trade(trade, execution_mode=runtime.execution_mode.value)
+
+        asyncio.run(runtime.restore_state())
+
+        self.assertEqual(runtime.agent_trade_log()["count"], 0)
+
+
 class FinalGateRealExposureMetricsTests(unittest.TestCase):
     """Section 13 audit (2026-09-17): margin_utilization/correlated_exposure_pct/
     options_short_exposure/symbol_exposure_pct used to default straight to

@@ -1291,6 +1291,22 @@ class TradingRuntime:
         restored_positions = 0
         restored_plans = 0
 
+        # 2026-09-18: _agent_trade_log (backs GET /agent/trades, the "Recent
+        # Agent Trades" dashboard panel) is an in-memory-only deque, appended
+        # to solely by _on_fill() -- it is never persisted or restored, so
+        # every restart/redeploy wiped it back to empty even though the real
+        # trade history survives untouched in the DB (GET /db/trades). A user
+        # would see a genuinely populated trade book go blank in the UI for
+        # no reason connected to their own trading activity, right after any
+        # deploy. Unlike positions/exit plans below, this doesn't need the
+        # instrument master to be real, so it runs unconditionally and first.
+        try:
+            db_trades = list(reversed(self.db.trades(execution_mode=exec_mode, limit=self._agent_trade_log.maxlen or 500)))
+            for row in db_trades:
+                self._agent_trade_log.append(row)
+        except Exception as exc:
+            note_swallowed("restore_state.hydrate_agent_trade_log", exc)
+
         # Audit fix M9: restoring against a synthetic instrument master would
         # skip real contract symbols and DISCARD their exit plans. Try the real
         # cache first; if the master is still synthetic, defer restore entirely
