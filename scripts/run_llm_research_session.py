@@ -29,10 +29,12 @@ logging.basicConfig(level=logging.INFO, format="%(message)s")
 # concurrently with another model — safe here since this script calls one
 # model at a time, in sequence, never in parallel.
 _MODELS = [
-    "qwen/qwen3.6-35b-a3b",
-    "google/gemma-4-31b-qat",
+    # Refreshed 2026-09-19 against GET /v1/models: only these two chat models
+    # are installed now. The earlier list named qwen3.6-35b-a3b, gemma-4-31b-qat
+    # and gemma-4-e4b, none of which are loaded any more -- trying an
+    # uninstalled model risks LM Studio attempting a JIT load.
     "qwen/qwen3.8-27b",
-    "google/gemma-4-e4b",
+    "nvidia/nemotron-3-nano",
 ]
 
 

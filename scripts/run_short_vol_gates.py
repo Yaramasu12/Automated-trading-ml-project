@@ -60,7 +60,7 @@ def main() -> int:
     results = evaluate_short_vol_gates(sweep, strategy_id="short_vol")
 
     print(f"\n=== GATES ({under}) ===")
-    for gate in (results.dsr, results.pbo, results.monte_carlo,
+    for gate in (results.dsr, results.pbo, results.cpcv, results.monte_carlo,
                  results.cost_model, results.promotion_ladder):
         if gate is not None:
             print(f"  {gate.gate_name:16} {gate.result.value:5} {gate.message}")
