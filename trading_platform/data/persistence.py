@@ -82,6 +82,19 @@ CREATE TABLE IF NOT EXISTS session_baselines (
     recorded_at    TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+-- GoalGovernance's annual-tracking anchor (goal/governance.py). Singleton
+-- row (id always 1) so a restart RESTORES the same anchor instead of
+-- silently re-anchoring to a new "today" every time the container
+-- restarts -- see reset_baseline()'s own comment (2026-09-19) for why an
+-- unpersisted anchor would defeat the whole point of tracking sustained
+-- performance over time.
+CREATE TABLE IF NOT EXISTS goal_governance_baseline (
+    id             INTEGER     PRIMARY KEY,
+    start_date     DATE        NOT NULL,
+    start_capital  DOUBLE PRECISION NOT NULL,
+    reset_at       TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
 CREATE TABLE IF NOT EXISTS model_runs (
     id             BIGSERIAL   PRIMARY KEY,
     run_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -336,6 +349,13 @@ CREATE TABLE IF NOT EXISTS session_baselines (
     trade_date    TEXT PRIMARY KEY,
     equity        REAL NOT NULL,
     recorded_at   TEXT NOT NULL
+);
+-- See the matching postgres table's comment above.
+CREATE TABLE IF NOT EXISTS goal_governance_baseline (
+    id            INTEGER PRIMARY KEY,
+    start_date    TEXT NOT NULL,
+    start_capital REAL NOT NULL,
+    reset_at      TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS model_runs (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -969,6 +989,41 @@ class TradingDatabase:
             row = cur.fetchone()
             result = _row_to_dict(cur, row) if row else None
         return float(result["equity"]) if result else None
+
+    def save_goal_governance_baseline(self, start_date: date, start_capital: float) -> None:
+        """Persist GoalGovernance's annual-tracking anchor (singleton row,
+        id=1). See goal_governance_baseline's own comment — a restart must
+        RESTORE this, not silently re-anchor to a new "today" every time."""
+        now = datetime.now(timezone.utc).isoformat()
+        if self._mode == "postgres":
+            sql = """INSERT INTO goal_governance_baseline (id, start_date, start_capital, reset_at)
+                     VALUES (1,%s,%s,%s)
+                     ON CONFLICT (id) DO UPDATE SET
+                       start_date=EXCLUDED.start_date, start_capital=EXCLUDED.start_capital,
+                       reset_at=EXCLUDED.reset_at"""
+            params: Any = (start_date, start_capital, now)
+        else:
+            sql = """INSERT INTO goal_governance_baseline (id, start_date, start_capital, reset_at)
+                     VALUES (1,?,?,?)
+                     ON CONFLICT(id) DO UPDATE SET
+                       start_date=excluded.start_date, start_capital=excluded.start_capital,
+                       reset_at=excluded.reset_at"""
+            params = (start_date.isoformat(), start_capital, now)
+        with self._cursor() as cur:
+            cur.execute(sql, params)
+
+    def get_goal_governance_baseline(self) -> dict | None:
+        sql = "SELECT start_date, start_capital FROM goal_governance_baseline WHERE id = 1"
+        with self._cursor() as cur:
+            cur.execute(sql)
+            row = cur.fetchone()
+            result = _row_to_dict(cur, row) if row else None
+        if not result:
+            return None
+        start_date = result["start_date"]
+        if isinstance(start_date, str):
+            start_date = date.fromisoformat(start_date[:10])
+        return {"start_date": start_date, "start_capital": float(result["start_capital"])}
 
     # ------------------------------------------------------------------
     # Model runs

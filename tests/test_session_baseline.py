@@ -122,5 +122,104 @@ class SessionBaselineTests(unittest.TestCase):
                 db.close()
 
 
+class GoalGovernanceBaselineTests(unittest.TestCase):
+    """2026-09-19, user-directed: GoalGovernance's Jan-1 default anchor meant
+    a year-to-date loss alone triggered its AT_RISK 40% size cut regardless
+    of annual_target_pct -- confirmed live after lowering the target from
+    0.35 to 0.08 didn't unclamp sizing, because actual_run_rate was already
+    negative against the Jan-1 baseline. This re-anchors to today's real
+    equity instead, and (mirroring session_baselines' own established
+    pattern) must persist that anchor so a restart restores it rather than
+    silently re-seeding to a new "today" every time."""
+
+    def _seed_position(self, runtime: TradingRuntime, symbol: str = "RELIANCE",
+                       quantity: int = 10, entry_price: float = 100.0) -> None:
+        entry = runtime._intent_from_payload({
+            "symbol": symbol, "side": "BUY", "quantity": quantity, "price": entry_price,
+            "strategy_name": "test_seed", "metadata": {},
+        })
+        runtime.portfolio.apply_fill(Order(entry, status=OrderStatus.FILLED), entry_price,
+                                     datetime.now(timezone.utc), 0.0)
+
+    def test_baseline_persistence_round_trip_on_the_database(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db = TradingDatabase(Path(tmp) / "trading.db")
+            try:
+                self.assertIsNone(db.get_goal_governance_baseline())
+                db.save_goal_governance_baseline(date(2026, 9, 19), 956_620.77)
+                stored = db.get_goal_governance_baseline()
+                self.assertEqual(stored["start_date"], date(2026, 9, 19))
+                self.assertAlmostEqual(stored["start_capital"], 956_620.77, places=2)
+                # Re-saving overwrites the singleton row, not a new one.
+                db.save_goal_governance_baseline(date(2026, 9, 20), 1_000_000.0)
+                stored = db.get_goal_governance_baseline()
+                self.assertEqual(stored["start_date"], date(2026, 9, 20))
+                self.assertAlmostEqual(stored["start_capital"], 1_000_000.0, places=2)
+            finally:
+                db.close()
+
+    def test_first_run_seeds_a_new_baseline_from_todays_real_equity(self):
+        runtime = TradingRuntime()
+        # A year-to-date loss (equity below the class default start_capital)
+        # -- exactly the scenario that motivated this fix.
+        self._seed_position(runtime, "RELIANCE", 10, 100.0)
+        with patch.object(
+            runtime.price_service, "resolve",
+            return_value=PriceResolution(price=80.0, source="live", is_stale=False),
+        ), patch("trading_platform.api.runtime.now_ist") as mock_now_ist:
+            mock_now_ist.return_value = datetime(2026, 9, 19, 7, 0)
+            marked_equity = runtime._marked_equity_now()
+            runtime._restore_or_seed_goal_governance_baseline()
+
+        self.assertEqual(runtime.goal_governance.start_date, date(2026, 9, 19))
+        self.assertAlmostEqual(runtime.goal_governance.start_capital, marked_equity, places=2)
+        # And it must be persisted, not just applied in-memory.
+        persisted = runtime.db.get_goal_governance_baseline()
+        self.assertIsNotNone(persisted)
+        self.assertAlmostEqual(persisted["start_capital"], marked_equity, places=2)
+
+    def test_restart_restores_persisted_baseline_instead_of_reseeding(self):
+        runtime = TradingRuntime()
+        self._seed_position(runtime, "RELIANCE", 10, 100.0)
+        with patch.object(
+            runtime.price_service, "resolve",
+            return_value=PriceResolution(price=80.0, source="live", is_stale=False),
+        ), patch("trading_platform.api.runtime.now_ist") as mock_now_ist:
+            mock_now_ist.return_value = datetime(2026, 9, 19, 7, 0)
+            runtime._restore_or_seed_goal_governance_baseline()
+        anchor_capital = runtime.goal_governance.start_capital
+        anchor_date = runtime.goal_governance.start_date
+
+        # Simulate a restart: in-memory GoalGovernance reverts to its
+        # constructor default (as a fresh process would build), the price
+        # has moved further, and a day has passed.
+        runtime.goal_governance.reset_baseline(start_capital=1_000_000.0, start_date=date(2026, 1, 1))
+        with patch.object(
+            runtime.price_service, "resolve",
+            return_value=PriceResolution(price=60.0, source="live", is_stale=False),
+        ), patch("trading_platform.api.runtime.now_ist") as mock_now_ist:
+            mock_now_ist.return_value = datetime(2026, 9, 20, 7, 0)
+            runtime._restore_or_seed_goal_governance_baseline()
+
+        self.assertEqual(runtime.goal_governance.start_date, anchor_date)
+        self.assertAlmostEqual(runtime.goal_governance.start_capital, anchor_capital, places=2)
+
+    def test_explicit_reset_reanchors_and_persists(self):
+        runtime = TradingRuntime()
+        self._seed_position(runtime, "RELIANCE", 10, 100.0)
+        with patch.object(
+            runtime.price_service, "resolve",
+            return_value=PriceResolution(price=150.0, source="live", is_stale=False),
+        ), patch("trading_platform.api.runtime.now_ist") as mock_now_ist:
+            mock_now_ist.return_value = datetime(2026, 9, 19, 7, 0)
+            result = runtime.reset_goal_governance_baseline()
+
+        self.assertEqual(result["start_date"], "2026-09-19")
+        self.assertGreater(result["start_capital"], 1_000_000.0)  # +50/share unrealized gain
+        self.assertEqual(runtime.goal_governance.start_date, date(2026, 9, 19))
+        persisted = runtime.db.get_goal_governance_baseline()
+        self.assertAlmostEqual(persisted["start_capital"], result["start_capital"], places=2)
+
+
 if __name__ == "__main__":
     unittest.main()

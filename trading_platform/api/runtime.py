@@ -1578,6 +1578,50 @@ class TradingRuntime:
         except Exception as exc:
             note_swallowed("runtime.session_baseline.persist", exc)
 
+    def _restore_or_seed_goal_governance_baseline(self) -> None:
+        """Restore GoalGovernance's persisted annual-tracking anchor, or
+        seed one from today's real (post-restore) equity if none exists yet.
+
+        2026-09-19: user-directed reset — GoalGovernance's Jan-1 default
+        anchor meant the account's year-to-date loss alone triggered its
+        AT_RISK 40% size cut regardless of annual_target_pct (any positive
+        target looks unreachable when actual_run_rate is already negative).
+        Must run AFTER restore_state() so self.portfolio.equity reflects the
+        real, persisted equity rather than a fresh initial_capital. Must
+        persist the seeded anchor so a LATER restart restores the SAME
+        anchor instead of re-seeding to a new "today" every time — an
+        anchor that keeps sliding forward would never accumulate enough
+        history for the annual tracking to mean anything."""
+        try:
+            existing = self.db.get_goal_governance_baseline()
+        except Exception as exc:
+            note_swallowed("runtime.goal_governance_baseline.load", exc)
+            return
+        if existing is not None:
+            self.goal_governance.reset_baseline(
+                start_capital=existing["start_capital"], start_date=existing["start_date"],
+            )
+            return
+        equity = self._marked_equity_now()
+        today = now_ist().date()
+        self.goal_governance.reset_baseline(start_capital=equity, start_date=today)
+        try:
+            self.db.save_goal_governance_baseline(today, equity)
+        except Exception as exc:
+            note_swallowed("runtime.goal_governance_baseline.persist", exc)
+
+    def reset_goal_governance_baseline(self) -> dict:
+        """Explicitly re-anchor GoalGovernance to today's real equity —
+        for a future deliberate reset (e.g. a new year, or after a large
+        drawdown the operator wants to stop being judged against). Not
+        called automatically after the first seed; see
+        _restore_or_seed_goal_governance_baseline for that one-time path."""
+        equity = self._marked_equity_now()
+        today = now_ist().date()
+        self.goal_governance.reset_baseline(start_capital=equity, start_date=today)
+        self.db.save_goal_governance_baseline(today, equity)
+        return {"start_date": today.isoformat(), "start_capital": equity}
+
     async def start_async_services(self) -> None:
         """Start core async services and optional broker-facing loops."""
         await self.scheduler.start()
@@ -1594,6 +1638,9 @@ class TradingRuntime:
         # is accurate. force_fresh=False: restore today's persisted baseline
         # if this is a mid-session restart, rather than recomputing (finding #7).
         self._establish_session_baseline(force_fresh=False)
+        # Must also run after restore_state() so self.portfolio.equity is the
+        # real, persisted figure -- see the method's own comment.
+        self._restore_or_seed_goal_governance_baseline()
 
         # Found 2026-09-14 live: on Ganesh Chaturthi (a real exchange holiday
         # the calendar had misclassified as a trading day — since fixed,

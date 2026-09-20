@@ -52,6 +52,24 @@ class GoalGovernance:
         self.start_capital = start_capital
         self.drawdown_halt_pct = drawdown_halt_pct
 
+    def reset_baseline(self, start_capital: float, start_date: date | None = None) -> None:
+        """Re-anchor the annual-tracking baseline to a new starting point.
+
+        2026-09-19: the Jan-1 default anchors every year-to-date loss
+        permanently into `evaluate()`'s actual_run_rate, which makes AT_RISK
+        (the 40% size cut) trigger for ANY positive annual_target_pct as
+        long as current equity sits below that Jan-1 figure at all --
+        confirmed live: lowering annual_target_pct from 0.35 to 0.08 did not
+        by itself unclamp sizing, because the account was running a real
+        year-to-date loss at the time. This lets an operator explicitly
+        stop judging against a loss that has already happened and start
+        tracking fresh from here -- a deliberate choice, not something this
+        class does on its own. No other internal state needs resetting:
+        evaluate() recomputes everything else fresh from the equity/
+        drawdown passed in at call time."""
+        self.start_date = start_date or now_ist().date()
+        self.start_capital = start_capital
+
     def evaluate(
         self,
         current_equity: float,

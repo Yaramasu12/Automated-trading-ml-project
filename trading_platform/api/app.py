@@ -909,6 +909,18 @@ def goal_state(payload: dict):
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
+@app.post("/goal/reset-baseline", dependencies=[_AuthDep])
+def goal_reset_baseline():
+    """Explicitly re-anchor GoalGovernance's annual tracking to today's real
+    equity -- e.g. a new year, or to stop being judged against a drawdown
+    that's already happened. Mutating (auth-required): this changes how
+    hard live position sizing gets squeezed."""
+    try:
+        return runtime.reset_goal_governance_baseline()
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 @app.get("/performance/summary", response_model=PerformanceSummaryResponse)
 def performance_summary(days: int = 30):
     import traceback as _tb, logging as _log
