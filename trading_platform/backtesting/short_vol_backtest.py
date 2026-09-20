@@ -241,6 +241,7 @@ class ShortVolBacktester:
         strategy: ShortVolStrategy | None = None,
         wing_pct: float | None = None,       # None = fixed INDEX_SPECS wing (default)
         skew_per_10pct: float = 0.25,        # smile steepness used to mark/close legs
+        entry_filter=None,                   # optional callable(date) -> bool gating NEW entries
     ) -> None:
         spec = INDEX_SPECS.get(underlying.upper(), INDEX_SPECS["NIFTY"])
         self.underlying = underlying.upper()
@@ -258,6 +259,12 @@ class ShortVolBacktester:
         # prices show NIFTY 5%-OTM puts at ~1.3x ATM vol at ~25 DTE (up to ~2x
         # at very short expiries) vs the 1.125x this default implies.
         self.skew_per_10pct = skew_per_10pct
+        # 2026-09-19: optional regime gate on NEW entries only -- open
+        # positions are always managed/exited regardless. Lets a slow
+        # "is the vol premium rich right now?" filter be tested without
+        # touching ShortVolStrategy.decide() (see
+        # scripts/research_premium_regime_filter.py).
+        self.entry_filter = entry_filter
         self.starting_capital = starting_capital
         self.hold_days = hold_days
         self.profit_target_pct = profit_target_pct
@@ -491,7 +498,8 @@ class ShortVolBacktester:
                     unrealized = 0.0
 
             # ---- consider a new entry ----------------------------------
-            if open_trade is None and bar.day.weekday() == self.entry_weekday:
+            if (open_trade is None and bar.day.weekday() == self.entry_weekday
+                    and (self.entry_filter is None or self.entry_filter(bar.day))):
                 closes = [b.close for b in bars[max(0, i - 60): i + 1]]
                 wing_now = self._wing_at(bar.close)
                 decision = self.strategy.decide(

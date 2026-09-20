@@ -148,5 +148,24 @@ class BacktesterOptionTests(unittest.TestCase):
         self.assertEqual(ShortVolBacktester().skew_per_10pct, 0.25)
 
 
+    def test_entry_filter_blocks_new_entries_only(self):
+        # A filter that always says "no" must produce zero trades; the
+        # default (None) must be unchanged behaviour. Uses a flat synthetic
+        # series with a rich IV so an unfiltered run does enter.
+        from trading_platform.backtesting.short_vol_backtest import DailyBar
+        import math
+        px, bars, d = 20000.0, [], date(2020, 1, 1)
+        for i in range(160):
+            px *= math.exp(0.0002 * math.sin(i))
+            d += timedelta(days=1)
+            if d.weekday() < 5:
+                bars.append(DailyBar(d, px))
+        iv = {b.day: 22.0 for b in bars}
+        open_run = ShortVolBacktester(underlying="NIFTY").run(bars, iv)
+        blocked = ShortVolBacktester(underlying="NIFTY", entry_filter=lambda day: False).run(bars, iv)
+        self.assertGreater(len(open_run.trades), 0)
+        self.assertEqual(len(blocked.trades), 0)
+
+
 if __name__ == "__main__":
     unittest.main()
