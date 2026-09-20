@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from enum import Enum
 
 from trading_platform.agent.market_hours import now_ist
@@ -78,7 +78,18 @@ class GoalGovernance:
     ) -> GoalState:
         today = as_of or datetime.now(timezone.utc).date()
         year_start = self.start_date
-        year_end = date(year_start.year, 12, 31)
+        # 2026-09-19: was date(year_start.year, 12, 31) -- fine for the Jan-1
+        # default (≈365 days either way), but reset_baseline() can now set
+        # start_date to any mid-year date, and pinning year_end to Dec 31 of
+        # THAT SAME year compresses the window (e.g. a Sept 19 reset left
+        # only ~102 days to Dec 31). annual_target_pct is meant as a full-
+        # YEAR pace; required_run_rate divides by days_remaining then
+        # annualizes by *365, so a compressed window demanded a pace up to
+        # 365/102 ≈ 3.6x harsher than the configured target, independent of
+        # real performance. A rolling 365-day window from start_date keeps
+        # "annual" meaning an actual year regardless of when the anchor was
+        # last set.
+        year_end = year_start + timedelta(days=365)
         total_days = (year_end - year_start).days or 1
         days_elapsed = max((today - year_start).days, 1)
         days_remaining = max((year_end - today).days, 1)
