@@ -108,7 +108,13 @@ function PortfolioBar({ p }: { p: LivePortfolioMetrics }) {
         { label: 'Cash', value: inr(p.cash), color: 'text-ink-muted' },
         { label: 'Unrealised P&L', value: inr(p.unrealized_pnl), color: p.unrealized_pnl >= 0 ? 'text-brand-green' : 'text-brand-red' },
         { label: 'Realised P&L', value: inr(p.realized_pnl), color: p.realized_pnl >= 0 ? 'text-brand-green' : 'text-brand-red' },
-        { label: 'Drawdown', value: pct(p.drawdown / 100), color: p.drawdown > 5 ? 'text-brand-red' : 'text-ink-muted' },
+        // 2026-09-19 fix: p (from getPortfolioPositions()) already carries
+        // drawdown as a percentage-point number (4.34 = 4.34%) -- dividing
+        // by 100 understated a real 4.34% drawdown as "0.04%", the opposite
+        // of Dashboard.tsx/Engine.tsx's bug (which multiplied the SAME
+        // already-scaled value by 100 again). See Dashboard.tsx's
+        // latestDrawdown comment for the full root cause.
+        { label: 'Drawdown', value: pct(p.drawdown), color: p.drawdown > 5 ? 'text-brand-red' : 'text-ink-muted' },
         { label: 'Open Positions', value: String(p.open_positions), color: 'text-brand-blue' },
       ].map(m => (
         <div key={m.label} className="bg-surface-card border border-surface-border rounded-xl p-3 shadow-card">

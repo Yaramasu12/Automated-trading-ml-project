@@ -667,7 +667,12 @@ export function Engine() {
               <MetricCard label="Cash"        value={inr(livePortfolio.portfolio.cash)}             color="cyan"   />
               <MetricCard label="Unrealized"  value={inr(livePortfolio.portfolio.unrealized_pnl)}  color={livePortfolio.portfolio.unrealized_pnl >= 0 ? 'green' : 'red'} />
               <MetricCard label="Realized"    value={inr(livePortfolio.portfolio.realized_pnl)}    color={livePortfolio.portfolio.realized_pnl >= 0 ? 'green' : 'red'} />
-              <MetricCard label="Drawdown"    value={pct(livePortfolio.portfolio.drawdown * 100)}   color="yellow" />
+              {/* 2026-09-19 fix: portfolio.drawdown from runtime.portfolio_positions()
+                  is already a percentage-point number (4.34 = 4.34%) -- multiplying
+                  by 100 again inflated a real 4.34% drawdown into a displayed
+                  "434.00%". See Dashboard.tsx's latestDrawdown comment for the
+                  full root cause (two different drawdown units in this codebase). */}
+              <MetricCard label="Drawdown"    value={pct(livePortfolio.portfolio.drawdown)}   color="yellow" />
             </div>
           )}
 

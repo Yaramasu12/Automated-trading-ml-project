@@ -269,11 +269,21 @@ export function Dashboard() {
 
   // ── Derived metrics ──────────────────────────────────────────────────────────
   const latestEquity    = livePortfolio?.portfolio.equity ?? equityCurve[equityCurve.length - 1]?.equity ?? 0
-  // WS portfolio.drawdown is a fraction (e.g. 0.0028 = 0.28%); equity curve
-  // drawdown is stored the same way. Multiply by 100 only at display time.
+  // 2026-09-19 fix: livePortfolio.portfolio comes from runtime.portfolio_positions()
+  // (both the REST endpoint and the /ws/dashboard snapshot embed it), which
+  // already returns drawdown as a percentage-point number (4.34 = 4.34%) —
+  // confirmed against the backend, which does `round(snapshot.drawdown * 100, 2)`
+  // before sending it. The equity curve's OWN drawdown column, by contrast,
+  // is the raw ledger fraction (0.0434) straight from portfolio_snapshots,
+  // untouched before storage. This function used to multiply BOTH sources by
+  // 100 at every render site, which was only correct for the equity-curve
+  // fallback — with the (normally-connected) WS source, a real 4.34% drawdown
+  // was displayed as "434.00%". Normalize to percentage-points once, here,
+  // so every consumer below can just call pct(latestDrawdown) directly.
   const latestDrawdown  = livePortfolio?.portfolio.drawdown
-    ?? equityCurve[equityCurve.length - 1]?.drawdown
-    ?? 0
+    ?? (equityCurve[equityCurve.length - 1]?.drawdown != null
+          ? equityCurve[equityCurve.length - 1].drawdown * 100
+          : 0)
   const unrealizedPnl   = livePortfolio?.portfolio.unrealized_pnl ?? 0
   const realizedPnl     = livePortfolio?.portfolio.realized_pnl ?? 0
   const totalPnl        = dailyPnl.reduce((s, d) => s + d.realized_pnl, 0)
@@ -373,8 +383,8 @@ export function Dashboard() {
         <div className="bg-surface-card border border-surface-border rounded-lg p-3 space-y-1.5">
           <div className="text-[10px] text-ink-faint uppercase tracking-wider font-semibold">Portfolio</div>
           <div className="text-sm font-bold font-mono text-brand-blue">{inr(latestEquity)}</div>
-          <div className={clsx('text-[10px] font-mono', latestDrawdown > 0.05 ? 'text-brand-red' : 'text-ink-faint')}>
-            DD: {pct(latestDrawdown * 100)}
+          <div className={clsx('text-[10px] font-mono', latestDrawdown > 5 ? 'text-brand-red' : 'text-ink-faint')}>
+            DD: {pct(latestDrawdown)}
           </div>
         </div>
 
@@ -478,8 +488,8 @@ export function Dashboard() {
         />
         <MetricCard
           label="Drawdown"
-          value={pct(latestDrawdown * 100)}
-          color={latestDrawdown > 0.1 ? 'red' : latestDrawdown > 0.05 ? 'yellow' : 'green'}
+          value={pct(latestDrawdown)}
+          color={latestDrawdown > 10 ? 'red' : latestDrawdown > 5 ? 'yellow' : 'green'}
           sub="from peak equity"
         />
         <MetricCard
