@@ -23,8 +23,11 @@ This module fills that gap. Design constraints, in priority order:
 
 LIMITATIONS (read before trusting any number this produces)
 -----------------------------------------------------------
-* **Model prices, not market prices.** There is no historical option-chain
-  data here, so legs are priced with Black-Scholes off India VIX. Real fills
+* **Model prices, not market prices.** Legs are priced with Black-Scholes off
+  a single daily IV (India VIX for NIFTY; for other indices use their own
+  chain-derived series from scripts/build_index_iv_history.py -- NSE's free
+  bhavcopy makes per-index IV recoverable, so India VIX must NOT be fed to
+  non-NIFTY indices). Real fills
   differ — most importantly, index puts trade above a flat-vol model because
   of skew, which this approximates (see `smile_iv`) but does not fit to a
   real surface.
@@ -236,12 +239,25 @@ class ShortVolBacktester:
         entry_weekday: int = 0,              # Monday, matches SHORTVOL_ENTRY_WEEKDAY
         structure: str = "condor",           # condor | put_spread | call_spread
         strategy: ShortVolStrategy | None = None,
+        wing_pct: float | None = None,       # None = fixed INDEX_SPECS wing (default)
+        skew_per_10pct: float = 0.25,        # smile steepness used to mark/close legs
     ) -> None:
         spec = INDEX_SPECS.get(underlying.upper(), INDEX_SPECS["NIFTY"])
         self.underlying = underlying.upper()
         self.lot_size = int(spec["lot_size"])
         self.strike_step = int(spec["strike_step"])
         self.wing = float(spec["wing"])
+        # 2026-09-19: optional spot-scaled wing (matches the live executor's
+        # SHORTVOL_WING_PCT=1.25% of spot, rounded to the strike step, never
+        # narrower than two steps). The fixed default is a poor fit for an
+        # index that doubles over the sample (BANKNIFTY 28k -> 56k): the same
+        # 700-pt wing is a 2.5% wing in 2019 and 1.25% in 2026. None keeps the
+        # original fixed-wing behaviour exactly.
+        self.wing_pct = wing_pct
+        # 2026-09-19: exposed so the smile can be stress-tested. NSE settlement
+        # prices show NIFTY 5%-OTM puts at ~1.3x ATM vol at ~25 DTE (up to ~2x
+        # at very short expiries) vs the 1.125x this default implies.
+        self.skew_per_10pct = skew_per_10pct
         self.starting_capital = starting_capital
         self.hold_days = hold_days
         self.profit_target_pct = profit_target_pct
@@ -254,6 +270,12 @@ class ShortVolBacktester:
         self.structure = (structure or "condor").lower()
         self.strategy = strategy or ShortVolStrategy()
 
+    def _wing_at(self, spot: float) -> float:
+        if self.wing_pct is None:
+            return self.wing
+        step = self.strike_step
+        return float(max(round((self.wing_pct * spot) / step) * step, 2 * step))
+
     # -- structure valuation ------------------------------------------------
 
     def _structure_value(self, legs, spot: float, atm_iv: float, t_years: float) -> float:
@@ -265,7 +287,7 @@ class ShortVolBacktester:
         """
         value = 0.0
         for leg in legs:
-            iv = smile_iv(atm_iv, spot, leg.strike, leg.option_type)
+            iv = smile_iv(atm_iv, spot, leg.strike, leg.option_type, self.skew_per_10pct)
             px = black_scholes(spot, leg.strike, t_years, iv, leg.option_type)
             value += px if leg.side == Side.SELL else -px
         return value
@@ -292,7 +314,7 @@ class ShortVolBacktester:
         sell_gross = 0.0
         buy_gross = 0.0
         for leg in legs:
-            iv = smile_iv(atm_iv, spot, leg.strike, leg.option_type)
+            iv = smile_iv(atm_iv, spot, leg.strike, leg.option_type, self.skew_per_10pct)
             px = black_scholes(spot, leg.strike, t_years, iv, leg.option_type)
             if leg.side == Side.SELL:
                 sell_gross += px
@@ -471,6 +493,7 @@ class ShortVolBacktester:
             # ---- consider a new entry ----------------------------------
             if open_trade is None and bar.day.weekday() == self.entry_weekday:
                 closes = [b.close for b in bars[max(0, i - 60): i + 1]]
+                wing_now = self._wing_at(bar.close)
                 decision = self.strategy.decide(
                     spot=bar.close,
                     vix=vix,
@@ -478,7 +501,7 @@ class ShortVolBacktester:
                     capital=equity,
                     lot_size=self.lot_size,
                     strike_step=self.strike_step,
-                    wing_width=self.wing,
+                    wing_width=wing_now,
                     hold_days=self.hold_days,
                     structure=self.structure,
                 )
@@ -506,7 +529,7 @@ class ShortVolBacktester:
                             # = the reference amount for this trade", branched
                             # on `is_long_vol` everywhere it's read back above.
                             entry_credit_points=entry_amount,
-                            max_loss_points=entry_amount if is_long_vol else self.wing - entry_amount,
+                            max_loss_points=entry_amount if is_long_vol else wing_now - entry_amount,
                             entry_sell_gross_points=entry_sell_gross,
                             entry_buy_gross_points=entry_buy_gross,
                         )
