@@ -39,13 +39,18 @@ class ConfigTests(unittest.TestCase):
 
 class AnnualTargetPctTests(unittest.TestCase):
     """2026-08-06: replaces the hardcoded 0.40 GoalGovernance used to
-    construct with regardless of config (REDESIGN_PROMPT.md §9)."""
+    construct with regardless of config (REDESIGN_PROMPT.md §9).
 
-    def test_defaults_to_35_percent(self):
+    Default lowered 0.35 -> 0.08 on 2026-09-19: the strategy's measured
+    edge is ~3%/year at baseline sizing, so a permanent 35%/year target
+    kept GoalGovernance stuck in its AT_RISK phase, cutting every real
+    position by 40% and flooring size to 1 lot on effectively every trade."""
+
+    def test_defaults_to_8_percent(self):
         with mock.patch.dict(os.environ, {}, clear=False):
             os.environ.pop("ANNUAL_TARGET_PCT", None)
             settings = load_settings()
-        self.assertEqual(settings.annual_target_pct, 0.35)
+        self.assertEqual(settings.annual_target_pct, 0.08)
 
     def test_env_override(self):
         with mock.patch.dict(os.environ, {"ANNUAL_TARGET_PCT": "0.28"}):

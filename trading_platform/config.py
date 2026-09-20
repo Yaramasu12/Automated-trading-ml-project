@@ -290,7 +290,16 @@ class Settings:
     # above), reading YEARLY_PROFIT_TARGET directly via os.getenv only as an
     # explicit absolute-rupee override, so the env var still works exactly
     # as before if anyone has actually set it.
-    annual_target_pct: float = field(default_factory=lambda: _env_float("ANNUAL_TARGET_PCT", 0.35))
+    #
+    # Default lowered 0.35 -> 0.08 on 2026-09-19: the strategy's measured
+    # edge is ~3%/year at baseline sizing (see the short-vol-return-ceiling
+    # project note), so a permanent 35%/year target kept GoalGovernance
+    # stuck in its AT_RISK phase, cutting every real position by 40% and
+    # flooring size to 1 lot on effectively every trade. 0.08 is still an
+    # ASPIRATIONAL reference for position sizing, not a promised or expected
+    # return — it just stops squeezing size against a target the strategy
+    # was never going to hit.
+    annual_target_pct: float = field(default_factory=lambda: _env_float("ANNUAL_TARGET_PCT", 0.08))
 
     # Database (empty = SQLite fallback; set DATABASE_URL for PostgreSQL) —
     # distinct from the newer POSTGRES_*/TIMESCALE_* fields below, which are
