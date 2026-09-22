@@ -1361,6 +1361,17 @@ def research_candles(symbol: str, limit: int = 500):
     return runtime.research_candles(symbol, limit=limit)
 
 
+@app.get("/research/premium-status")
+def research_premium_status():
+    """Each index's current vol-selling premium (implied - realized vol) and
+    whether it's currently rich vs. the threshold the 2026-09-19 walk-forward
+    research found useful. REPORTING ONLY — refreshed once daily by
+    daily_scheduler.py's premium_monitor_update job; nothing on the order-
+    submission path reads this. Public (no auth) like /health, since it
+    carries no account data."""
+    return runtime.premium_monitor_status()
+
+
 @app.get("/strategies/promotions", dependencies=[_AuthDep])
 def strategy_promotions():
     return runtime.strategy_promotions()

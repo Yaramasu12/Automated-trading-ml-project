@@ -221,5 +221,84 @@ class GoalGovernanceBaselineTests(unittest.TestCase):
         self.assertAlmostEqual(persisted["start_capital"], result["start_capital"], places=2)
 
 
+class IndexVolPremiumPersistenceTests(unittest.TestCase):
+    """Persistence layer for the premium monitor (research/index_premium.py,
+    daily_scheduler.py's premium_monitor_update job). REPORTING ONLY -- these
+    tests cover storage/retrieval, not any order-submission effect (there is
+    none: nothing reads this table on the money path)."""
+
+    def test_round_trip_and_overwrite_is_keyed_by_date_and_index(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db = TradingDatabase(Path(tmp) / "trading.db")
+            try:
+                db.save_index_premium(date(2026, 9, 18), "NIFTY", 23350.0, 10.5, None, None, None)
+                db.save_index_premium(date(2026, 9, 19), "NIFTY", 23400.0, 10.8, 8.5, 2.3, None)
+                db.save_index_premium(date(2026, 9, 19), "BANKNIFTY", 56000.0, 12.0, 13.0, -1.0, -0.4)
+
+                recent = db.recent_index_premium("NIFTY", limit=90)
+                self.assertEqual([r["trade_date"] for r in recent], [date(2026, 9, 18), date(2026, 9, 19)])
+                self.assertIsNone(recent[0]["premium"])
+                self.assertAlmostEqual(recent[1]["premium"], 2.3, places=4)
+
+                # A different index's rows must not leak into NIFTY's query.
+                self.assertTrue(all(r for r in recent))
+                nifty_only = db.recent_index_premium("NIFTY", limit=90)
+                self.assertTrue(all("BANKNIFTY" not in str(r) for r in nifty_only))
+
+                # Re-saving the same (date, index) overwrites, not duplicates.
+                db.save_index_premium(date(2026, 9, 19), "NIFTY", 23400.0, 10.8, 8.5, 2.3, 1.9)
+                recent2 = db.recent_index_premium("NIFTY", limit=90)
+                self.assertEqual(len(recent2), 2)
+                self.assertAlmostEqual(recent2[1]["trailing_median_60d"], 1.9, places=4)
+            finally:
+                db.close()
+
+    def test_latest_index_premium_returns_one_row_per_index(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db = TradingDatabase(Path(tmp) / "trading.db")
+            try:
+                db.save_index_premium(date(2026, 9, 17), "NIFTY", 23300.0, 10.2, None, None, None)
+                db.save_index_premium(date(2026, 9, 18), "NIFTY", 23350.0, 10.5, None, None, None)
+                db.save_index_premium(date(2026, 9, 18), "FINNIFTY", 25400.0, 19.0, None, None, None)
+
+                latest = {r["index_symbol"]: r for r in db.latest_index_premium()}
+                self.assertEqual(set(latest), {"NIFTY", "FINNIFTY"})
+                self.assertEqual(latest["NIFTY"]["trade_date"], date(2026, 9, 18))
+                self.assertAlmostEqual(latest["NIFTY"]["spot"], 23350.0, places=2)
+            finally:
+                db.close()
+
+
+class PremiumMonitorStatusTests(unittest.TestCase):
+    """runtime.premium_monitor_status() -- the GET /research/premium-status
+    backend. Pre-committed thetas from audit_results/2026-09-19/
+    premium_regime_filter.md: NIFTY>=2, BANKNIFTY>=1, FINNIFTY>=4;
+    MIDCPNIFTY has no validated strategy at all."""
+
+    def test_signal_reflects_the_walk_forward_thetas(self):
+        runtime = TradingRuntime()
+        runtime.db.save_index_premium(date(2026, 9, 19), "NIFTY", 23400.0, 10.8, 8.5, 2.3, 2.5)   # >= 2.0
+        runtime.db.save_index_premium(date(2026, 9, 19), "BANKNIFTY", 56000.0, 12.0, 13.0, -1.0, 0.4)  # < 1.0
+        runtime.db.save_index_premium(date(2026, 9, 19), "MIDCPNIFTY", 14500.0, 14.3, 12.0, 2.3, 3.0)
+
+        status = runtime.premium_monitor_status()
+        by_index = {r["index"]: r for r in status["indices"]}
+        self.assertEqual(by_index["NIFTY"]["signal"], "premium rich (trade)")
+        self.assertEqual(by_index["BANKNIFTY"]["signal"], "premium thin (stand aside)")
+        self.assertEqual(by_index["MIDCPNIFTY"]["signal"], "no validated strategy")
+        self.assertIn("does not gate", status["note"])
+
+    def test_missing_trailing_median_reports_building_history_not_a_crash(self):
+        runtime = TradingRuntime()
+        runtime.db.save_index_premium(date(2026, 9, 19), "NIFTY", 23400.0, 10.8, None, None, None)
+        status = runtime.premium_monitor_status()
+        self.assertEqual(status["indices"][0]["signal"], "building history")
+
+    def test_no_data_yet_returns_empty_not_an_error(self):
+        runtime = TradingRuntime()
+        status = runtime.premium_monitor_status()
+        self.assertEqual(status["indices"], [])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -1,5 +1,6 @@
-"""Tests for scripts/build_index_iv_history.py and the backtester options added
-alongside it (wing_pct, skew_per_10pct).
+"""Tests for trading_platform.research.index_premium (shared by scripts/
+build_index_iv_history.py and daily_scheduler.py's premium_monitor_update
+job) and the backtester options added alongside it (wing_pct, skew_per_10pct).
 
 Every per-index conclusion drawn from NSE bhavcopy rests on the implied-vol
 inversion and ATM extraction being right, so those are tested against chains
@@ -9,17 +10,13 @@ from __future__ import annotations
 
 import io
 import math
-import sys
 import unittest
 import zipfile
 from datetime import date, timedelta
-from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
-
-import build_index_iv_history as biv  # noqa: E402
-from trading_platform.backtesting.short_vol_backtest import ShortVolBacktester, smile_iv  # noqa: E402
-from trading_platform.domain.enums import OptionType  # noqa: E402
+import trading_platform.research.index_premium as biv
+from trading_platform.backtesting.short_vol_backtest import ShortVolBacktester, smile_iv
+from trading_platform.domain.enums import OptionType
 
 
 def _synthetic_chain(sym: str, day: date, expiry: date, fwd: float, sigma: float,
@@ -165,6 +162,54 @@ class BacktesterOptionTests(unittest.TestCase):
         blocked = ShortVolBacktester(underlying="NIFTY", entry_filter=lambda day: False).run(bars, iv)
         self.assertGreater(len(open_run.trades), 0)
         self.assertEqual(len(blocked.trades), 0)
+
+
+class ComputeReadingTests(unittest.TestCase):
+    """compute_reading() is shared by the daily scheduler job and the DB
+    backfill script -- one implementation, so a live day and a backfilled
+    day are computed identically."""
+
+    def test_reports_nothing_until_enough_history_exists(self):
+        # Fewer than 15 prior spots/premiums -> honestly "not enough data
+        # yet", not a noisy number from 2 observations.
+        realized, premium, trailing = biv.compute_reading(date(2026, 1, 1), 15.0, 24000.0, [], [])
+        self.assertIsNone(realized)
+        self.assertIsNone(premium)
+        self.assertIsNone(trailing)
+
+    def test_realized_vol_and_premium_from_a_flat_spot_series(self):
+        # A perfectly flat spot series has zero realized vol, so the whole
+        # implied level is the premium.
+        spots = [(date(2026, 1, 1) + timedelta(days=i), 24000.0) for i in range(20)]
+        realized, premium, trailing = biv.compute_reading(date(2026, 1, 21), 15.0, 24000.0, spots, [])
+        self.assertAlmostEqual(realized, 0.0, places=6)
+        self.assertAlmostEqual(premium, 15.0, places=6)
+        self.assertIsNone(trailing)   # premium history still empty
+
+    def test_trailing_median_uses_prior_premiums_plus_todays(self):
+        spots = [(date(2026, 1, 1) + timedelta(days=i), 24000.0) for i in range(20)]
+        prior_premiums = [float(x) for x in range(1, 16)]  # 1..15, median 8
+        _, premium, trailing = biv.compute_reading(date(2026, 1, 21), 15.0, 24000.0, spots, prior_premiums)
+        self.assertAlmostEqual(premium, 15.0, places=6)
+        self.assertAlmostEqual(trailing, statistics_median(prior_premiums + [15.0]))
+
+    def test_history_windows_are_capped_not_unbounded(self):
+        # 200 days of spot history and 200 premiums must not silently grow
+        # the window past 20/60 -- a 90-row DB fetch upstream should still
+        # behave identically to a capped one.
+        spots = [(date(2020, 1, 1) + timedelta(days=i), 24000.0 + i) for i in range(200)]
+        prior_premiums = [float(i) for i in range(200)]
+        realized, premium, trailing = biv.compute_reading(
+            date(2020, 7, 19), 15.0, 24224.0, spots, prior_premiums)
+        # Only the last 20 spots (19 returns) and last 59 premiums + today's
+        # feed the result -- sanity bound, not an exact hand-derived value.
+        self.assertIsNotNone(realized)
+        self.assertGreater(trailing, 140)  # median of a near-top-60 slice of 0..199 + 15.0
+
+
+def statistics_median(xs):
+    import statistics
+    return statistics.median(xs)
 
 
 if __name__ == "__main__":

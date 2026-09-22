@@ -6,6 +6,7 @@ import { PageHeader } from '../components/shared/PageHeader'
 import { Table } from '../components/shared/Table'
 import { Tag } from '../components/shared/Badge'
 import { ShortVolPanel } from '../components/ShortVolPanel'
+import { PremiumMonitor } from '../components/PremiumMonitor'
 import { useStore } from '../store'
 import { evaluateStrategies, runWalkForward } from '../api'
 import { pct, num } from '../utils'
@@ -119,6 +120,9 @@ export function Strategies() {
 
       {/* Live short-vol (VRP) strategy status */}
       <ShortVolPanel />
+
+      {/* Per-index vol-premium monitor — reporting only */}
+      <PremiumMonitor />
 
       {/* Form */}
       <Card>

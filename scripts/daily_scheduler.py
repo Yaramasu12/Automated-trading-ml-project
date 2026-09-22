@@ -10,6 +10,8 @@ Runs scheduled jobs every trading day:
   15:40 IST  — Local-model post-market review + tuning suggestions (advisory only)
   16:15 IST  — Re-validate the return forecaster on fresh daily candles
   16:30 IST  — Re-validate the intraday forecaster on 5-minute candles
+  20:00 IST  — Recompute the per-index vol-selling premium monitor (reporting
+               only; NSE's bhavcopy is reliably published by ~18:30 IST)
   23:25 IST  — MCX EOD square-off
 
 Run as a long-lived process (Docker service, systemd unit, or screen session):
@@ -56,6 +58,7 @@ _JOBS: list[tuple[int, int, str]] = [
     (15, 40, "daily_ai_review"),       # after the P&L snapshot exists, local-model review
     (16, 15, "model_retrain"),         # after the equity close, before MCX EOD
     (16, 30, "intraday_retrain"),
+    (20, 0,  "premium_monitor_update"),  # NSE bhavcopy is out by ~18:30 IST
     (23, 25, "mcx_eod_square_off"),    # commodity EOD — MCX close at 23:30
 ]
 
@@ -454,6 +457,60 @@ def run_mcx_eod_square_off() -> None:
         logger.error("mcx_eod_square_off failed: %s", exc)
 
 
+def run_premium_monitor_update() -> None:
+    """REPORTING ONLY. Fetches today's NSE F&O bhavcopy (free, public), computes
+    each index's OWN implied vol and the resulting vol-selling premium (implied
+    minus realized), and persists it so GET /research/premium-status has a
+    fresh reading without a human re-running the backtest scripts by hand.
+
+    See audit_results/2026-09-19/per-index-strategy-fit and trading_platform/
+    research/index_premium.py: return tracks this premium almost one-for-one,
+    and it has decayed since 2024. Nothing here reads or writes any order,
+    position, or entry-gate state -- it is purely an observability job, the
+    same class as daily_ai_review, not eod_square_off."""
+    logger.info("JOB: premium_monitor_update — recomputing per-index vol premium from NSE bhavcopy")
+    try:
+        from trading_platform.data.persistence import TradingDatabase
+        from trading_platform.research.index_premium import (
+            INDICES, atm_rows, compute_reading, fetch_zip, iv30_for_day, parse_index_options,
+        )
+
+        today = _now_ist().date()
+        raw = fetch_zip(today)
+        if raw is None:
+            logger.info("premium_monitor_update: no bhavcopy for %s (holiday, or not yet published) — skipping", today)
+            return
+        readings = iv30_for_day(atm_rows(today, parse_index_options(raw)))
+        if not readings:
+            logger.warning("premium_monitor_update: bhavcopy fetched but no usable index rows for %s", today)
+            return
+
+        db = TradingDatabase()
+        for idx in INDICES:
+            if idx not in readings:
+                continue
+            iv30, spot = readings[idx]
+            # History THIS monitor has itself recorded (spot recovered from
+            # the option chain via put-call parity) -- no separate price-feed
+            # dependency.
+            history = db.recent_index_premium(idx, limit=90)
+            prior_spots = [(r["trade_date"], r["spot"]) for r in history if r["spot"]]
+            prior_premiums = [r["premium"] for r in history if r["premium"] is not None]
+            realized, premium, trailing_median = compute_reading(
+                today, iv30, spot, prior_spots, prior_premiums,
+            )
+            db.save_index_premium(today, idx, spot, iv30, realized, premium, trailing_median)
+            logger.info(
+                "premium_monitor_update: %-10s spot=%.1f IV30=%.2f%% RV20=%s premium=%s trailing60d=%s",
+                idx, spot, iv30,
+                f"{realized:.2f}%" if realized is not None else "n/a (building history)",
+                f"{premium:+.2f}pts" if premium is not None else "n/a",
+                f"{trailing_median:+.2f}pts" if trailing_median is not None else "n/a (building history)",
+            )
+    except Exception as exc:
+        logger.error("premium_monitor_update failed: %s", exc, exc_info=True)
+
+
 def _retrain_bars() -> tuple[dict, str] | None:
     """Load candles for re-validation: real Angel One data, else the CSV cache.
 
@@ -738,6 +795,7 @@ _JOB_FNS = {
     "daily_ai_review": run_daily_ai_review,
     "model_retrain": run_model_retrain,
     "intraday_retrain": run_intraday_retrain,
+    "premium_monitor_update": run_premium_monitor_update,
     "mcx_eod_square_off": run_mcx_eod_square_off,
 }
 

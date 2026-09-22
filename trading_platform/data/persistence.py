@@ -95,6 +95,25 @@ CREATE TABLE IF NOT EXISTS goal_governance_baseline (
     reset_at       TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+-- Daily short-vol premium monitor (Section 9-17 research follow-up,
+-- 2026-09-22): one row per (trading day, index) recording that index's OWN
+-- implied vol, realized vol, and the resulting premium -- see
+-- trading_platform/research/index_premium.py. REPORTING ONLY: nothing reads
+-- this table to gate a real order; it exists so a human (or a future
+-- research pass) can see which index's vol-selling premium is currently
+-- rich without re-running a backtest by hand.
+CREATE TABLE IF NOT EXISTS index_vol_premium (
+    trade_date          DATE        NOT NULL,
+    index_symbol        TEXT        NOT NULL,
+    spot                DOUBLE PRECISION NOT NULL,
+    atm_iv30            DOUBLE PRECISION NOT NULL,
+    realized_vol20      DOUBLE PRECISION,
+    premium             DOUBLE PRECISION,
+    trailing_median_60d DOUBLE PRECISION,
+    recorded_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (trade_date, index_symbol)
+);
+
 CREATE TABLE IF NOT EXISTS model_runs (
     id             BIGSERIAL   PRIMARY KEY,
     run_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -356,6 +375,18 @@ CREATE TABLE IF NOT EXISTS goal_governance_baseline (
     start_date    TEXT NOT NULL,
     start_capital REAL NOT NULL,
     reset_at      TEXT NOT NULL
+);
+-- See the matching postgres table's comment above.
+CREATE TABLE IF NOT EXISTS index_vol_premium (
+    trade_date          TEXT NOT NULL,
+    index_symbol        TEXT NOT NULL,
+    spot                REAL NOT NULL,
+    atm_iv30            REAL NOT NULL,
+    realized_vol20      REAL,
+    premium             REAL,
+    trailing_median_60d REAL,
+    recorded_at         TEXT NOT NULL,
+    PRIMARY KEY (trade_date, index_symbol)
 );
 CREATE TABLE IF NOT EXISTS model_runs (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1024,6 +1055,74 @@ class TradingDatabase:
         if isinstance(start_date, str):
             start_date = date.fromisoformat(start_date[:10])
         return {"start_date": start_date, "start_capital": float(result["start_capital"])}
+
+    # ------------------------------------------------------------------
+    # Index vol-premium monitor (research/index_premium.py) -- reporting only
+    # ------------------------------------------------------------------
+
+    def save_index_premium(
+        self, trade_date: date, index_symbol: str, spot: float, atm_iv30: float,
+        realized_vol20: float | None, premium: float | None, trailing_median_60d: float | None,
+    ) -> None:
+        now = datetime.now(timezone.utc).isoformat()
+        if self._mode == "postgres":
+            sql = """INSERT INTO index_vol_premium
+                     (trade_date, index_symbol, spot, atm_iv30, realized_vol20,
+                      premium, trailing_median_60d, recorded_at)
+                     VALUES (%s,%s,%s,%s,%s,%s,%s,%s)
+                     ON CONFLICT (trade_date, index_symbol) DO UPDATE SET
+                       spot=EXCLUDED.spot, atm_iv30=EXCLUDED.atm_iv30,
+                       realized_vol20=EXCLUDED.realized_vol20, premium=EXCLUDED.premium,
+                       trailing_median_60d=EXCLUDED.trailing_median_60d,
+                       recorded_at=EXCLUDED.recorded_at"""
+            params: Any = (trade_date, index_symbol, spot, atm_iv30, realized_vol20,
+                          premium, trailing_median_60d, now)
+        else:
+            sql = """INSERT INTO index_vol_premium
+                     (trade_date, index_symbol, spot, atm_iv30, realized_vol20,
+                      premium, trailing_median_60d, recorded_at)
+                     VALUES (?,?,?,?,?,?,?,?)
+                     ON CONFLICT(trade_date, index_symbol) DO UPDATE SET
+                       spot=excluded.spot, atm_iv30=excluded.atm_iv30,
+                       realized_vol20=excluded.realized_vol20, premium=excluded.premium,
+                       trailing_median_60d=excluded.trailing_median_60d,
+                       recorded_at=excluded.recorded_at"""
+            params = (trade_date.isoformat(), index_symbol, spot, atm_iv30, realized_vol20,
+                     premium, trailing_median_60d, now)
+        with self._cursor() as cur:
+            cur.execute(sql, params)
+
+    def recent_index_premium(self, index_symbol: str, limit: int = 90) -> list[dict]:
+        """Most recent `limit` rows for one index, oldest first -- the shape
+        a realized-vol / trailing-median computation needs."""
+        sql = self._p(
+            "SELECT * FROM index_vol_premium WHERE index_symbol = ? "
+            "ORDER BY trade_date DESC LIMIT ?"
+        )
+        with self._cursor() as cur:
+            cur.execute(sql, (index_symbol, limit))
+            rows = list(reversed(self._rows(cur, cur.fetchall())))
+        for r in rows:
+            if isinstance(r.get("trade_date"), str):
+                r["trade_date"] = date.fromisoformat(r["trade_date"][:10])
+        return rows
+
+    def latest_index_premium(self) -> list[dict]:
+        """The single most recent row per index -- "today's reading"."""
+        sql = self._p("SELECT * FROM index_vol_premium ORDER BY trade_date DESC LIMIT ?")
+        with self._cursor() as cur:
+            # A handful of days' worth across a handful of indices is enough
+            # to find each index's single most-recent row below.
+            cur.execute(sql, (32,))
+            rows = self._rows(cur, cur.fetchall())
+        latest: dict[str, dict] = {}
+        for r in rows:
+            sym = r["index_symbol"]
+            if sym not in latest:
+                if isinstance(r.get("trade_date"), str):
+                    r["trade_date"] = date.fromisoformat(r["trade_date"][:10])
+                latest[sym] = r
+        return list(latest.values())
 
     # ------------------------------------------------------------------
     # Model runs

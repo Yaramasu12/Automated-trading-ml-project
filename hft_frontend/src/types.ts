@@ -632,6 +632,25 @@ export interface ShortVolPreview {
   goal_scaling_factor?: number
 }
 
+// ─── Per-index vol-premium monitor (2026-09-22, reporting only) ───────────────
+
+export interface PremiumMonitorReading {
+  index: string
+  as_of: string
+  spot: number
+  atm_iv30_pct: number
+  realized_vol20_pct: number | null
+  premium_pts: number | null
+  trailing_median_60d_pts: number | null
+  signal_theta_pts: number | null
+  signal: string
+}
+
+export interface PremiumMonitorStatus {
+  indices: PremiumMonitorReading[]
+  note: string
+}
+
 // ─── Vector memory / Qdrant persistence (2026-08-29) ──────────────────────────
 
 export interface VectorMemoryStatus {

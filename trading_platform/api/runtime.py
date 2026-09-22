@@ -4185,6 +4185,48 @@ class TradingRuntime:
         tail = rows[-max(1, int(limit)):]
         return {"symbol": safe, "count": len(tail), "total_available": len(rows), "candles": tail}
 
+    # Pre-committed on the walk-forward test (audit_results/2026-09-19/
+    # premium_regime_filter.md): theta chosen on 2019-22 data, judged once on
+    # 2023-26. These are REPORTING thresholds only — nothing reads them to
+    # gate a real order. MIDCPNIFTY has no validated strategy at all (its own
+    # option-derived price series is too noisy to backtest), so it always
+    # reports "no validated strategy" rather than a fabricated threshold.
+    _PREMIUM_SIGNAL_THETA: dict[str, float] = {"NIFTY": 2.0, "BANKNIFTY": 1.0, "FINNIFTY": 4.0}
+
+    def premium_monitor_status(self) -> dict:
+        """Today's (or most recently recorded) per-index vol-selling premium,
+        and whether it's currently above the threshold the walk-forward
+        research found useful for that index. REPORTING ONLY — see research/
+        index_premium.py's module docstring; nothing on the order-submission
+        path reads this."""
+        try:
+            latest = self.db.latest_index_premium()
+        except Exception as exc:
+            note_swallowed("premium_monitor_status.query", exc)
+            return {"indices": [], "note": "premium history unavailable"}
+        out = []
+        for r in sorted(latest, key=lambda x: x["index_symbol"]):
+            theta = self._PREMIUM_SIGNAL_THETA.get(r["index_symbol"])
+            trailing = r.get("trailing_median_60d")
+            signal = (
+                "no validated strategy" if theta is None else
+                "building history" if trailing is None else
+                "premium rich (trade)" if trailing >= theta else
+                "premium thin (stand aside)"
+            )
+            out.append({
+                "index": r["index_symbol"],
+                "as_of": r["trade_date"].isoformat() if hasattr(r["trade_date"], "isoformat") else r["trade_date"],
+                "spot": r["spot"],
+                "atm_iv30_pct": round(r["atm_iv30"], 2),
+                "realized_vol20_pct": round(r["realized_vol20"], 2) if r.get("realized_vol20") is not None else None,
+                "premium_pts": round(r["premium"], 2) if r.get("premium") is not None else None,
+                "trailing_median_60d_pts": round(trailing, 2) if trailing is not None else None,
+                "signal_theta_pts": theta,
+                "signal": signal,
+            })
+        return {"indices": out, "note": "Reporting only — does not gate or affect any real order."}
+
     def grant_strategy_gate_waiver(self, payload: dict | None = None) -> dict:
         payload = payload or {}
         strategy_id = str(payload.get("strategy_id") or "")

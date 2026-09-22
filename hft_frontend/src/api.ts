@@ -9,6 +9,7 @@ import type {
   ModelCatalogEntry,
   EventBusSummary,
   ManualApprovalStatus,
+  PremiumMonitorStatus,
   RuntimeState,
   ShortVolPreview,
   SignalScanResult,
@@ -76,6 +77,8 @@ export const getShortVolPreview = (underlying = 'NIFTY') =>
   get<ShortVolPreview>(`/short-vol/preview?underlying=${encodeURIComponent(underlying)}`)
 export const enterShortVol = (underlying = 'NIFTY') =>
   post<{ submitted: boolean } & Record<string, unknown>>('/short-vol/enter', { underlying })
+export const getPremiumMonitorStatus = () =>
+  get<PremiumMonitorStatus>('/research/premium-status')
 
 export const getModelCatalog = () => get<{ count: number; models: ModelCatalogEntry[] }>('/models/catalog')
 export const getVolatilityForecast = (payload: Record<string, unknown>) =>
