@@ -99,7 +99,7 @@ CREATE TABLE IF NOT EXISTS goal_governance_baseline (
 -- 2026-09-22): one row per (trading day, index) recording that index's OWN
 -- implied vol, realized vol, and the resulting premium -- see
 -- trading_platform/research/index_premium.py. REPORTING ONLY: nothing reads
--- this table to gate a real order; it exists so a human (or a future
+-- this table to gate a real order -- it exists so a human (or a future
 -- research pass) can see which index's vol-selling premium is currently
 -- rich without re-running a backtest by hand.
 CREATE TABLE IF NOT EXISTS index_vol_premium (
