@@ -578,6 +578,14 @@ class LiveTickFeed:
     _MAX_SOCKETS = 3               # Angel One limit per client code
     _SOCKET_HEARTBEAT_TIMEOUT_SECONDS = 30    # silent this long during market hours -> force reconnect
     _SOCKET_HEARTBEAT_CHECK_INTERVAL_SECONDS = 10
+    # Confirmed 2026-09-23: `retries` used to be monotonic for the whole
+    # session (only reset at market close), so a ping/pong timeout late in
+    # the day inherited the backoff cap from every earlier, unrelated
+    # disconnect that session -- e.g. reconnect attempt #33/34 paid the full
+    # ~300s _MAX_BACKOFF even though the connection had been solid for hours
+    # beforehand. A connection that stays up and ticking this long before it
+    # drops is a fresh, isolated failure and earns a clean retry budget.
+    _RETRY_RESET_AFTER_SECONDS = 180
 
     def _login(self) -> tuple[dict, str] | None:
         """One Angel One login, returning (session, feed_token) or None on failure.
@@ -830,7 +838,13 @@ class LiveTickFeed:
 
                 self._reconnect_pending = False
                 shard.ws.connect()  # blocks until disconnect, using the cached token
-                # If connect() returns and _running is still True, reconnect
+                # If connect() returns and _running is still True, reconnect.
+                # Credit a clean retry budget if this connection held steadily
+                # for a while before dropping — see _RETRY_RESET_AFTER_SECONDS.
+                if shard.connected_at is not None:
+                    held_for = (datetime.now(timezone.utc) - shard.connected_at).total_seconds()
+                    if held_for >= self._RETRY_RESET_AFTER_SECONDS:
+                        retries = 0
                 retries += 1
                 if retries < self._MAX_RETRIES:
                     gave_up_logged = False  # a connection that held resets the "gave up" notice

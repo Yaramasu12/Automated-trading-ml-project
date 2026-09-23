@@ -8,7 +8,7 @@ import unittest
 from types import SimpleNamespace
 from unittest import mock
 
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 
 from trading_platform.data.live_feed import LiveTickFeed, Tick, resolve_underlying_reference_tick
 
@@ -126,6 +126,97 @@ class ReconnectRobustnessTests(unittest.TestCase):
 
         self.assertFalse(feed._running)
         self.assertEqual(fake_ws_instance.connect.call_count, 1)
+
+
+class RetryResetAfterStableConnectionTests(unittest.TestCase):
+    """2026-09-23: `retries` used to be monotonic for the whole trading
+    session (only reset at market close), so a ping/pong timeout late in the
+    day inherited the backoff climb from every earlier, unrelated disconnect
+    that session — a connection could sit at the ~300s _MAX_BACKOFF cap for
+    the rest of the day even after holding perfectly for hours. A connection
+    that stays up long enough before dropping must earn a clean retry
+    budget instead."""
+
+    def test_backoff_drops_back_down_after_a_steady_connection(self):
+        feed = LiveTickFeed(_settings())
+        feed._login = mock.Mock(return_value=({"data": {"jwtToken": "x"}}, "feedtok"))
+        feed._settings.angel_one_client_code = "C1"
+        feed._settings.angel_one_api_key = "K1"
+        feed._running = True
+
+        calls = {"n": 0}
+
+        def fake_connect():
+            calls["n"] += 1
+            shard = feed._shards[0]
+            if calls["n"] <= 5:
+                raise RuntimeError("handshake failed")  # climb the backoff
+            if calls["n"] == 6:
+                # Held well past _RETRY_RESET_AFTER_SECONDS, then a clean
+                # disconnect (connect() just returns, as it does on a real
+                # on_close) — this attempt should earn a reset.
+                shard.connected_at = datetime.now(timezone.utc) - timedelta(
+                    seconds=feed._RETRY_RESET_AFTER_SECONDS + 20
+                )
+                return
+            feed._running = False  # stop the test after one more attempt
+
+        fake_ws_instance = mock.Mock()
+        fake_ws_instance.connect.side_effect = fake_connect
+        fake_ws_cls = mock.Mock(return_value=fake_ws_instance)
+
+        backoffs = []
+
+        with mock.patch("trading_platform.data.live_feed.RawAngelOneWebSocket", fake_ws_cls), \
+                mock.patch("trading_platform.data.live_feed.time.sleep", side_effect=backoffs.append), \
+                mock.patch("trading_platform.data.live_feed._market_is_open_now", return_value=True):
+            feed._run()
+
+        self.assertEqual(calls["n"], 7)
+        # Backoff climbed across the first 5 failures...
+        self.assertGreater(backoffs[3], backoffs[0])
+        # ...but the attempt right after the steady connection dropped back
+        # to (near) the base backoff instead of continuing to climb from it.
+        self.assertLess(backoffs[-1], backoffs[-2])
+        self.assertLessEqual(backoffs[-1], feed._BASE_BACKOFF * 1.5)
+
+    def test_backoff_keeps_climbing_if_the_connection_was_not_steady(self):
+        """A connection that drops quickly (well under the reset threshold)
+        must NOT get a clean budget — only a genuinely stable connection
+        earns the reset, otherwise a flapping socket would never pay for
+        its own instability."""
+        feed = LiveTickFeed(_settings())
+        feed._login = mock.Mock(return_value=({"data": {"jwtToken": "x"}}, "feedtok"))
+        feed._settings.angel_one_client_code = "C1"
+        feed._settings.angel_one_api_key = "K1"
+        feed._running = True
+
+        calls = {"n": 0}
+
+        def fake_connect():
+            calls["n"] += 1
+            shard = feed._shards[0]
+            if calls["n"] <= 3:
+                raise RuntimeError("handshake failed")
+            if calls["n"] == 4:
+                # Connected only briefly — well under the reset threshold.
+                shard.connected_at = datetime.now(timezone.utc) - timedelta(seconds=2)
+                return
+            feed._running = False
+
+        fake_ws_instance = mock.Mock()
+        fake_ws_instance.connect.side_effect = fake_connect
+        fake_ws_cls = mock.Mock(return_value=fake_ws_instance)
+
+        backoffs = []
+
+        with mock.patch("trading_platform.data.live_feed.RawAngelOneWebSocket", fake_ws_cls), \
+                mock.patch("trading_platform.data.live_feed.time.sleep", side_effect=backoffs.append), \
+                mock.patch("trading_platform.data.live_feed._market_is_open_now", return_value=True):
+            feed._run()
+
+        # No reset earned: backoff keeps climbing straight through.
+        self.assertGreater(backoffs[-1], backoffs[-2])
 
 
 def _tick(symbol: str, price: float) -> Tick:
