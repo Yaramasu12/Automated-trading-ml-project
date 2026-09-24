@@ -25,6 +25,8 @@ from trading_platform.agent.market_hours import (
     now_ist,
 )
 from trading_platform.data.angel_one_history import _is_angel_one_token
+from trading_platform.data.instrument_master import COMMODITY_UNDERLYINGS
+from trading_platform.domain.enums import Exchange
 from trading_platform.logging_safety import note_swallowed
 
 
@@ -160,12 +162,34 @@ class LiveFeedService:
             # NATURALGAS all did this — permanently stale while the CORRECT
             # resolved futures contract, e.g. GOLD05AUG26FUT, ticked fine as a
             # separate, redundant subscription added later by a different path).
-            if matched is not None and _is_angel_one_token(matched.token):
+            #
+            # The numeric check alone isn't sufficient for a commodity underlying:
+            # confirmed 2026-09-24, "SILVER" collides with TWO entirely unrelated
+            # NSE/BSE-listed instruments that also happen to be named "SILVER" /
+            # "SILVER-EQ" (tokens 543471 / 8003, real, valid, numeric Angel One
+            # tokens — just for cash securities, not the MCX commodity). Either
+            # one passed the numeric check and silently won over the real MCX
+            # future (SILVER04DEC26FUT), so "SILVER" ticked once at NSE/BSE's
+            # close and sat stale for the rest of the MCX session every day.
+            # A "-EQ" cash-equity match is a concept that only applies to
+            # NSE/BSE equities in the first place — a commodity underlying has
+            # no legitimate cash listing here — so skip that candidate for
+            # commodities entirely rather than just tightening its own check,
+            # and require the MCX exchange specifically for the bare-symbol
+            # candidate. Every other commodity in MCX_COMMODITIES was checked
+            # against the live instrument master and has no such collision
+            # today, but a future Angel One master update could add one.
+            is_commodity = symbol in COMMODITY_UNDERLYINGS
+            bare_ok = matched is not None and _is_angel_one_token(matched.token)
+            if bare_ok and is_commodity:
+                bare_ok = matched.exchange == Exchange.MCX
+            if bare_ok:
                 candidates.append(symbol)
-            cash_symbol = f"{symbol}-EQ"
-            cash_matched = instruments.get(cash_symbol)
-            if cash_matched is not None and _is_angel_one_token(cash_matched.token):
-                candidates.append(cash_symbol)
+            if not is_commodity:
+                cash_symbol = f"{symbol}-EQ"
+                cash_matched = instruments.get(cash_symbol)
+                if cash_matched is not None and _is_angel_one_token(cash_matched.token):
+                    candidates.append(cash_symbol)
             try:
                 future = self.instrument_master.select_future(symbol, today)
                 candidates.append(future.symbol)

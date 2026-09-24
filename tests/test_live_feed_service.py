@@ -89,6 +89,39 @@ class ResolveFeedSymbolsTests(unittest.TestCase):
         resolved = _service(master)._resolve_feed_symbols(["NOTASYMBOL"])
         self.assertEqual(resolved, [])
 
+    def test_cross_exchange_commodity_collision_falls_through_to_the_future(self):
+        """Bug found 2026-09-24: "SILVER" collides with TWO unrelated NSE/BSE-
+        listed instruments that also happen to be named "SILVER"/"SILVER-EQ"
+        (real, valid, NUMERIC tokens — just for cash securities, not the MCX
+        commodity). The plain "is it numeric" check from the 2026-07-28 fix
+        isn't enough here since these tokens really are live Angel One
+        instruments; they're just the wrong ones. A commodity underlying's
+        bare-symbol match must also be on MCX, and the "-EQ" cash-equity
+        candidate (an equity-only concept) must not apply to commodities at
+        all, or either one wins over the resolved future."""
+        silver_future = _instrument("SILVER04DEC26FUT", token="495214")
+        master = _FakeInstrumentMaster(
+            instruments={
+                # Real, numeric, valid tokens -- for unrelated NSE/BSE securities.
+                "SILVER": _instrument("SILVER", token="543471", exchange=Exchange.BSE, segment=Segment.CASH),
+                "SILVER-EQ": _instrument("SILVER-EQ", token="8003", exchange=Exchange.NSE, segment=Segment.CASH),
+            },
+            future_by_underlying={"SILVER": silver_future},
+        )
+        resolved = _service(master)._resolve_feed_symbols(["SILVER"])
+        self.assertEqual(resolved, ["SILVER04DEC26FUT"])
+
+    def test_commodity_bare_match_on_mcx_is_still_used_directly(self):
+        """The new exchange guard must not break the normal case: a
+        commodity underlying whose bare symbol genuinely IS the live MCX
+        instrument (real numeric token, MCX exchange) is used as-is."""
+        master = _FakeInstrumentMaster(
+            instruments={"COPPER": _instrument("COPPER", token="12345", exchange=Exchange.MCX)},
+            future_by_underlying={},
+        )
+        resolved = _service(master)._resolve_feed_symbols(["COPPER"])
+        self.assertEqual(resolved, ["COPPER"])
+
 
 class _FakeLiveFeed:
     def snapshot(self) -> dict:
