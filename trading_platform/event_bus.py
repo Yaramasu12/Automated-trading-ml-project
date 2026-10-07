@@ -49,6 +49,8 @@ class InMemoryEventBus:
         payload: dict[str, Any] | None = None,
         stream: str = "default",
     ) -> EventEnvelope:
+        if stream == "":
+            raise ValueError("stream cannot be empty")
         envelope = EventEnvelope(event_name=event_name, payload=payload or {}, stream=stream)
         with self._lock:
             self._events.append(envelope)

@@ -79,7 +79,7 @@ class EmergencySquareOff:
         intents_enqueued: list[str] = []
         errors: list[str] = []
         # Fire webhook asynchronously so we don't block position closure
-        asyncio.get_event_loop().run_in_executor(
+        asyncio.get_running_loop().run_in_executor(
             None, self._send_alert,
             scope, len(targets), reason, symbol
         )

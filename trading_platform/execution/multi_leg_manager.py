@@ -192,7 +192,7 @@ class MultiLegOrderManager:
                 logger.exception("MultiLeg rollback failed for leg %s: %s", leg.leg_id, exc)
 
     def active_orders(self) -> list[dict]:
-        return [o.to_dict() for o in self._orders.values() if o.active]
+        return [o.to_dict() for o in sorted(self._orders.values(), key=lambda o: o.order_id) if o.active]
 
     def all_orders(self) -> list[dict]:
         return [o.to_dict() for o in self._orders.values()]

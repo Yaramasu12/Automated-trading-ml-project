@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Callable
+from typing import Callable, Mapping
 
 from trading_platform.domain.models import OrderIntent
 
@@ -16,6 +16,10 @@ class FinalGateDecision:
     stage: str = "final_execution_gate"
     risk_score: float = 0.0
     details: dict = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        if self.risk_score < 0:
+            raise ValueError("risk_score must be non-negative")
 
     def to_dict(self) -> dict:
         return {
@@ -50,6 +54,6 @@ class FinalGateDecision:
 
 
 FinalGateFn = Callable[
-    [OrderIntent, datetime | None, dict[str, float] | None],
+    [OrderIntent, datetime | None, Mapping[str, float] | None],
     FinalGateDecision,
 ]

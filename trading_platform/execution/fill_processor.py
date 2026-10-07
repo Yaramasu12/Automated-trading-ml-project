@@ -24,8 +24,11 @@ class FillProcessor:
         charges: float,
         now: datetime | None = None,
     ) -> Trade:
+        if fill_price <= 0 or fill_qty <= 0:
+            raise ValueError("fill_price and fill_qty must be positive")
         now = now or datetime.now(timezone.utc)
         trade = self.portfolio.apply_fill(order, fill_price, now, charges)
+        assert trade is not None
         self.oms.append(
             event_type="fill_processed",
             order_id=order.intent.idempotency_key,
