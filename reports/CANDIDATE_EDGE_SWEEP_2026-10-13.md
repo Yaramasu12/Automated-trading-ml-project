@@ -64,14 +64,41 @@ NSE names/day consumes much of it. The gates cannot vouch for that: they test
 selection bias, OOS robustness and DD, **not** whether ~34 market-on-open fills/
 day are achievable at <0.40–0.50% effective cost.
 
-**Status: gate-cleared candidate, NOT yet promoted to `APPROVED_EDGES`.** Adding
-it is not a config flip: (1) no live gap strategy is wired into the execution
-engine (the signal isn't a deployed strategy), and (2) the edge gate's policy is
-VRP-regime-based and doesn't fit an equity cross-sectional open-to-close book.
-Promotion = a real build: a gap strategy + a realistic open-auction execution
-model (impact + short-borrow) + a paper canary to confirm the edge survives real
-fills + extending the edge gate to govern the gap family. Recommended as the
-next project, with the execution-cost headroom above as the go/no-go criterion.
+**Status: gate-cleared under flat cost, then KILLED under realistic cost — NOT promoted.**
+
+### Realistic-execution re-gate (the go/no-go) — FAIL
+
+Built `trading_platform/backtesting/execution_cost.py` (India intraday model:
+discount brokerage with the Rs-20 floor, STT/stamp/exchange/SEBI/GST, a
+liquidity-tiered open-auction half-spread keyed off each name's trailing
+turnover, and sqrt market impact) and re-ran the full suite via
+`scripts/run_gap_gates_realistic.py`, charging every (symbol, day) trade its own
+cost with equal-weight sizing across the day's names.
+
+| gate | result |
+|---|---|
+| deflated_sharpe | **FAIL** SR_hat = **−0.67** |
+| pbo | pass 0.0 (losing variants just aren't overfit to each other) |
+| cpcv | **FAIL** OOS Sharpe −0.67 |
+| monte_carlo_dd | **FAIL** 67.8% |
+| cost_model | **FAIL** net/gross −0.07 (net is negative) |
+| **all gates** | **FAIL** |
+
+All 24 configs go negative (best Sharpe −0.67). The avg realistic round-trip
+cost the signal's names actually incur is **0.536%** — above the ~0.50%
+breakeven and above the strategy's ~0.5%/day gross edge. The ~0.59 AUC signal is
+statistically real but **too small to survive real open-auction fills** — the
+same "real-but-too-small after costs" wall the repo's intraday research kept
+hitting.
+
+**Decision: gap is dead. Not promoted; no live strategy built.** The flat-0.20%
+pass was an idealization; realistic per-name costs flip it to a loss. This is the
+disciplined framework working exactly as intended — and concrete proof that
+"loosen limits / trade everything / add capital" would lose money, since even
+the single best candidate loses once execution is modeled honestly.
+
+**Net conclusion of the whole sweep:** FINNIFTY short-vol remains the only
+validated, cost-surviving edge. `APPROVED_EDGES` unchanged.
 
 ## Change made this round
 `validation/gates.py::evaluate_dsr` — the search-breadth floor (DSR_MIN_TRIALS)
