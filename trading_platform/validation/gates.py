@@ -449,6 +449,29 @@ class GateEvaluator:
                 details={"n_obs": dsr_result.n_obs, "n_trials": dsr_result.n_trials},
             )
             return
+        # Search-breadth floor (2026-10-13 audit, finding #2). DSR deflates the
+        # winner by the number of configurations SEARCHED. A sweep narrower than
+        # the strategy's real tunable surface under-counts that search and lets
+        # a lucky winner pass — exactly how short_vol_nifty earned promotion on
+        # 2026-09-13 at n_trials=27 while the honest 54-trial own-chain study
+        # (validate_index_strategies.py) failed it. Below the floor we FAIL the
+        # gate outright: a too-small sweep is not promotion evidence, whatever
+        # its deflated value. Raise the real grid (SWEEP_GRID) to clear this,
+        # don't lower the floor.
+        min_trials = int(self._cfg("DSR_MIN_TRIALS", 54))
+        if dsr_result.n_trials < min_trials:
+            self.results.dsr = GateOutcome(
+                gate_name="deflated_sharpe",
+                result=GateResult.FAIL,
+                metric=dsr_result.dsr,
+                threshold=threshold,
+                message=f"FAILED: search too narrow — n_trials={dsr_result.n_trials} "
+                        f"< DSR_MIN_TRIALS={min_trials}; a sweep narrower than the real "
+                        f"tunable surface under-counts selection bias (DSR={dsr_result.dsr:.4f})",
+                details={"n_trials": dsr_result.n_trials, "min_trials": min_trials,
+                         "dsr": dsr_result.dsr, "insufficient_search_breadth": True},
+            )
+            return
         passed = dsr_result.dsr >= threshold
         self.results.dsr = GateOutcome(
             gate_name="deflated_sharpe",

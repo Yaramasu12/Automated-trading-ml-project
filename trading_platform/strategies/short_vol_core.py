@@ -98,6 +98,13 @@ class ShortVolConfig:
     expiry_square_off_hour: int = 9  # Square off at 9:15 IST on expiry
     expiry_cutoff_days: int = 2  # Stop entering < 2 DTE near expiry
 
+    # Tail protection (2026-10-13 audit #4). When true, never select an
+    # undefined-risk structure (naked short strangle) — the one that turns a
+    # calm-day premium drip into a -51k tail day (2026-09-11). High-IV regimes
+    # that used to pick a naked strangle get a defined-risk iron condor instead:
+    # still short vol, but with protective wings bounding the loss.
+    require_defined_risk: bool = True
+
 
 class ShortVolStrategy(Strategy):
     """Core systematic short-volatility premium selling strategy.
@@ -351,8 +358,14 @@ class ShortVolStrategy(Strategy):
         if self._check_term_structure(symbol):
             return SignalStructure.CALENDAR
 
-        # Default: iron condor for high IV, strangle for very high IV
+        # Very high IV: historically a naked short strangle. That is the
+        # undefined-risk structure behind the worst tail days — selling naked
+        # premium exactly when realized vol is most likely to spike. Under
+        # require_defined_risk (default) use a defined-risk iron condor instead:
+        # it still harvests the elevated premium but caps the loss at the wings.
         if iv_rank >= 70:
+            if self._config.require_defined_risk:
+                return SignalStructure.IRON_CONDOR
             return SignalStructure.STRANGLE
 
         return SignalStructure.IRON_CONDOR

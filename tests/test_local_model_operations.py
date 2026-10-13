@@ -273,6 +273,17 @@ class TestDailyAiReview(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.runtime.set_tuning_suggestion_status(1, "not_a_real_status")
 
+    def test_no_model_review_is_labelled_as_unavailable(self):
+        # 2026-10-13 audit #3: when no local model is available the written
+        # review must be unambiguously labelled, not a plain sentence that reads
+        # like a genuine AI debrief (model_id stays NULL).
+        self.runtime._llm_gateway = None
+        result = self.runtime.run_daily_ai_review()
+        self.assertIn("[no local model", result["summary"])
+        self.assertIsNone(result["model_id"])
+        persisted = self.runtime.daily_ai_review()
+        self.assertIn("[no local model", persisted["summary_text"])
+
 
 class TestGenerateStrategyHypotheses(unittest.TestCase):
     def setUp(self):

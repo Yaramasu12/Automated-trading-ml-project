@@ -436,6 +436,42 @@ class ShortVolExecutor:
             out["reason"] = f"{decision.reason} [goal governance {goal_phase}: lots {decision.lots}->{lots}]"
         out["lots"] = lots
 
+        # Tail-loss sizing cap (2026-10-13 audit #4). The CREDIT (short-vol)
+        # structures are defined-risk via their wings, but sized too large a
+        # defined-risk book still makes the big down days: an iron condor at
+        # near-max-loss across lots on a vol spike (-51k on 2026-09-11). When
+        # enabled (SHORTVOL_MAX_TAIL_LOSS_PCT > 0; set in .env for the live
+        # stack), cap lots so THIS structure's own worst-case loss stays within
+        # that fraction of equity. Scoped to credit structures: a long debit
+        # straddle/strangle's max loss is the premium PAID (already a bounded,
+        # deliberate long-vol bet), so this cap does not apply to it. The
+        # RiskEngine/CapitalProtection drawdown limits remain the whole-book
+        # hard stop; this bounds each credit structure's contribution up front.
+        _CREDIT_STRUCTURES = {"condor", "put_spread", "call_spread"}
+        max_loss_per_lot = max(0.0, float(decision.max_loss)) * lot_size
+        tail_budget_pct = float(os.getenv("SHORTVOL_MAX_TAIL_LOSS_PCT", "0") or "0") / 100.0
+        out["tail_budget_pct"] = round(tail_budget_pct, 4)
+        out["max_loss_per_lot"] = round(max_loss_per_lot, 2)
+        if (structure in _CREDIT_STRUCTURES
+                and max_loss_per_lot > 0 and tail_budget_pct > 0 and capital > 0):
+            tail_budget = capital * tail_budget_pct
+            max_lots_by_tail = int(tail_budget // max_loss_per_lot)
+            if max_lots_by_tail < 1:
+                out["enter"] = False
+                out["lots"] = 0
+                out["reason"] = (
+                    f"tail cap: one lot's max loss {max_loss_per_lot:,.0f} exceeds "
+                    f"{tail_budget_pct:.2%} of equity ({tail_budget:,.0f}) — declining"
+                )
+                return out
+            if lots > max_lots_by_tail:
+                out["reason"] = (
+                    f"{out['reason']} [tail cap {tail_budget_pct:.2%} equity: "
+                    f"lots {lots}->{max_lots_by_tail}]"
+                )
+                lots = max_lots_by_tail
+                out["lots"] = lots
+
         vix = iv
         # Quantity is in LOTS (contracts). notional_value and the ledger already
         # multiply by lot_size, so passing lots*lot_size here double-counts the

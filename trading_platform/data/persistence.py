@@ -723,6 +723,14 @@ class TradingDatabase:
                 cur.close()
 
     @property
+    def backend(self) -> str:
+        """Which store this instance resolved to: 'postgres' or 'sqlite'.
+
+        Public so the runtime can refuse to serve P&L from the stale local
+        SQLite file when a Postgres store is required (2026-10-13 audit #5)."""
+        return self._mode
+
+    @property
     def _ts(self) -> str:
         """Timestamp column name: 'ts' in PostgreSQL, 'timestamp' in SQLite."""
         return "ts" if self._mode == "postgres" else "timestamp"

@@ -334,6 +334,41 @@ class GateEvaluatorTests(unittest.TestCase):
         self.assertFalse(evaluator.results.dsr.passed)
         self.assertFalse(evaluator.finalize("bt-1", "short_vol").all_passed)
 
+    def test_dsr_fails_when_search_breadth_below_floor(self):
+        """2026-10-13 audit #2: a sweep narrower than the real tunable surface
+        under-counts selection bias. short_vol_nifty passed at n_trials=27 while
+        the honest 54-trial study failed it. Below DSR_MIN_TRIALS (default 54)
+        the gate FAILS outright, whatever the deflated value."""
+        evaluator = GateEvaluator()
+        returns = np.array([0.01, -0.008, 0.012, -0.005, 0.009] * 12)  # 60 obs
+        trials = [0.5 + 0.01 * i for i in range(27)]  # 27 variants (the old grid)
+        evaluator.evaluate_dsr(max(trials), trials, returns)
+        self.assertEqual(evaluator.results.dsr.result, GateResult.FAIL)
+        self.assertTrue(evaluator.results.dsr.details.get("insufficient_search_breadth"))
+        self.assertIn("search too narrow", evaluator.results.dsr.message)
+        self.assertFalse(evaluator.finalize("bt-1", "short_vol").all_passed)
+
+    def test_dsr_breadth_floor_is_configurable(self):
+        """Lowering DSR_MIN_TRIALS lets a smaller sweep proceed to the real DSR
+        test (so the floor is a policy knob, not a hard-coded 54)."""
+        from types import SimpleNamespace
+        evaluator = GateEvaluator(settings=SimpleNamespace(DSR_MIN_TRIALS=10))
+        returns = np.array([0.01, -0.008, 0.012, -0.005, 0.009] * 12)
+        trials = [0.5 + 0.01 * i for i in range(27)]
+        evaluator.evaluate_dsr(max(trials), trials, returns)
+        # Not blocked by breadth now — it ran the real DSR (PASS or FAIL on value).
+        self.assertNotIn("search too narrow", evaluator.results.dsr.message)
+        self.assertFalse(evaluator.results.dsr.details.get("insufficient_search_breadth", False))
+
+    def test_dsr_passes_breadth_floor_at_full_grid(self):
+        """A 54-trial sweep clears the breadth floor and is scored on its DSR."""
+        evaluator = GateEvaluator()
+        returns = np.array([0.01, -0.008, 0.012, -0.005, 0.009] * 12)
+        trials = [0.5 + 0.01 * i for i in range(54)]
+        evaluator.evaluate_dsr(max(trials), trials, returns)
+        self.assertNotIn("search too narrow", evaluator.results.dsr.message)
+        self.assertEqual(evaluator.results.dsr.details.get("n_trials"), 54)
+
     def test_walk_forward_gate_wraps_real_result(self):
         class _WF:
             mean_test_sharpe = 0.9

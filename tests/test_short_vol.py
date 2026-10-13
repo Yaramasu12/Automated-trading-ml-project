@@ -880,8 +880,12 @@ class GoalGovernanceWiringTests(IvRankGateTests):
     def test_lagging_reduces_lots_by_scaling_factor(self):
         gov = self._governance(0.80, "LAGGING")
         ex = self._executor(vix_history=[float(v) for v in range(10, 30)], goal_governance=gov)
-        baseline = self._executor(vix_history=[float(v) for v in range(10, 30)]).build("NIFTY")
-        plan = ex.build("NIFTY")
+        # Isolate goal-governance scaling from the (ambient) tail-loss cap: a
+        # loaded .env may set SHORTVOL_MAX_TAIL_LOSS_PCT, which would re-scale
+        # lots independently and break this exact-arithmetic assertion.
+        with mock.patch.dict(os.environ, {"SHORTVOL_MAX_TAIL_LOSS_PCT": "0"}):
+            baseline = self._executor(vix_history=[float(v) for v in range(10, 30)]).build("NIFTY")
+            plan = ex.build("NIFTY")
         self.assertTrue(plan["enter"], plan.get("reason"))
         self.assertEqual(plan["lots"], math.floor(baseline["lots"] * 0.80))
         self.assertIn("goal governance LAGGING", plan["reason"])
@@ -943,6 +947,35 @@ class DeltaModeExecutorWiringTests(IvRankGateTests):
         self.assertEqual(len(plan_delta["legs"]), 4)
         wings = [l for l in plan_delta["legs"] if l["is_wing"]]
         self.assertEqual(len(wings), 2)
+
+
+class TailLossCapTests(IvRankGateTests):
+    """2026-10-13 audit #4: each short-vol structure's own defined worst-case
+    loss must stay within SHORTVOL_MAX_TAIL_LOSS_PCT of equity, so a vol-spike
+    day can't compound across an oversized book (the -51k on 2026-09-11)."""
+
+    def test_tail_cap_fields_exposed_on_every_plan(self):
+        ex = self._executor(vix_history=[float(v) for v in range(10, 30)])
+        with mock.patch.dict(os.environ, {"SHORTVOL_MIN_IV_RANK": "0", "SHORTVOL_MAX_TAIL_LOSS_PCT": "100"}):
+            plan = ex.build("NIFTY")
+        self.assertTrue(plan["enter"], plan.get("reason"))
+        self.assertIn("tail_budget_pct", plan)
+        self.assertGreater(plan["max_loss_per_lot"], 0.0)
+
+    def test_tiny_tail_budget_declines_or_reduces_lots(self):
+        ex = self._executor(vix_history=[float(v) for v in range(10, 30)])
+        with mock.patch.dict(os.environ, {"SHORTVOL_MIN_IV_RANK": "0", "SHORTVOL_MAX_TAIL_LOSS_PCT": "100"}):
+            base = ex.build("NIFTY")
+        self.assertTrue(base["enter"], base.get("reason"))
+        base_lots = base["lots"]
+
+        ex2 = self._executor(vix_history=[float(v) for v in range(10, 30)])
+        with mock.patch.dict(os.environ, {"SHORTVOL_MIN_IV_RANK": "0", "SHORTVOL_MAX_TAIL_LOSS_PCT": "0.0001"}):
+            tight = ex2.build("NIFTY")
+        if tight["enter"]:
+            self.assertLess(tight["lots"], base_lots)
+        else:
+            self.assertIn("tail cap", tight["reason"])
 
 
 if __name__ == "__main__":

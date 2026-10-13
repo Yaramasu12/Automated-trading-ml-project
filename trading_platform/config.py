@@ -305,6 +305,13 @@ class Settings:
     # distinct from the newer POSTGRES_*/TIMESCALE_* fields below, which are
     # for the separate Timescale hypertable store, not this OLTP connection.
     database_url: str = field(default_factory=lambda: _env("DATABASE_URL", ""))
+    # When true, the runtime refuses to start on a SQLite fallback (2026-10-13
+    # audit #5): a missing DATABASE_URL would otherwise serve P&L from the stale
+    # local file. Set true in the docker api/scheduler services; false for a
+    # deliberately local/dev run. Defaults true when DATABASE_URL is present.
+    REQUIRE_POSTGRES: bool = field(
+        default_factory=lambda: _env_bool("REQUIRE_POSTGRES", bool(os.getenv("DATABASE_URL", "").startswith("postgresql")))
+    )
 
     # ── Existing: Angel One (preserved) ──────────────────────
     ANGEL_ONE_API_KEY: str = field(default_factory=lambda: _env("ANGEL_ONE_API_KEY", ""))
@@ -485,6 +492,12 @@ class Settings:
     CPCV_FOLDS: int = field(default_factory=lambda: _env_int("CPCV_FOLDS", 10))
     EMBARGO_BARS: int = field(default_factory=lambda: _env_int("EMBARGO_BARS", 5))
     DEFLECTED_SHARPE_MIN: float = field(default_factory=lambda: _env_float("DEFLECTED_SHARPE_MIN", 0.5))
+    # Minimum sweep breadth before a DSR result counts as promotion evidence
+    # (2026-10-13 audit #2). 54 = the authoritative own-chain grid in
+    # validate_index_strategies.py (structure x hold x sd x min_vrp). A narrower
+    # sweep FAILs the DSR gate regardless of value — raise the real grid, don't
+    # lower this. See validation/gates.py::evaluate_dsr.
+    DSR_MIN_TRIALS: int = field(default_factory=lambda: _env_int("DSR_MIN_TRIALS", 54))
     PBO_MAX: float = field(default_factory=lambda: _env_float("PBO_MAX", 0.4))
     MC_SHUFFLE_RUNS: int = field(default_factory=lambda: _env_int("MC_SHUFFLE_RUNS", 1000))
     PROMOTION_PAPER_DAYS: int = field(default_factory=lambda: _env_int("PROMOTION_PAPER_DAYS", 30))
@@ -580,6 +593,14 @@ class Settings:
     SHORTVOL_MIN_CREDIT: float = field(default_factory=lambda: _env_float("SHORTVOL_MIN_CREDIT", 100.0))
     SHORTVOL_DELTA_BAND: float = field(default_factory=lambda: _env_float("SHORTVOL_DELTA_BAND", 0.3))
     SHORTVOL_AUTO_MARGIN_CAP: float = field(default_factory=lambda: _env_float("SHORTVOL_AUTO_MARGIN_CAP", 500000.0))
+    # Tail-loss sizing cap (2026-10-13 audit #4): each CREDIT short-vol
+    # structure's own defined worst-case loss may not exceed this % of equity.
+    # Bounds the per-structure contribution to a vol-spike day up front (the
+    # RiskEngine drawdown limits remain the hard stop on the whole book). See
+    # short_vol_executor.build(). 0 = disabled (the code default, so existing
+    # sizing is unchanged unless opted in); the live .env sets 1.5, a fraction
+    # of FINNIFTY's validated ~12.8% max DD. Lower it to trade smaller.
+    SHORTVOL_MAX_TAIL_LOSS_PCT: float = field(default_factory=lambda: _env_float("SHORTVOL_MAX_TAIL_LOSS_PCT", 0.0))
 
     # ── Edge gate: the disciplined approved-trade list + VRP regime filter ──
     # Added 2026-10-13 (audit findings #2/#3). An entry may OPEN a position

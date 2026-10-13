@@ -228,6 +228,23 @@ class TradingRuntime:
         self.db = TradingDatabase(
             database_url=self.settings.database_url or None
         )
+        # Single-source P&L (2026-10-13 audit #5). The dashboard/API read
+        # trades + portfolio snapshots through self.db. If DATABASE_URL is unset
+        # this silently falls back to the local SQLite file, which in the real
+        # deployment is a stale artifact (its trades froze 2026-09-09 while the
+        # live stack wrote to TimescaleDB) — so the UI would show frozen/zero
+        # P&L while trading continued. When REQUIRE_POSTGRES is set (it is in the
+        # docker api/scheduler services) a SQLite fallback is a misconfiguration,
+        # not a soft default: fail loudly at startup rather than serve stale P&L.
+        if self.settings.REQUIRE_POSTGRES and self.db.backend != "postgres":
+            raise RuntimeError(
+                "REQUIRE_POSTGRES is set but TradingDatabase resolved to SQLite "
+                "(DATABASE_URL missing/invalid). Refusing to start: the local "
+                "SQLite store is stale and would serve frozen P&L. Set "
+                "DATABASE_URL=postgresql://... or unset REQUIRE_POSTGRES for a "
+                "deliberately local/dev run."
+            )
+        logger.info("TradingDatabase backend=%s", self.db.backend)
         self.live_feed = LiveTickFeed(
             self.settings,
             get_protected_symbols=lambda: {
@@ -5226,8 +5243,16 @@ class TradingRuntime:
         reflection_stats = self.master_orchestrator._reflection_engine.stats()
         current_params = {p: os.getenv(p, "") for p in self._TUNABLE_PARAMETERS}
 
+        # Explicit sentinel so the dashboard can tell a real AI debrief from a
+        # no-model fallback (2026-10-13 audit #3). The stray "test"/"test" rows
+        # seen in the DB were test-fixture writes, not this path — but a plain
+        # fallback sentence could still be mistaken for a genuine review, so the
+        # degraded case is now labelled unambiguously.
         model_id = None
-        summary_text = f"{len(today_trades)} trade(s), no local model available for a debrief."
+        summary_text = (
+            f"[no local model — advisory review unavailable] {len(today_trades)} "
+            f"trade(s) today; configure LOCAL_LLM_* to enable the AI debrief."
+        )
         suggestions: list[dict] = []
 
         gw = self._llm_gateway

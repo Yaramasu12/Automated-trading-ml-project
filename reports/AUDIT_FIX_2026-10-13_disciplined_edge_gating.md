@@ -70,21 +70,44 @@ Watch the `edge_gate:*` reasons in the OMS event stream to see the gate working:
 (premium thin), `regime_data_unavailable`/`_stale` (feed gap), `edge_validated`
 (FINNIFTY entry allowed).
 
-## Still recommended (not yet coded — need data/compute or are infra)
+## Follow-up (2026-10-13, same branch): all four remaining items implemented
 
-- **DSR trial-count** (finding #2): the Sept-13 promotion used `n_trials=27` and
-  passed; the honest 54-trial grid fails. Fix is in the harness *caller* that
-  assembles `trial_sharpes` (`scripts/run_short_vol_gates.py` /
-  `validate_index_strategies.py`) — it must pass the full grid. Re-run it and let
-  the results, not this default list, set `APPROVED_EDGES`.
-- **P&L single-sourcing** (finding #5): the dashboard/API must read the live
-  TimescaleDB, not the stale local `data/trading.db` (trades frozen 2026-09-09,
-  snapshots 2026-10-01). Add a startup assert that fails loudly on SQLite fallback.
-- **Stubbed AI reviews** (finding #5): `daily_ai_reviews` rows are literal
-  `"test"` — either produce a real review or mark the feature disabled.
-- **Tail protection** (finding #4): short-vol's losing days are tail events. Keep
-  entries hedged (long wings) and size to the validated max-DD; the 2% daily-loss
-  breaker only stops *new* entries, not an open book moving against you.
+1. **DSR search-breadth floor** (#2). `validation/gates.py::evaluate_dsr` now
+   FAILs any sweep with `n_trials < DSR_MIN_TRIALS` (default 54, the honest
+   own-chain grid) regardless of the deflated value — a 27-variant sweep can no
+   longer promote as it did on Sept-13. `DSR_MIN_TRIALS` is configurable. The
+   authoritative validation remains `validate_index_strategies.py` (54 trials,
+   own-chain IV); `APPROVED_EDGES=FINNIFTY` is justified by the pre-committed
+   walk-forward (`premium_regime_filter.md`), which is stronger OOS evidence
+   than any single sweep's DSR. 3 tests.
+2. **P&L single-sourcing** (#5). `TradingDatabase.backend` is now public; the
+   runtime refuses to start when `REQUIRE_POSTGRES` is set but it resolved to
+   SQLite (stale local file) — no more silently serving frozen P&L.
+   `REQUIRE_POSTGRES` defaults true when `DATABASE_URL` is a postgres URL. 3 tests.
+3. **Daily AI review** (#3). Correction: the production `run_daily_ai_review`
+   is already real (pulls trades/P&L/reflection stats, prompts the local model,
+   scheduled 15:40) — the `"test"/"test"` rows were test-fixture data, not a
+   code stub. Hardened the no-model fallback so a degraded review is labelled
+   `[no local model — advisory review unavailable]` instead of reading like a
+   real debrief. 1 test.
+4. **Tail protection** (#4). Correction: every *live* structure is already
+   defined-risk (condor/spreads/long-debit) — `strangle`/`long_straddle` in the
+   executor are BUY-only, not naked. The real tail driver was defined-risk
+   condors **sized too large** hitting near-max-loss on a vol spike. Added a
+   **per-structure tail-loss sizing cap** (`SHORTVOL_MAX_TAIL_LOSS_PCT`, scoped
+   to credit structures; opt-in in code, set to 1.5 in `.env`) that caps lots so
+   one structure's defined worst-case loss stays within that % of equity. Also
+   hardened the parallel `short_vol_core._select_structure` to never pick a
+   naked strangle under `require_defined_risk` (default). 5 tests.
+
+Full suite after all four: **1620 passed, 0 failed.**
+
+## Still infra / data (require the running stack or a harness re-run)
+
+- Re-run `validate_index_strategies.py` on fresh data and let its full-grid
+  result (not the default list) confirm/adjust `APPROVED_EDGES`.
+- Point the dashboard/API process at TimescaleDB in the deployment (the guard
+  now enforces this when `REQUIRE_POSTGRES` is set).
 
 ## Go-live criteria (for later — stays PAPER until all are met)
 
