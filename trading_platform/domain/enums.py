@@ -46,6 +46,7 @@ class Exchange(str, Enum):
     NFO = "NFO"
     BFO = "BFO"
     MCX = "MCX"
+    CDS = "CDS"  # NSE currency-derivatives segment (USDINR & other FX futures)
 
 
 class Segment(str, Enum):

@@ -41,7 +41,8 @@ logger = logging.getLogger("gap_backtest")
 from research_gap_calendar_volume import HIST, _load_symbol, build_features  # noqa: E402
 
 
-def walk_forward_pnl(rows: list[dict], n_splits: int = 6, confidence_margin: float = 0.05):
+def walk_forward_pnl(rows: list[dict], n_splits: int = 6, confidence_margin: float = 0.05,
+                     n_estimators: int = 120, max_depth: int = 3, learning_rate: float = 0.05):
     """Predict direction walk-forward; simulate open->close P&L net of swept costs.
 
     Returns per-trade (symbol, day) results AND a proper per-CALENDAR-DAY
@@ -50,6 +51,10 @@ def walk_forward_pnl(rows: list[dict], n_splits: int = 6, confidence_margin: flo
     must be computed on the daily portfolio series, not on pooled per-trade
     rows, or dozens of same-day cross-sectional bets get treated as
     independent time steps and the risk looks fake-smooth.
+
+    The model hyperparameters are arguments (defaults = the values research
+    used) so a promotion-gate sweep (scripts/run_gap_gates.py) can vary them to
+    form an honest selection space for the Deflated-Sharpe / PBO gates.
     """
     from sklearn.ensemble import GradientBoostingClassifier
 
@@ -67,7 +72,8 @@ def walk_forward_pnl(rows: list[dict], n_splits: int = 6, confidence_margin: flo
         Xte = X[tr_end:te_end]
         if len(np.unique(ytr)) < 2:
             continue
-        clf = GradientBoostingClassifier(n_estimators=120, max_depth=3, learning_rate=0.05,
+        clf = GradientBoostingClassifier(n_estimators=n_estimators, max_depth=max_depth,
+                                         learning_rate=learning_rate,
                                          subsample=0.8, random_state=42)
         clf.fit(Xtr, ytr)
         oos_proba[tr_end:te_end] = clf.predict_proba(Xte)[:, 1]
@@ -75,6 +81,12 @@ def walk_forward_pnl(rows: list[dict], n_splits: int = 6, confidence_margin: flo
     mask = ~np.isnan(oos_proba)
     proba = oos_proba[mask]
     ret = session_ret[mask]
+    y_oos = y[mask]
+    try:
+        from sklearn.metrics import roc_auc_score
+        oos_auc = float(roc_auc_score(y_oos, proba)) if len(np.unique(y_oos)) == 2 else float("nan")
+    except Exception:
+        oos_auc = float("nan")
     dates = [rows[i]["ts"].date() for i in range(n) if mask[i]]
     symbols = [rows[i]["symbol"] for i in range(n) if mask[i]]
 
@@ -93,6 +105,7 @@ def walk_forward_pnl(rows: list[dict], n_splits: int = 6, confidence_margin: flo
         "n_oos": len(proba), "n_trades": n_trades,
         "trade_rate": n_trades / max(len(proba), 1),
         "gross_pnl": gross_pnl, "dates": traded_dates, "symbols": traded_symbols,
+        "oos_auc": oos_auc,
     }
 
 

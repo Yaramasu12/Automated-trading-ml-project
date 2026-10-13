@@ -28,10 +28,14 @@ logger = logging.getLogger("index_basis")
 
 HORIZON = 3
 
-# (label, spot_token, near_future_token, near_future_symbol)
+# (label, spot_token) — the near-month future is resolved dynamically from the
+# instrument master (select_future), not hardcoded: a hardcoded monthly contract
+# expires and goes to 0 bars within weeks (2026-10-13 fix — it was pinned to the
+# already-expired NIFTY28JUL26FUT). Single-contract history is still thin (NSE
+# index futures are monthly), which the verdict accounts for.
 PAIRS = [
-    ("NIFTY", "99926000", "61093", "NIFTY28JUL26FUT"),
-    ("BANKNIFTY", "99926009", "61088", "BANKNIFTY28JUL26FUT"),
+    ("NIFTY", "99926000"),
+    ("BANKNIFTY", "99926009"),
 ]
 
 
@@ -49,9 +53,15 @@ def fetch(days_back: int = 400):
     template = next(iter(master.instruments.values()))
 
     results = {}
-    for label, spot_tok, fut_tok, fut_sym in PAIRS:
+    for label, spot_tok in PAIRS:
         spot_inst = dataclasses.replace(template, token=spot_tok, exchange=Exchange("NSE"), symbol=label)
-        fut_inst = dataclasses.replace(template, token=fut_tok, exchange=Exchange("NFO"), symbol=fut_sym)
+        try:
+            fut_inst = master.select_future(label, to_dt.date())
+            fut_sym = fut_inst.symbol
+        except Exception as exc:
+            logger.info("  %-10s no current futures contract in master (%s) — skipping", label, exc)
+            results[label] = ([], {}, {})
+            continue
         spot_bars = provider.get_candles(spot_inst, from_dt, to_dt, "ONE_DAY")
         fut_bars = provider.get_candles(fut_inst, from_dt, to_dt, "ONE_DAY")
         spot = {b.timestamp.date(): b.close for b in spot_bars}

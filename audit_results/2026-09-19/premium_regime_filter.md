@@ -45,5 +45,5 @@ theta chosen on 2019-22 data only: **>= 4 pts** -> OOS   1.93% DD   7.6% Sh  0.4
 | index | as of | ATM-IV30 % | premium today (pts) | trailing-60d median (pts) | chosen theta | filter says |
 |---|---|---|---|---|---|---|
 | NIFTY | 2026-09-18 | 10.36 | +3.21 | +0.85 | 2 | STAND ASIDE |
-| BANKNIFTY | 2026-09-18 | 11.84 | +2.21 | -0.14 | 1 | STAND ASIDE |
+| BANKNIFTY | 2026-09-18 | 11.84 | +2.01 | -0.14 | 1 | STAND ASIDE |
 | FINNIFTY | 2026-09-18 | 19.37 | +8.07 | +6.02 | 4 | TRADE |
