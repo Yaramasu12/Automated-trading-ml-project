@@ -555,6 +555,14 @@ class ExecutionScheduler:
             event_type="broker_filled",
             order_id=intent.idempotency_key,
             symbol=intent.instrument.symbol,
+            # Attribution added 2026-10-13 (audit #5): broker_filled previously
+            # recorded only price/qty, leaving side/strategy/quantity NULL, so
+            # realized P&L could not be attributed per strategy from this event
+            # alone. fill_processed already carried them; now both do.
+            strategy_name=intent.signal.strategy_name,
+            side=intent.signal.side.value,
+            quantity=fill_qty,
+            price=fill_price,
             fill_price=fill_price,
             fill_qty=fill_qty,
             broker_order_id=order.broker_order_id,

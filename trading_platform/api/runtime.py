@@ -71,6 +71,7 @@ from trading_platform.portfolio.ledger import PortfolioLedger, PortfolioSnapshot
 from trading_platform.risk.capital_protection import CapitalProtection
 from trading_platform.risk.compliance import ComplianceGuard
 from trading_platform.risk.engine import RiskEngine, RiskLimits
+from trading_platform.risk.edge_gate import EdgeGate, PremiumSnapshot, underlying_of
 from trading_platform.risk.event_risk import EventRiskGuard
 from trading_platform.risk.manual_approval import ManualApprovalGate
 from trading_platform.strategies.factory import StrategyFactory
@@ -300,6 +301,20 @@ class TradingRuntime:
         self.economic_calendar = EconomicCalendar()
         self.event_risk = EventRiskGuard(buffer_days=1)
         self.event_risk.load_from_calendar(self.economic_calendar)
+
+        # Disciplined entry gate (audit findings #2/#3): only open a position on
+        # an approved (family, underlying) edge, and only when that underlying's
+        # trailing-60d VRP clears theta. Consumed in _evaluate_final_execution_gate.
+        self.edge_gate = EdgeGate.from_spec(
+            self.settings.APPROVED_EDGES,
+            enabled=self.settings.EDGE_GATE_ENABLED,
+            require_regime_data=self.settings.EDGE_GATE_REQUIRE_REGIME_DATA,
+        )
+        logger.info(
+            "EdgeGate %s — approved edges: %s",
+            "enabled" if self.settings.EDGE_GATE_ENABLED else "DISABLED",
+            ", ".join(f"{f}/{u}" for f, u in self.edge_gate.approved_pairs) or "none",
+        )
 
         self.scheduler = ExecutionScheduler(
             broker=self.paper_broker,
@@ -2824,6 +2839,29 @@ class TradingRuntime:
                 self._record_trace_final_gate(intent, decision)
             return decision
 
+        # ALL MODES: disciplined edge gate (audit findings #2/#3). Only OPEN a
+        # position on an approved (family, underlying) edge whose underlying's
+        # trailing-60d VRP clears theta; stand aside otherwise. Runs in PAPER
+        # too, by design — the point is to prove the edge on paper before any
+        # live switch. Exits/reductions pass through untouched.
+        if opens_position:
+            underlying = underlying_of(intent.instrument.symbol, getattr(intent.instrument, "underlying", None))
+            edge = self.edge_gate.evaluate(
+                strategy_name=intent.signal.strategy_name,
+                underlying=underlying,
+                opens_position=True,
+                premium=self._premium_snapshot_for(underlying, now),
+            )
+            if not edge.allowed:
+                decision = FinalGateDecision.reject(
+                    "edge_gate:" + edge.code,
+                    stage=gate_phase,
+                    details={**common_details, "edge_gate": edge.to_dict(), "underlying": underlying},
+                )
+                if trace_side_effects:
+                    self._record_trace_final_gate(intent, decision)
+                return decision
+
         if self.execution_mode.value.startswith("LIVE"):
             if not self.live_armed:
                 decision = FinalGateDecision.reject(
@@ -4193,12 +4231,40 @@ class TradingRuntime:
     # reports "no validated strategy" rather than a fabricated threshold.
     _PREMIUM_SIGNAL_THETA: dict[str, float] = {"NIFTY": 2.0, "BANKNIFTY": 1.0, "FINNIFTY": 4.0}
 
+    def _premium_snapshot_for(self, underlying: str, now: datetime) -> PremiumSnapshot | None:
+        """Latest VRP reading for `underlying`, shaped for the EdgeGate.
+
+        Reads the same index_vol_premium row premium_monitor_status reports.
+        Returns None on any error or when the underlying has no row — the gate
+        then fails closed (stands aside), which is the intended safe default.
+        """
+        try:
+            for r in self.db.latest_index_premium():
+                if r.get("index_symbol") != underlying:
+                    continue
+                td = r.get("trade_date")
+                if hasattr(td, "isoformat"):
+                    stale_days = max(0, (now.date() - td).days)
+                else:
+                    td, stale_days = None, 0
+                return PremiumSnapshot(
+                    underlying=underlying,
+                    trade_date=td,
+                    premium=r.get("premium"),
+                    trailing_median_60d=r.get("trailing_median_60d"),
+                    stale_days=stale_days,
+                )
+        except Exception as exc:
+            note_swallowed(f"premium_snapshot_for.{underlying}", exc)
+        return None
+
     def premium_monitor_status(self) -> dict:
         """Today's (or most recently recorded) per-index vol-selling premium,
         and whether it's currently above the threshold the walk-forward
-        research found useful for that index. REPORTING ONLY — see research/
-        index_premium.py's module docstring; nothing on the order-submission
-        path reads this."""
+        research found useful for that index. The EdgeGate now consumes this
+        same reading on the entry path (see _premium_snapshot_for); the per-
+        index theta here stays REPORTING-only (the gate's own thetas come from
+        settings.APPROVED_EDGES)."""
         try:
             latest = self.db.latest_index_premium()
         except Exception as exc:

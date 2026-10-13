@@ -563,7 +563,12 @@ class Settings:
     # ── Existing: Directional / short-vol auto ───────────────
     AGENT_DIRECTIONAL_ENABLED: bool = field(default_factory=lambda: _env_bool("AGENT_DIRECTIONAL_ENABLED", False))
     SHORTVOL_AUTO_ENABLED: bool = field(default_factory=lambda: _env_bool("SHORTVOL_AUTO_ENABLED", False))
-    SHORTVOL_UNDERLYING: str = field(default_factory=lambda: _env("SHORTVOL_UNDERLYING", "NIFTY"))
+    # Default flipped NIFTY -> FINNIFTY on 2026-10-13: the short-vol auto
+    # strategy was generating entry intents on NIFTY, the one index the regime
+    # study says STAND ASIDE. FINNIFTY is the approved underlying (see
+    # APPROVED_EDGES / the edge gate). The gate is the authoritative control;
+    # this just stops the strategy wasting cycles on intents it would reject.
+    SHORTVOL_UNDERLYING: str = field(default_factory=lambda: _env("SHORTVOL_UNDERLYING", "FINNIFTY"))
     SHORTVOL_STRIKE_BAND: int = field(default_factory=lambda: _env_int("SHORTVOL_STRIKE_BAND", 15))
     SHORTVOL_MAX_CONTRACTS: int = field(default_factory=lambda: _env_int("SHORTVOL_MAX_CONTRACTS", 4))
     SHORTVOL_PROFIT_TARGET: float = field(default_factory=lambda: _env_float("SHORTVOL_PROFIT_TARGET", 20000.0))
@@ -575,6 +580,25 @@ class Settings:
     SHORTVOL_MIN_CREDIT: float = field(default_factory=lambda: _env_float("SHORTVOL_MIN_CREDIT", 100.0))
     SHORTVOL_DELTA_BAND: float = field(default_factory=lambda: _env_float("SHORTVOL_DELTA_BAND", 0.3))
     SHORTVOL_AUTO_MARGIN_CAP: float = field(default_factory=lambda: _env_float("SHORTVOL_AUTO_MARGIN_CAP", 500000.0))
+
+    # ── Edge gate: the disciplined approved-trade list + VRP regime filter ──
+    # Added 2026-10-13 (audit findings #2/#3). An entry may OPEN a position
+    # only on a (strategy_family, underlying) pair listed here, and only when
+    # that underlying's trailing-60d median premium >= the pair's theta.
+    # Format: "family:underlying:theta[:max_staleness_days]" comma-separated.
+    # Default approves FINNIFTY short-vol only — the single index whose own-
+    # chain backtest had positive, cost-surviving out-of-sample premium and a
+    # current "TRADE" regime verdict (audit_results/2026-09-19/
+    # premium_regime_filter.md). NIFTY/BANKNIFTY/MIDCPNIFTY stay OFF the list
+    # until they clear the full-grid DSR/PBO/CPCV gates — add them here only
+    # after scripts/validate_index_strategies.py promotes them.
+    EDGE_GATE_ENABLED: bool = field(default_factory=lambda: _env_bool("EDGE_GATE_ENABLED", True))
+    EDGE_GATE_REQUIRE_REGIME_DATA: bool = field(
+        default_factory=lambda: _env_bool("EDGE_GATE_REQUIRE_REGIME_DATA", True)
+    )
+    APPROVED_EDGES: str = field(
+        default_factory=lambda: _env("APPROVED_EDGES", "short_vol:FINNIFTY:4.0")
+    )
 
     # ── Existing: Swing template ─────────────────────────────
     SWING_ENABLED: bool = field(default_factory=lambda: _env_bool("SWING_ENABLED", False))
