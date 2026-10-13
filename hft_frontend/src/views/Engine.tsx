@@ -617,6 +617,14 @@ export function Engine() {
                   const price = agentTradePrice(row as Record<string, unknown>)
                   return price == null ? '—' : inr(price, 2)
                 } },
+                { key: 'value', label: 'Value', align: 'right', render: (_, row) => {
+                  // executed value = qty(lots) x price x lot_size (2026-10-13 fix);
+                  // backend sends `value`, fall back to the computation if absent.
+                  const r = row as Record<string, unknown>
+                  const v = finiteNumber(r.value)
+                    ?? (finiteNumber(r.quantity) ?? 0) * (agentTradePrice(r) ?? 0) * (finiteNumber(r.lot_size) ?? 1)
+                  return v == null ? '—' : inr(v)
+                } },
                 { key: 'timestamp', label: 'Time', render: (_, row) => {
                   const ts = agentTradeTime(row as Record<string, unknown>)
                   return <span className="text-xs text-ink-faint">{ts ? fmtDateTime(ts) : '—'}</span>

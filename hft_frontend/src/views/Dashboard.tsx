@@ -321,6 +321,13 @@ export function Dashboard() {
       render: (_: unknown, r: Trade) => inr(r.price, 2),
     },
     {
+      // Executed value = quantity(lots) x price x lot_size — reconciles with
+      // realised/unrealised P&L (2026-10-13 UI money-mismatch fix).
+      key: 'value', label: 'Value', align: 'right' as const,
+      render: (_: unknown, r: Trade) =>
+        inr(r.value ?? (r.quantity ?? 0) * (r.price ?? 0) * (r.lot_size ?? 1)),
+    },
+    {
       key: 'strategy_name', label: 'Strategy',
       render: (_: unknown, r: Trade) => <span className="text-xs text-ink-muted">{r.strategy_name}</span>,
     },

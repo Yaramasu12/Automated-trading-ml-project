@@ -347,6 +347,9 @@ export function CommandCenter() {
                   { key: 'quantity', header: 'Qty', align: 'right' },
                   { key: 'price', header: 'Price', align: 'right',
                     render: (_v, r: any) => inr(r.price) },
+                  { key: 'value', header: 'Value', align: 'right',
+                    // executed value = qty(lots) x price x lot_size (2026-10-13 fix)
+                    render: (_v, r: any) => inr(r.value ?? (r.quantity ?? 0) * (r.price ?? 0) * (r.lot_size ?? 1)) },
                   { key: 'ts', header: 'Time',
                     render: (_v, r: any) => fmtDateTime(r.ts ?? r.timestamp) },
                 ]}

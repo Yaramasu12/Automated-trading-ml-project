@@ -172,6 +172,7 @@ const FILL_COLS = [
   { key: 'side',     label: 'Side' },
   { key: 'quantity', label: 'Qty', className: 'text-right font-mono' },
   { key: 'price',    label: 'Fill ₹', className: 'text-right font-mono' },
+  { key: 'value',    label: 'Value ₹', className: 'text-right font-mono' },
   { key: 'charges',  label: 'Charges ₹', className: 'text-right font-mono' },
   { key: 'strategy', label: 'Strategy' },
   { key: 'mode',     label: 'Mode' },
@@ -188,6 +189,9 @@ function FillsTable({ trades }: { trades: Trade[] }) {
     side:     <SideBadge side={t.side} />,
     quantity: <span className="font-mono text-xs">{t.quantity}</span>,
     price:    <span className="font-mono text-xs">{inr(t.price)}</span>,
+    // Executed rupee value = qty(lots) x price x lot_size — matches the P&L/book
+    // (2026-10-13 UI money-mismatch fix). Backend sends `value`; fall back if absent.
+    value:    <span className="font-mono text-xs">{inr(t.value ?? (t.quantity ?? 0) * (t.price ?? 0) * (t.lot_size ?? 1))}</span>,
     charges:  <span className="font-mono text-xs text-ink-faint">{inr(t.charges ?? 0)}</span>,
     strategy: <span className="text-xs text-ink-muted">{t.strategy_name ?? '—'}</span>,
     mode:     (

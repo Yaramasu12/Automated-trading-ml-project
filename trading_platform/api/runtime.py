@@ -11,6 +11,28 @@ from datetime import date, datetime, timedelta, timezone
 
 logger = logging.getLogger(__name__)
 
+
+def _attach_executed_value(trades) -> None:
+    """Add `value` = the real rupee value of each trade (2026-10-13 UI fix).
+
+    Trade rows carry `quantity` in LOTS and `price` as the per-unit premium/
+    price, with the contract multiplier in `lot_size` — so quantity*price alone
+    (what the UI showed) is ~lot_size× too small versus the book/P&L, which the
+    ledger computes WITH lot_size. Expose one authoritative executed value so
+    every trade table reconciles with realised/unrealised P&L. Mutates in place.
+    """
+    if not trades:
+        return
+    for t in trades:
+        try:
+            qty = float(t.get("quantity") or 0)
+            price = float(t.get("price") or 0)
+            lot = float(t.get("lot_size") or 1) or 1.0
+            t["value"] = round(qty * price * lot, 2)
+        except (TypeError, ValueError):
+            t["value"] = None
+
+
 from trading_platform.ai.agents import ModelPerformance, RetrainingAgent, RiskSupervisorAgent
 from trading_platform.ai.feature_store import FeatureStore
 from trading_platform.ai.models import GARCHForecaster, MetaModel, ModelRegistry, RegimeClassifier, SentimentAnalyzer, VolatilityForecaster
@@ -4445,7 +4467,9 @@ class TradingRuntime:
         return self._db_query_service.db_summary()
 
     def db_trades(self, symbol: str | None = None, execution_mode: str | None = None, limit: int = 100) -> dict:
-        return self._db_query_service.db_trades(symbol=symbol, execution_mode=execution_mode, limit=limit)
+        res = self._db_query_service.db_trades(symbol=symbol, execution_mode=execution_mode, limit=limit)
+        _attach_executed_value(res.get("trades") if isinstance(res, dict) else None)
+        return res
 
     def db_equity_curve(self, execution_mode: str | None = None, limit: int = 200) -> dict:
         return self._db_query_service.db_equity_curve(execution_mode=execution_mode, limit=limit)
@@ -4768,7 +4792,8 @@ class TradingRuntime:
     def agent_trade_log(self, limit: int = 100) -> dict:
         """History of every entry/exit fill the agent processed."""
         import itertools
-        log = list(itertools.islice(reversed(self._agent_trade_log), limit))
+        log = [dict(t) for t in itertools.islice(reversed(self._agent_trade_log), limit)]
+        _attach_executed_value(log)
         return {"count": len(log), "trades": log}
 
     def risk_rejection_log(self, limit: int = 100) -> dict:

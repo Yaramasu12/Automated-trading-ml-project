@@ -446,6 +446,12 @@ export interface Trade {
   timestamp: string
   strategy_name: string
   execution_mode: string
+  // `quantity` is in LOTS and `price` is the per-unit premium/price; the real
+  // rupee value is quantity*price*lot_size. The backend sends `value`
+  // precomputed (runtime._attach_executed_value) so trade tables reconcile
+  // with realised/unrealised P&L. lot_size exposed for display.
+  lot_size?: number
+  value?: number
 }
 
 // ─── Live Feed ────────────────────────────────────────────────────────────────
