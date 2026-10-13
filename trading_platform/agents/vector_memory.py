@@ -293,6 +293,22 @@ class VectorMemoryStore:
         embed_fn (always returns None) leaves every document exactly as it
         was, so this is always safe to call unconditionally."""
         self._embed_fn = embed_fn
+        # Preflight (2026-10-13 fix): the backfill below calls embed() for every
+        # seed doc, and embed() blocks up to the LLM read-timeout (120s) per doc
+        # when the embedding endpoint is reachable-but-unresponsive (LM Studio up
+        # with no model loaded — confirmed: port connects in 0.0s but requests
+        # hang). _safe_embed only catches ERRORS, not slow responses, so the
+        # loop hung TradingRuntime.__init__ before uvicorn ever started. Probe
+        # once under a short wall-clock budget; if it doesn't return a vector
+        # fast, skip the backfill and stay on the Jaccard fallback (safe — the
+        # store already degrades to it whenever embeddings are absent).
+        if embed_fn is not None and not self._embedder_preflight_ok(embed_fn):
+            logger.warning(
+                "VectorMemoryStore: embedder preflight failed/slow — skipping seed "
+                "backfill, staying on Jaccard similarity (embedding endpoint "
+                "unresponsive). RAG search still works; it just won't use vectors."
+            )
+            return
         with self._lock:
             doc_ids = list(self._docs.keys())
         backfilled = 0
@@ -325,6 +341,39 @@ class VectorMemoryStore:
                 "VectorMemoryStore: backfilled real embeddings for %d/%d documents",
                 backfilled, len(doc_ids),
             )
+
+    @staticmethod
+    def _embedder_preflight_ok(embed_fn: Callable[[str], list[float] | None]) -> bool:
+        """True iff the embedder is RESPONSIVE — a probe call completes (returns
+        OR raises) within a short wall-clock budget. Only a genuine HANG (no
+        completion within the budget) returns False.
+
+        This targets exactly the failure that hung startup: an endpoint that
+        accepts the socket but never answers, so embed() blocks on the read for
+        the full 120s timeout per doc. A fast return (real vector, or None in
+        stub mode) or a fast exception both mean "responsive — safe to run the
+        per-doc backfill, which handles individual results/errors itself". The
+        probe runs in a daemon thread so a true hang is abandoned, not awaited.
+        """
+        import os
+        import threading
+
+        try:
+            budget = float(os.getenv("EMBED_PREFLIGHT_TIMEOUT_SECONDS", "6") or 6)
+        except (TypeError, ValueError):
+            budget = 6.0
+        completed = threading.Event()
+
+        def _probe() -> None:
+            try:
+                embed_fn("preflight")
+            except Exception:
+                pass  # a fast exception still means the endpoint is responsive
+            finally:
+                completed.set()
+
+        threading.Thread(target=_probe, name="embed-preflight", daemon=True).start()
+        return completed.wait(timeout=budget)
 
     def _safe_embed(self, text: str) -> list[float] | None:
         try:
