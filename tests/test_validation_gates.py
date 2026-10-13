@@ -334,31 +334,43 @@ class GateEvaluatorTests(unittest.TestCase):
         self.assertFalse(evaluator.results.dsr.passed)
         self.assertFalse(evaluator.finalize("bt-1", "short_vol").all_passed)
 
-    def test_dsr_fails_when_search_breadth_below_floor(self):
+    def test_dsr_fails_when_passing_on_too_few_trials(self):
         """2026-10-13 audit #2: a sweep narrower than the real tunable surface
-        under-counts selection bias. short_vol_nifty passed at n_trials=27 while
-        the honest 54-trial study failed it. Below DSR_MIN_TRIALS (default 54)
-        the gate FAILS outright, whatever the deflated value."""
+        under-counts selection bias. short_vol_nifty PASSED at n_trials=27 while
+        the honest 54-trial study failed it. The floor is a false-positive guard:
+        when the DSR would otherwise PASS (here forced via min_dsr=0.0) on fewer
+        than DSR_MIN_TRIALS configs, it FAILS as 'search too narrow'."""
         evaluator = GateEvaluator()
         returns = np.array([0.01, -0.008, 0.012, -0.005, 0.009] * 12)  # 60 obs
         trials = [0.5 + 0.01 * i for i in range(27)]  # 27 variants (the old grid)
-        evaluator.evaluate_dsr(max(trials), trials, returns)
+        evaluator.evaluate_dsr(max(trials), trials, returns, min_dsr=0.0)  # DSR passes on value
         self.assertEqual(evaluator.results.dsr.result, GateResult.FAIL)
         self.assertTrue(evaluator.results.dsr.details.get("insufficient_search_breadth"))
         self.assertIn("search too narrow", evaluator.results.dsr.message)
         self.assertFalse(evaluator.finalize("bt-1", "short_vol").all_passed)
 
+    def test_breadth_floor_does_not_mask_a_genuine_dsr_fail(self):
+        """A DSR that fails ON VALUE is reported as its real fail, not masked as
+        'search too narrow' — so the floor never hides a genuine verdict or
+        over-penalises a small-but-honest search."""
+        evaluator = GateEvaluator()
+        returns = np.array([0.01, -0.008, 0.012, -0.005, 0.009] * 12)
+        trials = [-1.0, -1.0, -1.0, -1.0]  # tiny sweep, a losing strategy
+        evaluator.evaluate_dsr(-1.0, trials, returns)  # DSR ~0 -> fails on value
+        self.assertEqual(evaluator.results.dsr.result, GateResult.FAIL)
+        self.assertFalse(evaluator.results.dsr.details.get("insufficient_search_breadth", False))
+        self.assertNotIn("search too narrow", evaluator.results.dsr.message)
+
     def test_dsr_breadth_floor_is_configurable(self):
-        """Lowering DSR_MIN_TRIALS lets a smaller sweep proceed to the real DSR
-        test (so the floor is a policy knob, not a hard-coded 54)."""
+        """Lowering DSR_MIN_TRIALS lets a smaller sweep's passing DSR stand."""
         from types import SimpleNamespace
         evaluator = GateEvaluator(settings=SimpleNamespace(DSR_MIN_TRIALS=10))
         returns = np.array([0.01, -0.008, 0.012, -0.005, 0.009] * 12)
         trials = [0.5 + 0.01 * i for i in range(27)]
-        evaluator.evaluate_dsr(max(trials), trials, returns)
-        # Not blocked by breadth now — it ran the real DSR (PASS or FAIL on value).
+        evaluator.evaluate_dsr(max(trials), trials, returns, min_dsr=0.0)
+        # 27 >= 10, DSR passes on value -> not blocked by breadth.
         self.assertNotIn("search too narrow", evaluator.results.dsr.message)
-        self.assertFalse(evaluator.results.dsr.details.get("insufficient_search_breadth", False))
+        self.assertEqual(evaluator.results.dsr.result, GateResult.PASS)
 
     def test_dsr_passes_breadth_floor_at_full_grid(self):
         """A 54-trial sweep clears the breadth floor and is scored on its DSR."""

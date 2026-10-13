@@ -454,25 +454,27 @@ class GateEvaluator:
         # the strategy's real tunable surface under-counts that search and lets
         # a lucky winner pass — exactly how short_vol_nifty earned promotion on
         # 2026-09-13 at n_trials=27 while the honest 54-trial own-chain study
-        # (validate_index_strategies.py) failed it. Below the floor we FAIL the
-        # gate outright: a too-small sweep is not promotion evidence, whatever
-        # its deflated value. Raise the real grid (SWEEP_GRID) to clear this,
-        # don't lower the floor.
+        # (validate_index_strategies.py) failed it. The floor is a FALSE-POSITIVE
+        # guard: it only fires when the DSR would otherwise PASS on too few
+        # trials. A DSR that already fails on value is reported as its normal
+        # fail, so this never masks a genuine verdict or over-penalises a
+        # strategy whose honest tunable surface is small. Raise the real grid
+        # (SWEEP_GRID) to clear this, don't lower the floor.
+        passed = dsr_result.dsr >= threshold
         min_trials = int(self._cfg("DSR_MIN_TRIALS", 54))
-        if dsr_result.n_trials < min_trials:
+        if passed and dsr_result.n_trials < min_trials:
             self.results.dsr = GateOutcome(
                 gate_name="deflated_sharpe",
                 result=GateResult.FAIL,
                 metric=dsr_result.dsr,
                 threshold=threshold,
                 message=f"FAILED: search too narrow — n_trials={dsr_result.n_trials} "
-                        f"< DSR_MIN_TRIALS={min_trials}; a sweep narrower than the real "
-                        f"tunable surface under-counts selection bias (DSR={dsr_result.dsr:.4f})",
+                        f"< DSR_MIN_TRIALS={min_trials}; DSR passes but on too few configs "
+                        f"to trust (under-counts selection bias; DSR={dsr_result.dsr:.4f})",
                 details={"n_trials": dsr_result.n_trials, "min_trials": min_trials,
                          "dsr": dsr_result.dsr, "insufficient_search_breadth": True},
             )
             return
-        passed = dsr_result.dsr >= threshold
         self.results.dsr = GateOutcome(
             gate_name="deflated_sharpe",
             result=GateResult.PASS if passed else GateResult.FAIL,
