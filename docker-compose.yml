@@ -89,7 +89,14 @@ services:
       - PROFIT_GUARD_EV_MIN=${PROFIT_GUARD_EV_MIN:-0.0003}
       - PROFIT_GUARD_KELLY_MIN=${PROFIT_GUARD_KELLY_MIN:-0.005}
       - SHORTVOL_AUTO_ENABLED=${SHORTVOL_AUTO_ENABLED:-false}
-      - SHORTVOL_AUTO_UNDERLYINGS=${SHORTVOL_AUTO_UNDERLYINGS:-NIFTY}
+      # 2026-10-13 audit: FINNIFTY is the one approved edge (see APPROVED_EDGES).
+      - SHORTVOL_AUTO_UNDERLYINGS=${SHORTVOL_AUTO_UNDERLYINGS:-FINNIFTY}
+      # Disciplined edge gate + tail cap + DSR breadth floor (audit #2/#3/#4).
+      - EDGE_GATE_ENABLED=${EDGE_GATE_ENABLED:-true}
+      - EDGE_GATE_REQUIRE_REGIME_DATA=${EDGE_GATE_REQUIRE_REGIME_DATA:-true}
+      - APPROVED_EDGES=${APPROVED_EDGES:-short_vol:FINNIFTY:4.0}
+      - SHORTVOL_MAX_TAIL_LOSS_PCT=${SHORTVOL_MAX_TAIL_LOSS_PCT:-1.5}
+      - DSR_MIN_TRIALS=${DSR_MIN_TRIALS:-54}
       - SHORTVOL_ENTRY_WEEKDAY=${SHORTVOL_ENTRY_WEEKDAY:-0}
       - SHORTVOL_ENTRY_HOUR=${SHORTVOL_ENTRY_HOUR:-10}
       # GARCH vol forecast for VRP (validated: beats naive on all indices).
@@ -244,6 +251,13 @@ services:
       # and the dashboard would still show zero rows forever, because it was
       # writing to a database nothing else ever reads.
       - DATABASE_URL=${DATABASE_URL:-postgresql://trading:trading_secret@timescaledb:5432/trading}
+      # 2026-10-13 audit: keep the scheduler's runtime consistent with
+      # trading-api (edge gate + tail cap), and enforce the DSR search-breadth
+      # floor on any gate evaluation it runs.
+      - EDGE_GATE_ENABLED=${EDGE_GATE_ENABLED:-true}
+      - APPROVED_EDGES=${APPROVED_EDGES:-short_vol:FINNIFTY:4.0}
+      - SHORTVOL_MAX_TAIL_LOSS_PCT=${SHORTVOL_MAX_TAIL_LOSS_PCT:-1.5}
+      - DSR_MIN_TRIALS=${DSR_MIN_TRIALS:-54}
     depends_on:
       trading-api:
         condition: service_healthy
