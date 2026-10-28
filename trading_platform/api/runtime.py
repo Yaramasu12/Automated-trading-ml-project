@@ -41,6 +41,7 @@ from trading_platform.data.persistence import TradingDatabase
 from trading_platform.backtesting.charges import ChargesModel
 from trading_platform.backtesting.engine import BacktestConfig, BacktestEngine
 from trading_platform.backtesting.evaluator import StrategyEvaluator, WalkForwardEvaluator
+from trading_platform.broker import auth_health
 from trading_platform.broker.angel_one import AngelOneBrokerClient
 from trading_platform.broker.base import BrokerResult
 from trading_platform.broker.capability_registry import BrokerCapabilityRegistry
@@ -4482,9 +4483,16 @@ class TradingRuntime:
 
 
     def health(self) -> dict:
+        # Broker-auth health: before this existed, /health reported "healthy"
+        # through a 10-day broker-login outage (2026-10-17). Surface it, and
+        # degrade the top-level status when the auth breaker has tripped so the
+        # endpoint stops lying. HTTP stays 200 (the compose healthcheck only
+        # checks reachability), so this never restart-loops the container.
+        broker_auth = auth_health.snapshot()
         return {
-            "status": "healthy",
+            "status": "healthy" if broker_auth["ok"] else "degraded",
             "state": self.state_payload(),
+            "broker_auth": broker_auth,
             "risk_limits": asdict(self.risk_engine.limits),
             "operational_status": self.monitor.snapshot(
                 execution_mode=self.execution_mode.value,

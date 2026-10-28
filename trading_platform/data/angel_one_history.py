@@ -6,6 +6,7 @@ import time
 from datetime import datetime
 from typing import Any
 
+from trading_platform.broker import auth_health
 from trading_platform.config import Settings
 from trading_platform.domain.models import Instrument, MarketBar
 
@@ -98,6 +99,9 @@ class AngelOneHistoricalDataProvider:
     def _login(self):
         if not self.settings.angel_one_configured:
             raise RuntimeError("Angel One credentials are required for historical candle downloads")
+        # Short-circuit if the shared auth breaker is open — a known-bad
+        # credential must not keep hammering Angel One's strict login quota.
+        auth_health.before_login_attempt()
         try:
             import pyotp
             from SmartApi import SmartConnect
@@ -112,7 +116,9 @@ class AngelOneHistoricalDataProvider:
             totp,
         )
         if not session.get("status"):
+            auth_health.record_failure(f"login: {session}")
             raise RuntimeError(f"Angel One login failed: {session}")
+        auth_health.record_success()
         self._smart_api = smart_api
         return smart_api
 

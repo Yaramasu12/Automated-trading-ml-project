@@ -5,6 +5,7 @@ import threading
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+from trading_platform.broker import auth_health
 from trading_platform.broker.base import BrokerClient, BrokerResult
 from trading_platform.config import Settings
 from trading_platform.domain.enums import OrderStatus, OrderType, ProductType, Side
@@ -36,6 +37,9 @@ class AngelOneBrokerClient(BrokerClient):
     def login(self) -> None:
         if not self.settings.angel_one_configured:
             raise RuntimeError("Angel One credentials are incomplete")
+        # Short-circuit if the shared auth breaker is open (see auth_health):
+        # a known-bad credential must not keep hammering the login endpoint.
+        auth_health.before_login_attempt()
         try:
             import pyotp
             from SmartApi import SmartConnect
@@ -50,7 +54,9 @@ class AngelOneBrokerClient(BrokerClient):
             totp,
         )
         if not session.get("status"):
+            auth_health.record_failure(f"login: {session}")
             raise RuntimeError(f"Angel One login failed: {session}")
+        auth_health.record_success()
         data = session["data"]
         self._smart_api = smart_api
         self._auth_token = data.get("jwtToken")

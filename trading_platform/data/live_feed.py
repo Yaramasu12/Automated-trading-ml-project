@@ -12,6 +12,8 @@ from datetime import date, datetime, timezone
 from typing import Callable
 
 from trading_platform.agent.market_hours import is_entry_allowed, is_mcx_entry_allowed, now_ist
+from trading_platform.broker import auth_health
+from trading_platform.broker.auth_health import BrokerAuthCircuitOpen
 from trading_platform.data.feed_staleness import FeedStalenessTracker
 from trading_platform.data.tick_v2 import make_tick_v2
 from trading_platform.streaming.tick_bus import TickBus
@@ -599,6 +601,8 @@ class LiveTickFeed:
         only calls this again if the cached token itself starts failing.
         """
         try:
+            # Short-circuit if the shared auth breaker is open (see auth_health).
+            auth_health.before_login_attempt()
             from SmartApi import SmartConnect  # type: ignore[import]
             import pyotp
 
@@ -609,12 +613,23 @@ class LiveTickFeed:
                 self._settings.angel_one_pin,
                 totp,
             )
+            # generateSession returns {"status": False, ...} on a bad credential
+            # WITHOUT raising — validate it so a dead session never looks live.
+            if not session.get("status"):
+                auth_health.record_failure(f"feed login: {session}")
+                logger.error("LiveTickFeed login failed: %s", session)
+                return None
+            auth_health.record_success()
             feed_token = connect.getfeedToken()
             return session, feed_token
+        except BrokerAuthCircuitOpen as exc:
+            logger.warning("LiveTickFeed login skipped: %s", exc)
+            return None
         except Exception as exc:
             if _is_rate_limit_error(exc):
                 logger.warning("LiveTickFeed login rate-limited by Angel One; feed stopped until manually restarted")
             else:
+                auth_health.record_failure(str(exc))
                 logger.error("LiveTickFeed login error: %s", exc)
             return None
 
