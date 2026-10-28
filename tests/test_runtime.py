@@ -1112,13 +1112,23 @@ class RuntimeTests(unittest.TestCase):
         a new file short of a full restart. reload_neural_models() (exposed as
         POST /neural/reload-models, called by the scheduler right after save())
         must actually attempt a reload, not just report stale status. With no
-        artifact on disk (this repo's own honest state — no forecaster has ever
-        earned promotion), nothing should be promoted and the same service
+        artifact in this test's isolated model directory, nothing should be
+        promoted and the same service
         object should keep serving (Section 21I: reload must not discard the
-        version/warm-standby history of unrelated models on every call)."""
+        version/warm-standby history of unrelated models on every call). The
+        test isolates its model directory because scheduled training may have
+        saved a real validated artifact in the working tree."""
+        from trading_platform.neural.serving import NeuralPredictionService
+
         base = load_settings()
         settings = dataclasses.replace(base, enable_neural_lab=True)
         runtime = TradingRuntime(settings)
+        tmp_dir = tempfile.mkdtemp(prefix="trading_qa_empty_models_")
+        self.addCleanup(lambda: __import__("shutil").rmtree(tmp_dir, ignore_errors=True))
+        runtime._model_dir = tmp_dir
+        runtime._neural_service = NeuralPredictionService(
+            trace_store=runtime.trace_store, model_dir=tmp_dir
+        )
         original_service = runtime._neural_service
         self.assertIsNotNone(original_service)
 

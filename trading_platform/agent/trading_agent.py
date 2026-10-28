@@ -120,6 +120,7 @@ class AgentCycleResult:
     signals: list[dict]
     errors: list[str]
     duration_ms: int
+    suppressed_policy: int = 0
 
 
 @dataclass
@@ -139,6 +140,7 @@ class AgentState:
     shortvol_entry_date: date | None = None
     started_at: str | None = None
     activity_log: list[dict] = field(default_factory=list)
+    last_shortvol_entry: dict | None = None
 
 
 class TradingAgent:
@@ -191,6 +193,8 @@ class TradingAgent:
             "scan_interval": s.scan_interval,
             "scan_count": s.scan_count,
             "enqueued_total": s.enqueued_total,
+            "directional_execution_enabled": os.getenv("AGENT_DIRECTIONAL_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"},
+            "last_shortvol_entry": s.last_shortvol_entry,
             "started_at": s.started_at,
             "market_status": market_status(now),
             "ist_time": now.strftime("%H:%M:%S"),
@@ -341,6 +345,7 @@ class TradingAgent:
     async def _maybe_enter_short_vol(self, now: datetime) -> None:
         executor = getattr(self._runtime, "short_vol_executor", None)
         if executor is None:
+            self._state.last_shortvol_entry = {"at": now.isoformat(), "ran": False, "reason": "short-vol executor unavailable"}
             return
         # Continuous mode: the vol edge (condor/put-spread/call-spread) is the
         # profitable trade source, so enter it whenever VRP is rich and a slot is
@@ -358,7 +363,14 @@ class TradingAgent:
             result = await executor.auto_enter(now)
         except Exception as exc:
             logger.warning("short-vol auto-entry error: %s", exc)
+            self._state.last_shortvol_entry = {"at": now.isoformat(), "ran": False, "reason": f"error: {exc}"}
             return
+        self._state.last_shortvol_entry = {
+            "at": now.isoformat(),
+            "ran": bool(result.get("ran")),
+            "reason": result.get("reason"),
+            "results": result.get("results", [])[:20],
+        }
         if not result.get("ran"):
             return
         if not continuous:
@@ -644,6 +656,7 @@ class TradingAgent:
             for candidate in scan.get("candidates", []):
                 cycle.total_candidates += 1
                 if not directional_on:
+                    cycle.suppressed_policy += 1
                     continue   # analysis only — vol edge is the trade source
                 rd = candidate.get("risk_decision") or {}
                 if not rd.get("approved"):
@@ -1049,6 +1062,7 @@ class TradingAgent:
 
             for symbol, underlying, state, candidate in raw["candidates_for_enqueue"]:
                 if not directional_on:
+                    cycle.suppressed_policy += 1
                     continue
                 if symbol in open_positions or underlying in open_positions:
                     cycle.skipped_existing += 1
@@ -1118,7 +1132,7 @@ class TradingAgent:
         self._log_activity(
             f"Scan #{self._state.scan_count}: "
             f"{cycle.approved} approved, {cycle.enqueued} enqueued, "
-            f"{cycle.rejected} rejected — {cycle.duration_ms}ms"
+            f"{cycle.rejected} rejected, {cycle.suppressed_policy} policy-suppressed — {cycle.duration_ms}ms"
         )
         self._publish("agent.cycle_done", self._cycle_to_dict(cycle))
 
@@ -1155,6 +1169,7 @@ class TradingAgent:
             "rejected": cycle.rejected,
             "enqueued": cycle.enqueued,
             "skipped_existing": cycle.skipped_existing,
+            "suppressed_policy": cycle.suppressed_policy,
             "regimes": cycle.regimes,
             "signals": cycle.signals,
             "errors": cycle.errors,

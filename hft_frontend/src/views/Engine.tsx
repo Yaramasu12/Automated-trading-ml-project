@@ -375,6 +375,11 @@ export function Engine() {
   }
 
   const agentRunning = Boolean(agentStatus?.running)
+  const lastCycle = agentStatus?.last_cycle as Record<string, unknown> | null | undefined
+  const lastShortVol = agentStatus?.last_shortvol_entry as Record<string, unknown> | null | undefined
+  const shortVolResults = Array.isArray(lastShortVol?.results)
+    ? lastShortVol.results as Record<string, unknown>[]
+    : []
   const feedRunning = Boolean(feedSnapshot?.running)
 
   // Tick grid helper
@@ -565,16 +570,37 @@ export function Engine() {
               color="blue"
             />
             <MetricCard
-              label="Total Scans"
+              label="Scans (this run)"
               value={String(agentStatus?.scan_count ?? 0)}
               color="cyan"
             />
             <MetricCard
-              label="Enqueued"
+              label="Enqueued (this run)"
               value={String(agentStatus?.enqueued_total ?? 0)}
               color="green"
             />
           </div>
+
+          <Card>
+            <CardHeader title="Order decision status" icon={<Shield size={14} />} />
+            <CardBody className="space-y-2 text-xs text-ink-muted">
+              <p>Directional entries: {agentStatus?.directional_execution_enabled ? 'enabled' : 'disabled by strategy policy'}.</p>
+              {lastCycle && (
+                <p>Last scan: {String(lastCycle.approved ?? 0)} pipeline candidates, {String(lastCycle.suppressed_policy ?? 0)} suppressed by policy, {String(lastCycle.enqueued ?? 0)} enqueued.</p>
+              )}
+              {lastShortVol ? (
+                <div>
+                  <p>Last short-vol evaluation: {String(lastShortVol.at ?? 'unknown time')}.</p>
+                  {Boolean(lastShortVol.reason) && <p>{String(lastShortVol.reason)}</p>}
+                  {shortVolResults.map((result, index) => (
+                    <p key={`${String(result.underlying ?? 'slot')}-${index}`}>
+                      {String(result.underlying ?? 'Slot')}: {result.submitted ? 'submitted' : String(result.reason ?? 'no entry')}
+                    </p>
+                  ))}
+                </div>
+              ) : <p>Short-vol evaluation will appear after the next entry window.</p>}
+            </CardBody>
+          </Card>
 
           <Card>
             <CardHeader title="Interval Control" icon={<Clock size={14} />} />
