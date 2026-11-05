@@ -625,10 +625,17 @@ class Settings:
     # BANKNIFTY Sharpe 2.09/DSR 0.40/OOS 0.76, NIFTY 1.08/OOS 0.78 — evidence as
     # strong as FINNIFTY 1.35/OOS 0.47). MIDCPNIFTY is EXCLUDED (negative, Sharpe
     # -2.64). Each still only trades when its trailing-60d premium clears theta.
+    # SENSEX (BSE) added 2026-11-05: the ONLY index to clear the full 54-trial
+    # deflated gate suite outright (DSR 0.9999, PBO 0.16, CPCV 1.20, MC-DD, cost;
+    # reports/EDGE_EXPANSION... + index_strategy_fit.md). Robust to spread (Sharpe
+    # ~0.8 even at 3pts/leg). theta 3.0 is CONSERVATIVE (SENSEX's ~2.3yr BSE-UDiFF
+    # history precludes the 2019-22 walk-forward the NSE thetas use; matches the
+    # winning config's min_vrp 3.0). Revisit as history grows. BANKEX stays OFF
+    # (fails PBO/CPCV). MIDCPNIFTY stays OFF (negative).
     APPROVED_EDGES: str = field(
         default_factory=lambda: _env(
             "APPROVED_EDGES",
-            "short_vol:FINNIFTY:4.0,short_vol:NIFTY:2.0,short_vol:BANKNIFTY:1.0",
+            "short_vol:FINNIFTY:4.0,short_vol:NIFTY:2.0,short_vol:BANKNIFTY:1.0,short_vol:SENSEX:3.0",
         )
     )
 
