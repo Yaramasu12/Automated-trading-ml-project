@@ -16,8 +16,9 @@ Run:  python scripts/research_usdinr_overlay.py
 from __future__ import annotations
 
 import logging
+import re
 import sys
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 import numpy as np
@@ -28,23 +29,45 @@ logging.basicConfig(level=logging.INFO, format="%(message)s")
 logger = logging.getLogger("usdinr_overlay")
 
 HORIZON = 5
-USDINR_TOKEN = "1265"   # USDINR26JULFUT — nearest expiry, longest available history
+# Monthly USDINR future symbol, e.g. "USDINR26NOVFUT" — a 2-digit year, a
+# 3-letter month, then FUT. NSE's currency segment also lists WEEKLY futures
+# ("USDINR26N13FUT" — a letter+2-digit day), which carry almost no history, so
+# we deliberately match only the monthly series.
+_USDINR_MONTHLY_RE = re.compile(r"^USDINR\d{2}[A-Z]{3}FUT$")
+
+
+def _resolve_usdinr_monthly(master):
+    """Current near-month USDINR *monthly* future, resolved from the instrument
+    master (its token rolls every month) — never a hardcoded token, which goes
+    stale the moment that contract expires (the 2026-10-13 sweep failed exactly
+    this way with an expired USDINR26JULFUT token)."""
+    today = date.today()
+    monthlies = sorted(
+        (i for i in master.instruments.values()
+         if (i.name or "").upper() == "USDINR"
+         and _USDINR_MONTHLY_RE.match((i.symbol or "").upper())
+         and i.expiry is not None and i.expiry >= today),
+        key=lambda i: i.expiry,
+    )
+    return monthlies[0] if monthlies else None
 
 
 def fetch(days_back: int = 400):
-    import dataclasses
     from trading_platform.config import load_settings
     from trading_platform.data.angel_one_history import AngelOneHistoricalDataProvider
     from trading_platform.data.angel_one_instruments import AngelOneInstrumentMasterProvider
-    from trading_platform.domain.enums import Exchange
 
     s = load_settings()
     master = AngelOneInstrumentMasterProvider(s).load_cached()
     provider = AngelOneHistoricalDataProvider(s)
     to_dt = datetime.now(); from_dt = to_dt - timedelta(days=days_back)
-    template = next(iter(master.instruments.values()))
 
-    usdinr_inst = dataclasses.replace(template, token=USDINR_TOKEN, exchange=Exchange("CDS"), symbol="USDINRFUT")
+    usdinr_inst = _resolve_usdinr_monthly(master)
+    if usdinr_inst is None:
+        logger.error("  USDINR: no current monthly future in the instrument master")
+        return {}, {}
+    logger.info("  USDINR contract: %s (token=%s, expiry=%s)",
+                usdinr_inst.symbol, usdinr_inst.token, usdinr_inst.expiry)
     usdinr_bars = provider.get_candles(usdinr_inst, from_dt, to_dt, "ONE_DAY")
     usdinr = {b.timestamp.date(): b.close for b in usdinr_bars}
     logger.info("  USDINR: %d bars (%s..%s)", len(usdinr), min(usdinr) if usdinr else None, max(usdinr) if usdinr else None)
