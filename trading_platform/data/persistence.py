@@ -676,7 +676,7 @@ CREATE TABLE IF NOT EXISTS ingestion_runs (
 -- cumulative factor from ONLY the actions with ex_date <= the query's as_of,
 -- so a backtest "as of D" never sees a split that had not happened by D. ratio
 -- is num:den meaning `num` resulting shares per `den` prior shares (a 2:1 split
--- is num=2,den=1; a 1:1 bonus leaves 2 shares per 1 held so num=2,den=1): the
+-- is num=2,den=1, and a 1:1 bonus leaves 2 shares per 1 held so num=2,den=1): the
 -- share multiplier is num/den and the ex-date price multiplier is den/num.
 CREATE TABLE IF NOT EXISTS corporate_actions (
     id            BIGSERIAL   PRIMARY KEY,
@@ -850,6 +850,24 @@ def _vec_from_pg(val) -> list:
     return [float(v) for v in str(val).strip("[]").split(",") if v.strip()]
 
 
+def _sql_statements(ddl: str) -> list[str]:
+    """Split a DDL blob into executable statements, stripping ``--`` line
+    comments FIRST so a ';' inside a comment can't truncate the statement.
+
+    This is a recurring footgun in this file: a semicolon inside an inline SQL
+    comment silently breaks a naive ``ddl.split(';')`` — the statement after the
+    comment's ';' becomes invalid SQL, fails (harmlessly, under autocommit), and
+    the table is never created. It bit index_vol_premium once (commit e78c52a)
+    and the Phase-3 corporate_actions ratio comment again. Stripping ``--``
+    comments before the split removes the whole class of bug. ``--`` always
+    starts a line comment in this DDL (no ``--`` appears inside a string literal)."""
+    stripped = []
+    for line in ddl.splitlines():
+        cut = line.find("--")
+        stripped.append(line if cut < 0 else line[:cut])
+    return [s.strip() for s in "\n".join(stripped).split(";") if s.strip()]
+
+
 # ---------------------------------------------------------------------------
 # TradingDatabase  — unified public API
 # ---------------------------------------------------------------------------
@@ -922,12 +940,12 @@ class TradingDatabase:
                 # Order matters: extension + core tables first, then indexes,
                 # hypertables, and column migrations (each non-fatal).
                 statements = (
-                    [s.strip() for s in _PG_DDL.strip().split(";")]
-                    + [s.strip() for s in _PG_MARKET_DDL.strip().split(";")]
-                    + [s.strip() for s in _PG_INDEXES.strip().split(";")]
-                    + [s.strip() for s in _PG_MARKET_INDEXES.strip().split(";")]
-                    + [s.strip() for s in _PG_HYPERTABLES.strip().split(";")]
-                    + [s.strip() for s in _PG_MARKET_HYPERTABLES.strip().split(";")]
+                    _sql_statements(_PG_DDL)
+                    + _sql_statements(_PG_MARKET_DDL)
+                    + _sql_statements(_PG_INDEXES)
+                    + _sql_statements(_PG_MARKET_INDEXES)
+                    + _sql_statements(_PG_HYPERTABLES)
+                    + _sql_statements(_PG_MARKET_HYPERTABLES)
                     + [
                         "ALTER TABLE trades ADD COLUMN IF NOT EXISTS ts TIMESTAMPTZ DEFAULT now()",
                         "ALTER TABLE trades ADD COLUMN IF NOT EXISTS feature_vector vector(7)",
@@ -1064,7 +1082,7 @@ class TradingDatabase:
 
     def _init_sqlite(self) -> None:
         with self._cursor() as cur:
-            for stmt in (_SL_INIT.strip() + "\n" + _SL_MARKET_INIT.strip()).split(";"):
+            for stmt in _sql_statements(_SL_INIT + "\n" + _SL_MARKET_INIT):
                 stmt = stmt.strip()
                 if stmt:
                     cur.execute(stmt)
