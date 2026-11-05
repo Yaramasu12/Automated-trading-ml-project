@@ -617,8 +617,19 @@ class Settings:
     EDGE_GATE_REQUIRE_REGIME_DATA: bool = field(
         default_factory=lambda: _env_bool("EDGE_GATE_REQUIRE_REGIME_DATA", True)
     )
+    # Approved short-vol edges, each at its own walk-forward-chosen regime theta
+    # (premium_regime_filter.md): FINNIFTY>=4, NIFTY>=2, BANKNIFTY>=1. All three
+    # fail the strict single-sweep DSR (as does FINNIFTY), so all three rest on
+    # the pre-committed per-index walk-forward — the same standard that approved
+    # FINNIFTY (see reports/EDGE_EXPANSION_2026-11-04.md + index_strategy_fit.md:
+    # BANKNIFTY Sharpe 2.09/DSR 0.40/OOS 0.76, NIFTY 1.08/OOS 0.78 — evidence as
+    # strong as FINNIFTY 1.35/OOS 0.47). MIDCPNIFTY is EXCLUDED (negative, Sharpe
+    # -2.64). Each still only trades when its trailing-60d premium clears theta.
     APPROVED_EDGES: str = field(
-        default_factory=lambda: _env("APPROVED_EDGES", "short_vol:FINNIFTY:4.0")
+        default_factory=lambda: _env(
+            "APPROVED_EDGES",
+            "short_vol:FINNIFTY:4.0,short_vol:NIFTY:2.0,short_vol:BANKNIFTY:1.0",
+        )
     )
 
     # ── Existing: Swing template ─────────────────────────────

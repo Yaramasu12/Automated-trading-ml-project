@@ -166,18 +166,23 @@ from trading_platform.domain.enums import Segment
 
 class EdgeGateRuntimeWiringTests(unittest.TestCase):
     """Proves _evaluate_final_execution_gate consults the edge gate on entries.
-    Default settings approve short_vol:FINNIFTY:4.0 only."""
+    Default settings approve short_vol on FINNIFTY (theta 4), NIFTY (2) and
+    BANKNIFTY (1) — see reports/EDGE_EXPANSION_2026-11-04.md. MIDCPNIFTY and any
+    non-index underlying are NOT approved (MIDCPNIFTY backtest is negative)."""
 
     def _finnifty_option(self, runtime):
         opts = runtime.instrument_master.by_underlying("FINNIFTY", segment=Segment.OPTIONS)
         return opts[0] if opts else None
 
-    def _nifty_option(self, runtime):
-        return runtime.instrument_master.by_underlying("NIFTY", segment=Segment.OPTIONS)[0]
+    def _midcpnifty_option(self, runtime):
+        opts = runtime.instrument_master.by_underlying("MIDCPNIFTY", segment=Segment.OPTIONS)
+        return opts[0] if opts else None
 
-    def test_short_vol_nifty_entry_blocked_not_on_list(self):
+    def test_short_vol_midcpnifty_entry_blocked_not_on_list(self):
         runtime = TradingRuntime()
-        leg = self._nifty_option(runtime)
+        leg = self._midcpnifty_option(runtime)
+        if leg is None:
+            self.skipTest("no MIDCPNIFTY options in instrument master")
         intent = runtime._intent_from_payload({
             "symbol": leg.symbol, "side": "BUY", "quantity": 1, "price": 100.0,
             "strategy_name": "short_vol_condor", "metadata": {"hedged": True},
