@@ -33,6 +33,10 @@ class AngelOneHistoricalDataProvider:
     def __init__(self, settings: Settings, smart_api: Any | None = None):
         self.settings = settings
         self._smart_api = smart_api
+        # When the current cached session was established (time.monotonic()).
+        # Used to proactively re-login before Angel One expires the token
+        # server-side (AG8001 "Invalid Token"), rather than hit-and-recover.
+        self._session_started_at: float | None = None
 
     def _throttle(self) -> None:
         interval = float(os.getenv("ANGEL_ONE_CANDLE_MIN_INTERVAL", "0.4"))
@@ -60,6 +64,18 @@ class AngelOneHistoricalDataProvider:
             "fromdate": from_dt.strftime("%Y-%m-%d %H:%M"),
             "todate": to_dt.strftime("%Y-%m-%d %H:%M"),
         }
+        # P3: proactively drop a long-lived session so a server-side token
+        # expiry (AG8001 "Invalid Token") is pre-empted rather than hit and
+        # recovered. The re-login path in the loop below still handles an
+        # unexpected expiry; this just avoids the wasted round-trip + error log.
+        max_age = float(os.getenv("ANGEL_ONE_SESSION_MAX_AGE_SEC", "21600"))  # 6h
+        if (
+            self._smart_api is not None
+            and self._session_started_at is not None
+            and max_age > 0
+            and time.monotonic() - self._session_started_at > max_age
+        ):
+            self._smart_api = None
         last_response = None
         last_exc: Exception | None = None
         retries = max(1, int(os.getenv("ANGEL_ONE_CANDLE_RETRIES", "3")))
@@ -120,6 +136,7 @@ class AngelOneHistoricalDataProvider:
             raise RuntimeError(f"Angel One login failed: {session}")
         auth_health.record_success()
         self._smart_api = smart_api
+        self._session_started_at = time.monotonic()
         return smart_api
 
 

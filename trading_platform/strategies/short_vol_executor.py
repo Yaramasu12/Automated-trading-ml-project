@@ -51,6 +51,49 @@ def _env_flag(name: str, default: bool) -> bool:
     return os.getenv(name, str(default)).strip().lower() in {"1", "true", "yes", "on"}
 
 
+# P4 anti-churn: substrings that identify a DAY-STABLE entry refusal — one that
+# will reject identically on every scan for the rest of the trading day (a
+# compliance / high-impact-event block). Deliberately narrow: VRP-not-rich,
+# tail-cap, "no spot price", rate-limit and other transient reasons are NOT
+# listed, so they keep retrying on later scans.
+_DAY_STABLE_BLOCK_MARKERS: tuple[str, ...] = (
+    "high-impact event",
+    "high impact event",
+    "event risk",
+    "trading blocked",
+    "compliance_rejected",
+    "compliance rejected",
+)
+
+
+def _block_reason_text(res: dict) -> str:
+    """Best-effort human reason from an enter() result, for matching/logging."""
+    if not isinstance(res, dict):
+        return str(res)
+    parts: list[str] = []
+    if res.get("reason"):
+        parts.append(str(res["reason"]))
+    if res.get("execution") is not None:
+        parts.append(str(res["execution"]))
+    plan = res.get("plan")
+    if isinstance(plan, dict) and plan.get("reason"):
+        parts.append(str(plan["reason"]))
+    return " | ".join(parts) if parts else str(res)
+
+
+def _is_day_stable_block(res: dict) -> bool:
+    """True when an entry was refused for a reason that will reject identically
+    for the rest of the trading day (a compliance / high-impact-event block),
+    as opposed to a transient or market-dependent condition that should retry."""
+    if not isinstance(res, dict):
+        return False
+    text = _block_reason_text(res).lower()
+    # An accepted submission is never a block.
+    if res.get("submitted") and "reject" not in text and "block" not in text:
+        return False
+    return any(m in text for m in _DAY_STABLE_BLOCK_MARKERS)
+
+
 # REDESIGN §5 promotion ladder. This id is what short-vol's gate results and
 # promotion record are keyed under — keep it stable, it's a DB key.
 SHORT_VOL_STRATEGY_ID = "short_vol"
@@ -74,6 +117,13 @@ class ShortVolExecutor:
         # underlying (e.g. BANKNIFTY) doesn't burn the whole scan re-hammering the
         # same denied strike — but it DOES retry on a later scan cycle.
         self._neg_cache: dict[tuple[str, date], float] = {}
+        # P4 anti-churn: (underlying, expiry_iso) -> trade-date on which an entry
+        # was refused for a DAY-STABLE reason (a compliance/event block that will
+        # reject identically on every scan that day). We skip re-attempting that
+        # slot until the next day, instead of rebuilding + submitting + rolling
+        # back a 4-leg order every ~75s (observed 2026-10-09). Transient failures
+        # (data/rate-limit) are NOT recorded here, so they still retry normally.
+        self._blocked_today: dict[tuple[str, str], date] = {}
 
     # ── market data ─────────────────────────────────────────────────────────
 
@@ -783,9 +833,16 @@ class ShortVolExecutor:
         for underlying in self.auto_underlyings:
             for i, expiry in enumerate(self.target_expiries(underlying)):
                 structure = structures[i % len(structures)]
-                tag = {"underlying": underlying, "expiry": expiry.isoformat(), "structure": structure}
+                expiry_iso = expiry.isoformat()
+                tag = {"underlying": underlying, "expiry": expiry_iso, "structure": structure}
                 if self.has_open_condor(underlying, expiry):
                     results.append({**tag, "submitted": False, "reason": "position already open"})
+                    continue
+                # P4 anti-churn: if this slot was refused for a day-stable reason
+                # earlier today, don't rebuild + resubmit + roll back every scan.
+                if self._blocked_today.get((underlying, expiry_iso)) == now_ist.date():
+                    results.append({**tag, "submitted": False,
+                                    "reason": "skipped: day-stable block already hit today"})
                     continue
                 if attempts >= max_per_scan:
                     results.append({**tag, "submitted": False, "reason": "deferred (per-scan cap)"})
@@ -800,6 +857,12 @@ class ShortVolExecutor:
                     logger.warning("short-vol auto-enter failed for %s %s %s: %s",
                                    underlying, expiry, structure, exc)
                     res = {"submitted": False, "reason": f"error: {exc}"}
+                if _is_day_stable_block(res):
+                    self._blocked_today[(underlying, expiry_iso)] = now_ist.date()
+                    logger.info(
+                        "short-vol: %s %s refused for a day-stable reason — skipping further "
+                        "attempts today (%s)", underlying, expiry_iso, _block_reason_text(res)[:120],
+                    )
                 results.append({**tag, **res})
         return {"ran": True, "results": results}
 
