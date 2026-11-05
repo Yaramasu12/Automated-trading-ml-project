@@ -345,3 +345,27 @@ CREATE TABLE IF NOT EXISTS ingestion_runs (
     updated_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
     UNIQUE (source, trade_date)
 );
+
+-- ──────────────────────────────────────────────
+-- Phase 3 corporate actions (ADDITIVE; see persistence.py corporate_actions
+-- DDL). Point-in-time back-adjustment source for cash OHLCV. Raw eod_ohlcv is
+-- NEVER mutated: MarketDataStore.adjusted_closes() applies a cumulative factor
+-- built from ONLY the actions with ex_date <= the query's as_of date, so a
+-- backtest "as of D" never sees a split that had not happened by D. ratio is
+-- num:den = resulting shares per prior shares (2:1 split -> num=2,den=1; price
+-- multiplier on ex-date = den/num). No retention policy: durable record.
+-- ──────────────────────────────────────────────
+
+CREATE TABLE IF NOT EXISTS corporate_actions (
+    id            BIGSERIAL   PRIMARY KEY,
+    symbol        TEXT        NOT NULL,
+    ex_date       DATE        NOT NULL,
+    action_type   TEXT        NOT NULL,
+    ratio_num     DOUBLE PRECISION,
+    ratio_den     DOUBLE PRECISION,
+    raw_text      TEXT,
+    source        TEXT,
+    ingested_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (symbol, ex_date, action_type, raw_text)
+);
+CREATE INDEX IF NOT EXISTS idx_corp_actions_sym ON corporate_actions (symbol, ex_date);

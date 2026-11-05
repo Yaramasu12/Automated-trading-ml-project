@@ -41,28 +41,23 @@ Z_ENTRY = 1.0
 
 
 def fetch_front_month(days_back: int = 730):
-    from trading_platform.config import load_settings
-    from trading_platform.data.angel_one_history import AngelOneHistoricalDataProvider
-    from trading_platform.data.angel_one_instruments import AngelOneInstrumentMasterProvider
+    """REWIRED (Phase 3): the front-month contract's own close history now comes
+    from the Phase-2/3 MarketDataStore (eod_ohlcv via the MCX bhavcopy ingest),
+    not Angel One — removing this screen's contention for the live broker key.
+    Same {commodity: {date: close}} single-contract shape (roll-free), bounded
+    to the lookback window."""
+    from trading_platform.data.market_store import MarketDataStore
 
-    s = load_settings()
-    master = AngelOneInstrumentMasterProvider(s).load_cached()
-    provider = AngelOneHistoricalDataProvider(s)
-    to_dt = datetime.now(); from_dt = to_dt - timedelta(days=days_back)
-
+    store = MarketDataStore()
+    cutoff = (datetime.now() - timedelta(days=days_back)).date()
     out = {}
     for commodity in ("GOLD", "SILVER"):
-        contracts = sorted(
-            (inst for inst in master.instruments.values()
-             if inst.name == commodity and inst.symbol.endswith("FUT") and inst.expiry is not None),
-            key=lambda i: i.expiry,
-        )
-        if not contracts:
+        series = store.front_month_series(commodity)
+        bars = {d: c for d, c in series.items() if d >= cutoff}
+        if not bars:
             continue
-        front = contracts[0]
-        bars = provider.get_candles(front, from_dt, to_dt, "ONE_DAY")
-        out[commodity] = {b.timestamp.date(): b.close for b in bars}
-        logger.info("  %s front month %s: %d bars", commodity, front.symbol, len(bars))
+        out[commodity] = bars
+        logger.info("  %s front month: %d bars", commodity, len(bars))
     return out
 
 

@@ -670,6 +670,26 @@ CREATE TABLE IF NOT EXISTS ingestion_runs (
     updated_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
     UNIQUE (source, trade_date)
 );
+
+-- Phase-3 corporate actions (ADDITIVE). Point-in-time back-adjustment source:
+-- raw eod_ohlcv is NEVER mutated; MarketDataStore.adjusted_closes() applies a
+-- cumulative factor from ONLY the actions with ex_date <= the query's as_of,
+-- so a backtest "as of D" never sees a split that had not happened by D. ratio
+-- is num:den meaning `num` resulting shares per `den` prior shares (a 2:1 split
+-- is num=2,den=1; a 1:1 bonus leaves 2 shares per 1 held so num=2,den=1): the
+-- share multiplier is num/den and the ex-date price multiplier is den/num.
+CREATE TABLE IF NOT EXISTS corporate_actions (
+    id            BIGSERIAL   PRIMARY KEY,
+    symbol        TEXT        NOT NULL,
+    ex_date       DATE        NOT NULL,
+    action_type   TEXT        NOT NULL,
+    ratio_num     DOUBLE PRECISION,
+    ratio_den     DOUBLE PRECISION,
+    raw_text      TEXT,
+    source        TEXT,
+    ingested_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (symbol, ex_date, action_type, raw_text)
+);
 """
 
 _PG_MARKET_INDEXES = """
@@ -678,6 +698,7 @@ CREATE INDEX IF NOT EXISTS idx_eod_optq_underlying ON eod_option_quote (underlyi
 CREATE INDEX IF NOT EXISTS idx_instr_master_lookup ON instrument_master (tckr_symbol, segment);
 CREATE INDEX IF NOT EXISTS idx_index_spot_sym      ON index_spot (index_symbol, trade_date DESC);
 CREATE INDEX IF NOT EXISTS idx_index_iv30_sym      ON index_atm_iv30 (index_symbol, trade_date DESC);
+CREATE INDEX IF NOT EXISTS idx_corp_actions_sym    ON corporate_actions (symbol, ex_date);
 """
 
 # eod_ohlcv is monthly-chunked per the Phase-2 spec; the other two EOD
@@ -781,11 +802,24 @@ CREATE TABLE IF NOT EXISTS ingestion_runs (
     updated_at       TEXT NOT NULL,
     UNIQUE (source, trade_date)
 );
+CREATE TABLE IF NOT EXISTS corporate_actions (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    symbol        TEXT NOT NULL,
+    ex_date       TEXT NOT NULL,
+    action_type   TEXT NOT NULL,
+    ratio_num     REAL,
+    ratio_den     REAL,
+    raw_text      TEXT,
+    source        TEXT,
+    ingested_at   TEXT,
+    UNIQUE (symbol, ex_date, action_type, raw_text)
+);
 CREATE INDEX IF NOT EXISTS idx_eod_ohlcv_instr     ON eod_ohlcv (instrument_id, trade_date DESC);
 CREATE INDEX IF NOT EXISTS idx_eod_optq_underlying ON eod_option_quote (underlying, expiry, trade_date DESC);
 CREATE INDEX IF NOT EXISTS idx_instr_master_lookup ON instrument_master (tckr_symbol, segment);
 CREATE INDEX IF NOT EXISTS idx_index_spot_sym      ON index_spot (index_symbol, trade_date DESC);
 CREATE INDEX IF NOT EXISTS idx_index_iv30_sym      ON index_atm_iv30 (index_symbol, trade_date DESC);
+CREATE INDEX IF NOT EXISTS idx_corp_actions_sym    ON corporate_actions (symbol, ex_date);
 """
 
 
@@ -1878,6 +1912,82 @@ class TradingDatabase:
         for r in rows:
             r["trade_date"] = self._as_date(r.get("trade_date"))
             r["expiry"] = self._as_date(r.get("expiry"))
+        return rows
+
+    def eod_ohlcv_futures(self, underlying: str) -> list[dict]:
+        """Per-contract EOD futures bars for one underlying, every expiry, in
+        ascending (expiry, trade_date) order. Powers MarketDataStore's futures
+        curve / continuous_future builder. Matches any futures segment (NSE/BSE
+        index & stock futures live in segment 'FO'; MCX commodity futures in
+        'FUT') by requiring a non-null expiry on the instrument. Raw columns
+        only — no adjustment is applied here."""
+        sql = self._p(
+            "SELECT eo.trade_date, im.expiry, eo.open, eo.high, eo.low, eo.close, "
+            "eo.settle, eo.volume, eo.oi "
+            "FROM eod_ohlcv eo JOIN instrument_master im "
+            "ON eo.instrument_id = im.instrument_id "
+            "WHERE (im.tckr_symbol = ? OR im.underlying = ?) "
+            "AND im.instrument_type IN ('FUT', 'COMMODITY_FUT') "
+            "AND im.expiry IS NOT NULL "
+            "ORDER BY im.expiry, eo.trade_date"
+        )
+        with self._cursor() as cur:
+            cur.execute(sql, (underlying, underlying))
+            rows = self._rows(cur, cur.fetchall())
+        for r in rows:
+            r["trade_date"] = self._as_date(r.get("trade_date"))
+            r["expiry"] = self._as_date(r.get("expiry"))
+        return rows
+
+    # ---- corporate actions (Phase-3 point-in-time back-adjustment source) ----
+
+    def upsert_corporate_action(
+        self,
+        *,
+        symbol: str,
+        ex_date: date,
+        action_type: str,
+        ratio_num: float | None = None,
+        ratio_den: float | None = None,
+        raw_text: str | None = None,
+        source: str | None = None,
+    ) -> None:
+        """Idempotently record one corporate action. Natural key is
+        (symbol, ex_date, action_type, raw_text), so re-ingesting the same
+        feed row upserts in place and never double-counts."""
+        now = datetime.now(timezone.utc).isoformat()
+        vals = (symbol, self._d(ex_date), action_type, ratio_num, ratio_den,
+                raw_text or "", source, now)
+        if self._mode == "postgres":
+            sql = """INSERT INTO corporate_actions
+                     (symbol, ex_date, action_type, ratio_num, ratio_den, raw_text, source, ingested_at)
+                     VALUES (%s,%s,%s,%s,%s,%s,%s,%s)
+                     ON CONFLICT (symbol, ex_date, action_type, raw_text) DO UPDATE SET
+                       ratio_num=EXCLUDED.ratio_num, ratio_den=EXCLUDED.ratio_den,
+                       source=EXCLUDED.source, ingested_at=EXCLUDED.ingested_at"""
+        else:
+            sql = """INSERT INTO corporate_actions
+                     (symbol, ex_date, action_type, ratio_num, ratio_den, raw_text, source, ingested_at)
+                     VALUES (?,?,?,?,?,?,?,?)
+                     ON CONFLICT(symbol, ex_date, action_type, raw_text) DO UPDATE SET
+                       ratio_num=excluded.ratio_num, ratio_den=excluded.ratio_den,
+                       source=excluded.source, ingested_at=excluded.ingested_at"""
+        with self._cursor() as cur:
+            cur.execute(sql, vals)
+
+    def corporate_actions(self, symbol: str) -> list[dict]:
+        """All recorded corporate actions for one symbol, ascending by ex_date.
+        Data only — the point-in-time filtering (ex_date <= as_of) lives in
+        MarketDataStore.adjusted_closes so the as_of cutoff is explicit."""
+        sql = self._p(
+            "SELECT symbol, ex_date, action_type, ratio_num, ratio_den, raw_text, source "
+            "FROM corporate_actions WHERE symbol = ? ORDER BY ex_date"
+        )
+        with self._cursor() as cur:
+            cur.execute(sql, (symbol,))
+            rows = self._rows(cur, cur.fetchall())
+        for r in rows:
+            r["ex_date"] = self._as_date(r.get("ex_date"))
         return rows
 
     # ---- ingestion_runs (checkpoint/lease, mirrors learning_runs) ----

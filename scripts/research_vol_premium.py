@@ -20,7 +20,6 @@ tail is survivable (short vol that blows up in one crash is not a real edge).
 """
 from __future__ import annotations
 
-import dataclasses
 import logging
 import sys
 from datetime import datetime, timedelta
@@ -35,28 +34,23 @@ logger = logging.getLogger("vol_premium")
 
 
 def fetch(days: int = 900):
-    from trading_platform.config import load_settings
-    from trading_platform.data.angel_one_history import AngelOneHistoricalDataProvider
-    from trading_platform.data.angel_one_instruments import AngelOneInstrumentMasterProvider
-    from trading_platform.domain.enums import Exchange
+    """REWIRED (Phase 3): the implied-vol series and NIFTY spot now come from the
+    MarketDataStore instead of Angel One, so this screen no longer competes with
+    the live loop for the broker key. The IV proxy is the store's modeled 30-day
+    ATM implied vol for NIFTY (index_atm_iv30) — the same 30-day constant-
+    maturity implied-vol construct India VIX reports, in percent — and spot is
+    the store's NIFTY daily close (put-call-parity spot / index_spot). The
+    premium = IV - forward realized vol logic below is unchanged."""
+    from trading_platform.data.market_store import MarketDataStore
 
-    s = load_settings()
-    master = AngelOneInstrumentMasterProvider(s).load_cached()
-    h = AngelOneHistoricalDataProvider(s)
-    to_dt = datetime.now(); from_dt = to_dt - timedelta(days=days)
-    nifty = master.get("NIFTY")
-
-    def series(token):
-        inst = dataclasses.replace(nifty, token=token, exchange=Exchange("NSE"))
-        bars = h.get_candles(inst, from_dt, to_dt, "ONE_DAY")
-        return {b.timestamp.date(): b.close for b in bars}
-
-    vix = series("99926017")     # India VIX (implied vol, %)
-    spot = series("99926000")    # NIFTY spot
-    dates = sorted(set(vix) & set(spot))
+    store = MarketDataStore()
+    cutoff = (datetime.now() - timedelta(days=days)).date()
+    iv_series = {d: v for d, v in store.iv30("NIFTY").items() if d >= cutoff}   # modeled 30d ATM IV, %
+    spot_series = {b.day: b.close for b in store.daily_closes("NIFTY") if b.day >= cutoff}
+    dates = sorted(set(iv_series) & set(spot_series))
     return (np.array(dates),
-            np.array([vix[d] for d in dates]),
-            np.array([spot[d] for d in dates]))
+            np.array([iv_series[d] for d in dates]),
+            np.array([spot_series[d] for d in dates]))
 
 
 def main() -> int:

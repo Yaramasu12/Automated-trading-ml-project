@@ -30,9 +30,14 @@ if str(REPO) not in sys.path:
     sys.path.insert(0, str(REPO))
 
 from trading_platform.data.persistence import TradingDatabase  # noqa: E402
-from trading_platform.data.ingest import nse_bhavcopy, bse_bhavcopy  # noqa: E402
+from trading_platform.data.ingest import nse_bhavcopy, bse_bhavcopy, mcx_bhavcopy  # noqa: E402
 
-SOURCES = {"nse": nse_bhavcopy, "bse": bse_bhavcopy}
+# mcx: MCX commodity-futures bhavcopy. Its own ingestion_runs lease (SOURCE
+# 'mcx_bhavcopy'), fully independent of nse/bse. NOTE: MCX fronts its site with
+# an Akamai WAF that blocks the stdlib HTTP stack, so a LIVE `--source mcx` run
+# marks days FAILED (block page) until the JSON is supplied from a TLS-
+# impersonating edge fetcher — see mcx_bhavcopy.py. ZERO Angel One regardless.
+SOURCES = {"nse": nse_bhavcopy, "bse": bse_bhavcopy, "mcx": mcx_bhavcopy}
 
 
 def _daterange(start: date, end: date):
@@ -89,7 +94,7 @@ def run_source(db, name: str, start: date, end: date, *, lease_owner: str,
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--source", choices=("nse", "bse", "all"), default="nse")
+    ap.add_argument("--source", choices=("nse", "bse", "mcx", "all"), default="nse")
     ap.add_argument("--date", help="a single ISO trade date (overrides start/end)")
     ap.add_argument("--start", help="first ISO trade date")
     ap.add_argument("--end", default=date.today().isoformat(), help="last ISO trade date")
@@ -107,7 +112,7 @@ def main() -> int:
             ap.error("provide --date or --start")
         start, end = date.fromisoformat(args.start), date.fromisoformat(args.end)
 
-    names = ("nse", "bse") if args.source == "all" else (args.source,)
+    names = ("nse", "bse", "mcx") if args.source == "all" else (args.source,)
     db = TradingDatabase()
     print(f"ingest backend={db.backend} sources={names} window={start}..{end}", flush=True)
     grand = {}

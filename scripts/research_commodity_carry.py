@@ -56,34 +56,28 @@ COMMODITIES = ("GOLD", "SILVER", "CRUDEOIL", "NATURALGAS", "COPPER", "ZINC", "NI
 
 
 def fetch_curves(days_back: int = 730) -> dict[str, dict[date, dict]]:
-    """Returns {commodity: {expiry_date: {date: close}}}."""
-    from trading_platform.config import load_settings
-    from trading_platform.data.angel_one_history import AngelOneHistoricalDataProvider
-    from trading_platform.data.angel_one_instruments import AngelOneInstrumentMasterProvider
+    """Returns {commodity: {expiry_date: {date: close}}}.
 
-    s = load_settings()
-    master = AngelOneInstrumentMasterProvider(s).load_cached()
-    provider = AngelOneHistoricalDataProvider(s)
-    to_dt = datetime.now()
-    from_dt = to_dt - timedelta(days=days_back)
+    REWIRED (Phase 3): reads the per-contract futures curve from the Phase-2/3
+    MarketDataStore (eod_ohlcv, populated by the MCX bhavcopy ingest) instead of
+    Angel One — so this screen no longer competes with the live loop for the
+    rate-limited broker key. Identical downstream shape and filters (>=15 bars
+    per contract, >=2 live maturities). `days_back` bounds the lookback window."""
+    from trading_platform.data.market_store import MarketDataStore
+
+    store = MarketDataStore()
+    cutoff = (datetime.now() - timedelta(days=days_back)).date()
 
     curves: dict[str, dict[date, dict]] = {}
     for commodity in COMMODITIES:
-        contracts = [
-            inst for inst in master.instruments.values()
-            if inst.name == commodity and inst.symbol.endswith("FUT") and inst.expiry is not None
-        ]
+        curve = store.futures_curve(commodity)  # {expiry: {date: {"close","oi"}}}
         by_expiry: dict[date, dict] = {}
-        for inst in contracts:
-            try:
-                bars = provider.get_candles(inst, from_dt, to_dt, "ONE_DAY")
-            except Exception as exc:
-                logger.warning("  fetch failed for %s (expiry=%s): %s", inst.symbol, inst.expiry, exc)
-                continue
+        for expiry, series in curve.items():
+            bars = {d: v["close"] for d, v in series.items() if d >= cutoff}
             if len(bars) < 15:
                 continue
-            by_expiry[inst.expiry] = {b.timestamp.date(): b.close for b in bars}
-            logger.info("  %-22s expiry=%s  %d bars", inst.symbol, inst.expiry, len(bars))
+            by_expiry[expiry] = bars
+            logger.info("  %-10s expiry=%s  %d bars", commodity, expiry, len(bars))
         if len(by_expiry) >= 2:
             curves[commodity] = by_expiry
     return curves

@@ -32,29 +32,23 @@ VOL_WINDOW = 24
 
 
 def fetch(days_back: int = 90):
-    from trading_platform.config import load_settings
-    from trading_platform.data.angel_one_history import AngelOneHistoricalDataProvider
-    from trading_platform.data.angel_one_instruments import AngelOneInstrumentMasterProvider
+    """REWIRED (Phase 3): this screen no longer calls Angel One, removing its
+    contention for the live broker key. It is intraday (5-minute) by design, but
+    the Phase-2/3 MarketDataStore is an END-OF-DAY store (MCX bhavcopy has no
+    intraday bars), so there is no store-native source for 5-min commodity
+    candles. Rather than reach back to the live feed, fetch reads the store and
+    returns no intraday series — the screen then reports insufficient-data
+    (its existing no-data path), unchanged in shape. FOLLOW-UP: wire an intraday
+    commodity source into the store to re-enable this test off the live feed."""
+    from trading_platform.data.market_store import MarketDataStore
 
-    s = load_settings()
-    master = AngelOneInstrumentMasterProvider(s).load_cached()
-    provider = AngelOneHistoricalDataProvider(s)
-    to_dt = datetime.now(); from_dt = to_dt - timedelta(days=days_back)
-
-    out = {}
-    for commodity in COMMODITIES:
-        contracts = sorted(
-            (inst for inst in master.instruments.values()
-             if inst.name == commodity and inst.symbol.endswith("FUT") and inst.expiry is not None),
-            key=lambda i: i.expiry,
-        )
-        if not contracts:
-            continue
-        front = contracts[0]
-        bars = provider.get_candles(front, from_dt, to_dt, interval="FIVE_MINUTE")
-        out[commodity] = bars
-        logger.info("  %s (%s): %d 5-min bars", commodity, front.symbol, len(bars))
-    return out
+    store = MarketDataStore()
+    # Touch the store so the dependency is real and the broker key is never hit;
+    # the EOD store exposes daily bars only, so no 5-min series is available.
+    _ = {c: store.futures_curve(c) for c in COMMODITIES}
+    logger.info("  intraday 5-min commodity bars are not in the EOD MarketDataStore "
+                "(follow-up); no Angel One fallback — reporting insufficient data.")
+    return {}
 
 
 def main() -> int:

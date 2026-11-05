@@ -40,35 +40,29 @@ PAIRS = [
 
 
 def fetch(days_back: int = 400):
-    import dataclasses
-    from trading_platform.config import load_settings
-    from trading_platform.data.angel_one_history import AngelOneHistoricalDataProvider
-    from trading_platform.data.angel_one_instruments import AngelOneInstrumentMasterProvider
-    from trading_platform.domain.enums import Exchange
+    """REWIRED (Phase 3): index spot comes from the MarketDataStore index_spot
+    series and the near-month future from the store's front-month futures
+    contract (eod_ohlcv, segment FO) — no Angel One, so this screen no longer
+    races the live loop for the broker key. The near-month contract is still a
+    single live contract (store.front_month_series picks the nearest unexpired
+    expiry), preserving the single-contract-history limitation the verdict
+    already accounts for. Same {label: (dates, spot, fut)} shape."""
+    from trading_platform.data.market_store import MarketDataStore
 
-    s = load_settings()
-    master = AngelOneInstrumentMasterProvider(s).load_cached()
-    provider = AngelOneHistoricalDataProvider(s)
-    to_dt = datetime.now(); from_dt = to_dt - timedelta(days=days_back)
-    template = next(iter(master.instruments.values()))
+    store = MarketDataStore()
+    cutoff = (datetime.now() - timedelta(days=days_back)).date()
 
     results = {}
-    for label, spot_tok in PAIRS:
-        spot_inst = dataclasses.replace(template, token=spot_tok, exchange=Exchange("NSE"), symbol=label)
-        try:
-            fut_inst = master.select_future(label, to_dt.date())
-            fut_sym = fut_inst.symbol
-        except Exception as exc:
-            logger.info("  %-10s no current futures contract in master (%s) — skipping", label, exc)
+    for label, _spot_tok in PAIRS:
+        spot = {b.day: b.close for b in store.daily_closes(label) if b.day >= cutoff}
+        fut = {d: c for d, c in store.front_month_series(label).items() if d >= cutoff}
+        if not fut:
+            logger.info("  %-10s no futures contract in the store — skipping", label)
             results[label] = ([], {}, {})
             continue
-        spot_bars = provider.get_candles(spot_inst, from_dt, to_dt, "ONE_DAY")
-        fut_bars = provider.get_candles(fut_inst, from_dt, to_dt, "ONE_DAY")
-        spot = {b.timestamp.date(): b.close for b in spot_bars}
-        fut = {b.timestamp.date(): b.close for b in fut_bars}
         dates = sorted(set(spot) & set(fut))
-        logger.info("  %-10s spot=%d bars  future(%s)=%d bars  overlap=%d days",
-                    label, len(spot), fut_sym, len(fut), len(dates))
+        logger.info("  %-10s spot=%d bars  future=%d bars  overlap=%d days",
+                    label, len(spot), len(fut), len(dates))
         results[label] = (dates, spot, fut)
     return results
 
