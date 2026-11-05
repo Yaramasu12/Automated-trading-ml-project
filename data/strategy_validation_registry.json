@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-10-13T14:57:56+00:00",
+  "generated_at": "2026-11-05T04:41:24+00:00",
   "results": [
     {
       "strategy_name": "long_straddle",
@@ -58,7 +58,7 @@
       "max_drawdown": 0.4292432910644401,
       "dsr_message": "FAILED: search too narrow \u2014 n_trials=4 < DSR_MIN_TRIALS=54; DSR passes but on too few configs to trust (under-counts selection bias; DSR=1.0000)",
       "pbo_message": "PBO=0.2429 (threshold <= 0.4), n_splits=70, n_variants=4",
-      "evaluated_at": "2026-10-13T14:55:18+00:00"
+      "evaluated_at": "2026-11-05T04:37:49+00:00"
     },
     {
       "strategy_name": "equity_momentum",
@@ -69,7 +69,7 @@
       "max_drawdown": 0.21165553326256795,
       "dsr_message": "FAILED: search too narrow \u2014 n_trials=4 < DSR_MIN_TRIALS=54; DSR passes but on too few configs to trust (under-counts selection bias; DSR=1.0000)",
       "pbo_message": "PBO=0.2286 (threshold <= 0.4), n_splits=70, n_variants=4",
-      "evaluated_at": "2026-10-13T14:55:20+00:00"
+      "evaluated_at": "2026-11-05T04:37:52+00:00"
     },
     {
       "strategy_name": "equity_momentum",
@@ -80,7 +80,7 @@
       "max_drawdown": 0.3356562440986553,
       "dsr_message": "FAILED: search too narrow \u2014 n_trials=4 < DSR_MIN_TRIALS=54; DSR passes but on too few configs to trust (under-counts selection bias; DSR=1.0000)",
       "pbo_message": "PBO=0.6000 (threshold <= 0.4), n_splits=70, n_variants=4",
-      "evaluated_at": "2026-10-13T14:55:23+00:00"
+      "evaluated_at": "2026-11-05T04:37:55+00:00"
     },
     {
       "strategy_name": "equity_momentum",
@@ -91,7 +91,7 @@
       "max_drawdown": 0.35418559258354465,
       "dsr_message": "DSR=0.0000 (threshold >= 0.5), n_trials=4, SR_hat=-0.0753, SR_0=0.0662",
       "pbo_message": "PBO=0.8429 (threshold <= 0.4), n_splits=70, n_variants=4",
-      "evaluated_at": "2026-10-13T14:55:25+00:00"
+      "evaluated_at": "2026-11-05T04:37:58+00:00"
     },
     {
       "strategy_name": "equity_momentum",
@@ -102,7 +102,7 @@
       "max_drawdown": 0.45350049189911107,
       "dsr_message": "DSR=0.3177 (threshold >= 0.5), n_trials=4, SR_hat=0.0310, SR_0=0.0421",
       "pbo_message": "PBO=0.6286 (threshold <= 0.4), n_splits=70, n_variants=4",
-      "evaluated_at": "2026-10-13T14:55:27+00:00"
+      "evaluated_at": "2026-11-05T04:38:01+00:00"
     },
     {
       "strategy_name": "equity_momentum",
@@ -113,7 +113,7 @@
       "max_drawdown": 0.20026715093129563,
       "dsr_message": "DSR=0.0000 (threshold >= 0.5), n_trials=4, SR_hat=-0.0084, SR_0=0.0863",
       "pbo_message": "PBO=0.4286 (threshold <= 0.4), n_splits=70, n_variants=4",
-      "evaluated_at": "2026-10-13T14:55:29+00:00"
+      "evaluated_at": "2026-11-05T04:38:04+00:00"
     },
     {
       "strategy_name": "equity_momentum",
@@ -124,7 +124,7 @@
       "max_drawdown": 0.2325686607390805,
       "dsr_message": "FAILED: search too narrow \u2014 n_trials=4 < DSR_MIN_TRIALS=54; DSR passes but on too few configs to trust (under-counts selection bias; DSR=0.9829)",
       "pbo_message": "PBO=0.9000 (threshold <= 0.4), n_splits=70, n_variants=4",
-      "evaluated_at": "2026-10-13T14:55:31+00:00"
+      "evaluated_at": "2026-11-05T04:38:07+00:00"
     },
     {
       "strategy_name": "equity_momentum",
@@ -135,7 +135,7 @@
       "max_drawdown": 0.30627433461405684,
       "dsr_message": "FAILED: search too narrow \u2014 n_trials=4 < DSR_MIN_TRIALS=54; DSR passes but on too few configs to trust (under-counts selection bias; DSR=1.0000)",
       "pbo_message": "PBO=0.0286 (threshold <= 0.4), n_splits=70, n_variants=4",
-      "evaluated_at": "2026-10-13T14:55:33+00:00"
+      "evaluated_at": "2026-11-05T04:38:09+00:00"
     },
     {
       "strategy_name": "equity_momentum",
@@ -146,7 +146,7 @@
       "max_drawdown": 0.5331632813392658,
       "dsr_message": "DSR=0.0000 (threshold >= 0.5), n_trials=4, SR_hat=-0.4583, SR_0=0.0292",
       "pbo_message": "PBO=0.7714 (threshold <= 0.4), n_splits=70, n_variants=4",
-      "evaluated_at": "2026-10-13T14:55:36+00:00"
+      "evaluated_at": "2026-11-05T04:38:13+00:00"
     },
     {
       "strategy_name": "equity_momentum",
@@ -157,7 +157,7 @@
       "max_drawdown": 0.5834627131257908,
       "dsr_message": "DSR=0.0200 (threshold >= 0.5), n_trials=4, SR_hat=0.0487, SR_0=0.0974",
       "pbo_message": "PBO=0.1286 (threshold <= 0.4), n_splits=70, n_variants=4",
-      "evaluated_at": "2026-10-13T14:55:38+00:00"
+      "evaluated_at": "2026-11-05T04:38:16+00:00"
     },
     {
       "strategy_name": "swing_trend",
@@ -168,7 +168,7 @@
       "max_drawdown": 0.5471537315162944,
       "dsr_message": "FAILED: search too narrow \u2014 n_trials=4 < DSR_MIN_TRIALS=54; DSR passes but on too few configs to trust (under-counts selection bias; DSR=1.0000)",
       "pbo_message": "PBO=0.9143 (threshold <= 0.4), n_splits=70, n_variants=4",
-      "evaluated_at": "2026-10-13T14:55:39+00:00"
+      "evaluated_at": "2026-11-05T04:38:17+00:00"
     },
     {
       "strategy_name": "swing_trend",
@@ -179,7 +179,7 @@
       "max_drawdown": 0.2833777093294334,
       "dsr_message": "FAILED: search too narrow \u2014 n_trials=4 < DSR_MIN_TRIALS=54; DSR passes but on too few configs to trust (under-counts selection bias; DSR=1.0000)",
       "pbo_message": "PBO=0.3000 (threshold <= 0.4), n_splits=70, n_variants=4",
-      "evaluated_at": "2026-10-13T14:55:40+00:00"
+      "evaluated_at": "2026-11-05T04:38:19+00:00"
     },
     {
       "strategy_name": "swing_trend",
@@ -190,7 +190,7 @@
       "max_drawdown": 0.31185605951343554,
       "dsr_message": "FAILED: search too narrow \u2014 n_trials=4 < DSR_MIN_TRIALS=54; DSR passes but on too few configs to trust (under-counts selection bias; DSR=1.0000)",
       "pbo_message": "PBO=0.0000 (threshold <= 0.4), n_splits=70, n_variants=4",
-      "evaluated_at": "2026-10-13T14:55:41+00:00"
+      "evaluated_at": "2026-11-05T04:38:20+00:00"
     },
     {
       "strategy_name": "swing_trend",
@@ -201,7 +201,7 @@
       "max_drawdown": 0.39287118727641696,
       "dsr_message": "DSR=0.2320 (threshold >= 0.5), n_trials=4, SR_hat=0.1408, SR_0=0.1587",
       "pbo_message": "PBO=0.7571 (threshold <= 0.4), n_splits=70, n_variants=4",
-      "evaluated_at": "2026-10-13T14:55:42+00:00"
+      "evaluated_at": "2026-11-05T04:38:22+00:00"
     },
     {
       "strategy_name": "swing_trend",
@@ -212,7 +212,7 @@
       "max_drawdown": 0.5993307280372128,
       "dsr_message": "DSR=0.0000 (threshold >= 0.5), n_trials=4, SR_hat=-0.2192, SR_0=0.0549",
       "pbo_message": "PBO=0.9286 (threshold <= 0.4), n_splits=70, n_variants=4",
-      "evaluated_at": "2026-10-13T14:55:44+00:00"
+      "evaluated_at": "2026-11-05T04:38:24+00:00"
     },
     {
       "strategy_name": "swing_trend",
@@ -223,7 +223,7 @@
       "max_drawdown": 0.26336726539387467,
       "dsr_message": "FAILED: search too narrow \u2014 n_trials=4 < DSR_MIN_TRIALS=54; DSR passes but on too few configs to trust (under-counts selection bias; DSR=0.9600)",
       "pbo_message": "PBO=0.3286 (threshold <= 0.4), n_splits=70, n_variants=4",
-      "evaluated_at": "2026-10-13T14:55:45+00:00"
+      "evaluated_at": "2026-11-05T04:38:25+00:00"
     },
     {
       "strategy_name": "swing_trend",
@@ -234,7 +234,7 @@
       "max_drawdown": 0.26376139189268094,
       "dsr_message": "DSR=0.0001 (threshold >= 0.5), n_trials=4, SR_hat=0.0920, SR_0=0.1846",
       "pbo_message": "PBO=0.0429 (threshold <= 0.4), n_splits=70, n_variants=4",
-      "evaluated_at": "2026-10-13T14:55:47+00:00"
+      "evaluated_at": "2026-11-05T04:38:27+00:00"
     },
     {
       "strategy_name": "swing_trend",
@@ -245,7 +245,7 @@
       "max_drawdown": 0.31159740508716854,
       "dsr_message": "FAILED: search too narrow \u2014 n_trials=4 < DSR_MIN_TRIALS=54; DSR passes but on too few configs to trust (under-counts selection bias; DSR=1.0000)",
       "pbo_message": "PBO=0.5429 (threshold <= 0.4), n_splits=70, n_variants=4",
-      "evaluated_at": "2026-10-13T14:55:48+00:00"
+      "evaluated_at": "2026-11-05T04:38:28+00:00"
     },
     {
       "strategy_name": "swing_trend",
@@ -256,7 +256,7 @@
       "max_drawdown": 0.4480811377951694,
       "dsr_message": "DSR=0.0000 (threshold >= 0.5), n_trials=4, SR_hat=-0.2107, SR_0=0.1227",
       "pbo_message": "PBO=0.2714 (threshold <= 0.4), n_splits=70, n_variants=4",
-      "evaluated_at": "2026-10-13T14:55:49+00:00"
+      "evaluated_at": "2026-11-05T04:38:30+00:00"
     },
     {
       "strategy_name": "swing_trend",
@@ -267,7 +267,7 @@
       "max_drawdown": 0.5167246887210457,
       "dsr_message": "DSR=0.0425 (threshold >= 0.5), n_trials=4, SR_hat=0.1158, SR_0=0.1574",
       "pbo_message": "PBO=0.4857 (threshold <= 0.4), n_splits=70, n_variants=4",
-      "evaluated_at": "2026-10-13T14:55:51+00:00"
+      "evaluated_at": "2026-11-05T04:38:32+00:00"
     },
     {
       "strategy_name": "gap_strategy",
@@ -278,7 +278,7 @@
       "max_drawdown": 0.43854965800171286,
       "dsr_message": "DSR=0.0000 (threshold >= 0.5), n_trials=4, SR_hat=-0.1474, SR_0=0.1021",
       "pbo_message": "PBO=0.1143 (threshold <= 0.4), n_splits=70, n_variants=4",
-      "evaluated_at": "2026-10-13T14:55:51+00:00"
+      "evaluated_at": "2026-11-05T04:38:32+00:00"
     },
     {
       "strategy_name": "gap_strategy",
@@ -289,7 +289,7 @@
       "max_drawdown": 0.19262259226217954,
       "dsr_message": "FAILED: search too narrow \u2014 n_trials=4 < DSR_MIN_TRIALS=54; DSR passes but on too few configs to trust (under-counts selection bias; DSR=1.0000)",
       "pbo_message": "PBO=0.9714 (threshold <= 0.4), n_splits=70, n_variants=4",
-      "evaluated_at": "2026-10-13T14:55:52+00:00"
+      "evaluated_at": "2026-11-05T04:38:33+00:00"
     },
     {
       "strategy_name": "gap_strategy",
@@ -300,7 +300,7 @@
       "max_drawdown": 0.30253712352407497,
       "dsr_message": "FAILED: search too narrow \u2014 n_trials=4 < DSR_MIN_TRIALS=54; DSR passes but on too few configs to trust (under-counts selection bias; DSR=1.0000)",
       "pbo_message": "PBO=0.4143 (threshold <= 0.4), n_splits=70, n_variants=4",
-      "evaluated_at": "2026-10-13T14:55:52+00:00"
+      "evaluated_at": "2026-11-05T04:38:33+00:00"
     },
     {
       "strategy_name": "gap_strategy",
@@ -311,7 +311,7 @@
       "max_drawdown": 0.21624972635577644,
       "dsr_message": "DSR=0.0000 (threshold >= 0.5), n_trials=4, SR_hat=-0.0092, SR_0=0.2747",
       "pbo_message": "PBO=0.0000 (threshold <= 0.4), n_splits=70, n_variants=4",
-      "evaluated_at": "2026-10-13T14:55:53+00:00"
+      "evaluated_at": "2026-11-05T04:38:34+00:00"
     },
     {
       "strategy_name": "gap_strategy",
@@ -322,7 +322,7 @@
       "max_drawdown": 0.30455541967918315,
       "dsr_message": "DSR=0.0524 (threshold >= 0.5), n_trials=4, SR_hat=0.0681, SR_0=0.1043",
       "pbo_message": "PBO=0.9143 (threshold <= 0.4), n_splits=70, n_variants=4",
-      "evaluated_at": "2026-10-13T14:55:53+00:00"
+      "evaluated_at": "2026-11-05T04:38:35+00:00"
     },
     {
       "strategy_name": "gap_strategy",
@@ -333,7 +333,7 @@
       "max_drawdown": 0.0,
       "dsr_message": "FAILED: search too narrow \u2014 n_trials=4 < DSR_MIN_TRIALS=54; DSR passes but on too few configs to trust (under-counts selection bias; DSR=0.5000)",
       "pbo_message": "PBO=0.0000 (threshold <= 0.4), n_splits=70, n_variants=4",
-      "evaluated_at": "2026-10-13T14:55:54+00:00"
+      "evaluated_at": "2026-11-05T04:38:35+00:00"
     },
     {
       "strategy_name": "gap_strategy",
@@ -344,7 +344,7 @@
       "max_drawdown": 0.0,
       "dsr_message": "FAILED: search too narrow \u2014 n_trials=4 < DSR_MIN_TRIALS=54; DSR passes but on too few configs to trust (under-counts selection bias; DSR=0.5000)",
       "pbo_message": "PBO=0.0000 (threshold <= 0.4), n_splits=70, n_variants=4",
-      "evaluated_at": "2026-10-13T14:55:54+00:00"
+      "evaluated_at": "2026-11-05T04:38:36+00:00"
     },
     {
       "strategy_name": "gap_strategy",
@@ -355,7 +355,7 @@
       "max_drawdown": 0.279352396027117,
       "dsr_message": "FAILED: search too narrow \u2014 n_trials=4 < DSR_MIN_TRIALS=54; DSR passes but on too few configs to trust (under-counts selection bias; DSR=1.0000)",
       "pbo_message": "PBO=0.4143 (threshold <= 0.4), n_splits=70, n_variants=4",
-      "evaluated_at": "2026-10-13T14:55:54+00:00"
+      "evaluated_at": "2026-11-05T04:38:36+00:00"
     },
     {
       "strategy_name": "gap_strategy",
@@ -366,7 +366,7 @@
       "max_drawdown": 0.29792938521229934,
       "dsr_message": "DSR=0.0000 (threshold >= 0.5), n_trials=4, SR_hat=-0.0288, SR_0=0.0884",
       "pbo_message": "PBO=0.3857 (threshold <= 0.4), n_splits=70, n_variants=4",
-      "evaluated_at": "2026-10-13T14:55:55+00:00"
+      "evaluated_at": "2026-11-05T04:38:36+00:00"
     },
     {
       "strategy_name": "gap_strategy",
@@ -377,7 +377,7 @@
       "max_drawdown": 0.6273761640425778,
       "dsr_message": "DSR=0.0000 (threshold >= 0.5), n_trials=4, SR_hat=-0.4240, SR_0=0.1045",
       "pbo_message": "PBO=0.5714 (threshold <= 0.4), n_splits=70, n_variants=4",
-      "evaluated_at": "2026-10-13T14:55:55+00:00"
+      "evaluated_at": "2026-11-05T04:38:37+00:00"
     },
     {
       "strategy_name": "mean_reversion",
@@ -388,7 +388,7 @@
       "max_drawdown": 0.17991328563176298,
       "dsr_message": "DSR=0.4756 (threshold >= 0.5), n_trials=4, SR_hat=0.0648, SR_0=0.0663",
       "pbo_message": "PBO=0.7143 (threshold <= 0.4), n_splits=70, n_variants=4",
-      "evaluated_at": "2026-10-13T14:55:58+00:00"
+      "evaluated_at": "2026-11-05T04:38:41+00:00"
     },
     {
       "strategy_name": "mean_reversion",
@@ -399,7 +399,7 @@
       "max_drawdown": 0.16561530434061025,
       "dsr_message": "FAILED: search too narrow \u2014 n_trials=4 < DSR_MIN_TRIALS=54; DSR passes but on too few configs to trust (under-counts selection bias; DSR=0.9998)",
       "pbo_message": "PBO=0.3286 (threshold <= 0.4), n_splits=70, n_variants=4",
-      "evaluated_at": "2026-10-13T14:56:01+00:00"
+      "evaluated_at": "2026-11-05T04:38:45+00:00"
     },
     {
       "strategy_name": "mean_reversion",
@@ -410,7 +410,7 @@
       "max_drawdown": 0.1816669915121886,
       "dsr_message": "DSR=0.0000 (threshold >= 0.5), n_trials=4, SR_hat=-0.1090, SR_0=0.0654",
       "pbo_message": "PBO=0.4571 (threshold <= 0.4), n_splits=70, n_variants=4",
-      "evaluated_at": "2026-10-13T14:56:04+00:00"
+      "evaluated_at": "2026-11-05T04:38:50+00:00"
     },
     {
       "strategy_name": "mean_reversion",
@@ -421,7 +421,7 @@
       "max_drawdown": 0.18236742084727564,
       "dsr_message": "DSR=0.0000 (threshold >= 0.5), n_trials=4, SR_hat=-0.2025, SR_0=0.0760",
       "pbo_message": "PBO=0.8000 (threshold <= 0.4), n_splits=70, n_variants=4",
-      "evaluated_at": "2026-10-13T14:56:07+00:00"
+      "evaluated_at": "2026-11-05T04:38:54+00:00"
     },
     {
       "strategy_name": "mean_reversion",
@@ -432,7 +432,7 @@
       "max_drawdown": 0.07493772111715655,
       "dsr_message": "FAILED: search too narrow \u2014 n_trials=4 < DSR_MIN_TRIALS=54; DSR passes but on too few configs to trust (under-counts selection bias; DSR=1.0000)",
       "pbo_message": "PBO=0.6571 (threshold <= 0.4), n_splits=70, n_variants=4",
-      "evaluated_at": "2026-10-13T14:56:09+00:00"
+      "evaluated_at": "2026-11-05T04:38:58+00:00"
     },
     {
       "strategy_name": "mean_reversion",
@@ -443,7 +443,7 @@
       "max_drawdown": 0.10673931309156058,
       "dsr_message": "FAILED: search too narrow \u2014 n_trials=4 < DSR_MIN_TRIALS=54; DSR passes but on too few configs to trust (under-counts selection bias; DSR=1.0000)",
       "pbo_message": "PBO=0.1571 (threshold <= 0.4), n_splits=70, n_variants=4",
-      "evaluated_at": "2026-10-13T14:56:12+00:00"
+      "evaluated_at": "2026-11-05T04:39:02+00:00"
     },
     {
       "strategy_name": "mean_reversion",
@@ -454,7 +454,7 @@
       "max_drawdown": 0.09394047665373985,
       "dsr_message": "FAILED: search too narrow \u2014 n_trials=4 < DSR_MIN_TRIALS=54; DSR passes but on too few configs to trust (under-counts selection bias; DSR=1.0000)",
       "pbo_message": "PBO=0.0714 (threshold <= 0.4), n_splits=70, n_variants=4",
-      "evaluated_at": "2026-10-13T14:56:15+00:00"
+      "evaluated_at": "2026-11-05T04:39:06+00:00"
     },
     {
       "strategy_name": "mean_reversion",
@@ -465,7 +465,7 @@
       "max_drawdown": 0.10940403423440345,
       "dsr_message": "DSR=0.0000 (threshold >= 0.5), n_trials=4, SR_hat=-0.2034, SR_0=0.0788",
       "pbo_message": "PBO=0.4429 (threshold <= 0.4), n_splits=70, n_variants=4",
-      "evaluated_at": "2026-10-13T14:56:18+00:00"
+      "evaluated_at": "2026-11-05T04:39:10+00:00"
     },
     {
       "strategy_name": "mean_reversion",
@@ -476,7 +476,7 @@
       "max_drawdown": 0.2963740623521942,
       "dsr_message": "DSR=0.0000 (threshold >= 0.5), n_trials=4, SR_hat=-0.4851, SR_0=0.0537",
       "pbo_message": "PBO=0.4000 (threshold <= 0.4), n_splits=70, n_variants=4",
-      "evaluated_at": "2026-10-13T14:56:21+00:00"
+      "evaluated_at": "2026-11-05T04:39:14+00:00"
     },
     {
       "strategy_name": "mean_reversion",
@@ -487,7 +487,7 @@
       "max_drawdown": 0.3879179321524042,
       "dsr_message": "DSR=0.0000 (threshold >= 0.5), n_trials=4, SR_hat=-0.7744, SR_0=0.0559",
       "pbo_message": "PBO=0.3429 (threshold <= 0.4), n_splits=70, n_variants=4",
-      "evaluated_at": "2026-10-13T14:56:24+00:00"
+      "evaluated_at": "2026-11-05T04:39:18+00:00"
     },
     {
       "strategy_name": "breakout",
@@ -498,7 +498,7 @@
       "max_drawdown": 0.4993152368135128,
       "dsr_message": "DSR=0.0000 (threshold >= 0.5), n_trials=4, SR_hat=-0.4256, SR_0=0.0120",
       "pbo_message": "PBO=1.0000 (threshold <= 0.4), n_splits=70, n_variants=4",
-      "evaluated_at": "2026-10-13T14:56:26+00:00"
+      "evaluated_at": "2026-11-05T04:39:21+00:00"
     },
     {
       "strategy_name": "breakout",
@@ -509,7 +509,7 @@
       "max_drawdown": 0.2957966342183064,
       "dsr_message": "DSR=0.0000 (threshold >= 0.5), n_trials=4, SR_hat=-0.1121, SR_0=0.1337",
       "pbo_message": "PBO=0.0429 (threshold <= 0.4), n_splits=70, n_variants=4",
-      "evaluated_at": "2026-10-13T14:56:28+00:00"
+      "evaluated_at": "2026-11-05T04:39:25+00:00"
     },
     {
       "strategy_name": "breakout",
@@ -520,7 +520,7 @@
       "max_drawdown": 0.3827220280901325,
       "dsr_message": "DSR=0.0000 (threshold >= 0.5), n_trials=4, SR_hat=-0.0659, SR_0=0.0812",
       "pbo_message": "PBO=0.8714 (threshold <= 0.4), n_splits=70, n_variants=4",
-      "evaluated_at": "2026-10-13T14:56:31+00:00"
+      "evaluated_at": "2026-11-05T04:39:28+00:00"
     },
     {
       "strategy_name": "breakout",
@@ -531,7 +531,7 @@
       "max_drawdown": 0.39687193582383373,
       "dsr_message": "DSR=0.0566 (threshold >= 0.5), n_trials=4, SR_hat=0.0995, SR_0=0.1362",
       "pbo_message": "PBO=0.5714 (threshold <= 0.4), n_splits=70, n_variants=4",
-      "evaluated_at": "2026-10-13T14:56:33+00:00"
+      "evaluated_at": "2026-11-05T04:39:32+00:00"
     },
     {
       "strategy_name": "breakout",
@@ -542,7 +542,7 @@
       "max_drawdown": 0.28576271874616654,
       "dsr_message": "DSR=0.0000 (threshold >= 0.5), n_trials=4, SR_hat=-0.1381, SR_0=0.1076",
       "pbo_message": "PBO=0.8286 (threshold <= 0.4), n_splits=70, n_variants=4",
-      "evaluated_at": "2026-10-13T14:56:35+00:00"
+      "evaluated_at": "2026-11-05T04:39:35+00:00"
     },
     {
       "strategy_name": "breakout",
@@ -553,7 +553,7 @@
       "max_drawdown": 0.0,
       "dsr_message": "FAILED: search too narrow \u2014 n_trials=4 < DSR_MIN_TRIALS=54; DSR passes but on too few configs to trust (under-counts selection bias; DSR=0.5000)",
       "pbo_message": "PBO=0.0000 (threshold <= 0.4), n_splits=70, n_variants=4",
-      "evaluated_at": "2026-10-13T14:56:38+00:00"
+      "evaluated_at": "2026-11-05T04:39:39+00:00"
     },
     {
       "strategy_name": "breakout",
@@ -564,7 +564,7 @@
       "max_drawdown": 0.0,
       "dsr_message": "FAILED: search too narrow \u2014 n_trials=4 < DSR_MIN_TRIALS=54; DSR passes but on too few configs to trust (under-counts selection bias; DSR=0.5000)",
       "pbo_message": "PBO=0.0000 (threshold <= 0.4), n_splits=70, n_variants=4",
-      "evaluated_at": "2026-10-13T14:56:41+00:00"
+      "evaluated_at": "2026-11-05T04:39:43+00:00"
     },
     {
       "strategy_name": "breakout",
@@ -575,7 +575,7 @@
       "max_drawdown": 0.16142848632525672,
       "dsr_message": "FAILED: search too narrow \u2014 n_trials=4 < DSR_MIN_TRIALS=54; DSR passes but on too few configs to trust (under-counts selection bias; DSR=1.0000)",
       "pbo_message": "PBO=0.2429 (threshold <= 0.4), n_splits=70, n_variants=4",
-      "evaluated_at": "2026-10-13T14:56:44+00:00"
+      "evaluated_at": "2026-11-05T04:39:47+00:00"
     },
     {
       "strategy_name": "breakout",
@@ -586,7 +586,7 @@
       "max_drawdown": 0.3637452225201736,
       "dsr_message": "DSR=0.0000 (threshold >= 0.5), n_trials=4, SR_hat=-0.0929, SR_0=0.0991",
       "pbo_message": "PBO=0.5571 (threshold <= 0.4), n_splits=70, n_variants=4",
-      "evaluated_at": "2026-10-13T14:56:46+00:00"
+      "evaluated_at": "2026-11-05T04:39:51+00:00"
     },
     {
       "strategy_name": "breakout",
@@ -597,7 +597,7 @@
       "max_drawdown": 0.39642523062504664,
       "dsr_message": "DSR=0.0000 (threshold >= 0.5), n_trials=4, SR_hat=-0.0379, SR_0=0.1395",
       "pbo_message": "PBO=0.1143 (threshold <= 0.4), n_splits=70, n_variants=4",
-      "evaluated_at": "2026-10-13T14:56:49+00:00"
+      "evaluated_at": "2026-11-05T04:39:54+00:00"
     },
     {
       "strategy_name": "defined_risk_option_spread",
@@ -608,7 +608,7 @@
       "max_drawdown": 0.774312001662444,
       "dsr_message": "FAILED: search too narrow \u2014 n_trials=4 < DSR_MIN_TRIALS=54; DSR passes but on too few configs to trust (under-counts selection bias; DSR=1.0000)",
       "pbo_message": "PBO=0.0429 (threshold <= 0.4), n_splits=70, n_variants=4",
-      "evaluated_at": "2026-10-13T14:56:52+00:00"
+      "evaluated_at": "2026-11-05T04:39:58+00:00"
     },
     {
       "strategy_name": "defined_risk_option_spread",
@@ -619,7 +619,7 @@
       "max_drawdown": 0.8552535665691152,
       "dsr_message": "FAILED: search too narrow \u2014 n_trials=4 < DSR_MIN_TRIALS=54; DSR passes but on too few configs to trust (under-counts selection bias; DSR=1.0000)",
       "pbo_message": "PBO=0.7857 (threshold <= 0.4), n_splits=70, n_variants=4",
-      "evaluated_at": "2026-10-13T14:56:54+00:00"
+      "evaluated_at": "2026-11-05T04:40:02+00:00"
     },
     {
       "strategy_name": "defined_risk_option_spread",
@@ -630,7 +630,7 @@
       "max_drawdown": 0.8236861471799134,
       "dsr_message": "FAILED: search too narrow \u2014 n_trials=4 < DSR_MIN_TRIALS=54; DSR passes but on too few configs to trust (under-counts selection bias; DSR=1.0000)",
       "pbo_message": "PBO=0.5714 (threshold <= 0.4), n_splits=70, n_variants=4",
-      "evaluated_at": "2026-10-13T14:56:57+00:00"
+      "evaluated_at": "2026-11-05T04:40:06+00:00"
     },
     {
       "strategy_name": "defined_risk_option_spread",
@@ -641,7 +641,7 @@
       "max_drawdown": 0.7144346022140626,
       "dsr_message": "FAILED: search too narrow \u2014 n_trials=4 < DSR_MIN_TRIALS=54; DSR passes but on too few configs to trust (under-counts selection bias; DSR=1.0000)",
       "pbo_message": "PBO=0.3714 (threshold <= 0.4), n_splits=70, n_variants=4",
-      "evaluated_at": "2026-10-13T14:57:00+00:00"
+      "evaluated_at": "2026-11-05T04:40:10+00:00"
     },
     {
       "strategy_name": "defined_risk_option_spread",
@@ -652,7 +652,7 @@
       "max_drawdown": 0.8035306711608345,
       "dsr_message": "FAILED: search too narrow \u2014 n_trials=4 < DSR_MIN_TRIALS=54; DSR passes but on too few configs to trust (under-counts selection bias; DSR=1.0000)",
       "pbo_message": "PBO=0.0143 (threshold <= 0.4), n_splits=70, n_variants=4",
-      "evaluated_at": "2026-10-13T14:57:03+00:00"
+      "evaluated_at": "2026-11-05T04:40:15+00:00"
     },
     {
       "strategy_name": "defined_risk_option_spread",
@@ -663,7 +663,7 @@
       "max_drawdown": 0.7342013002102079,
       "dsr_message": "FAILED: search too narrow \u2014 n_trials=4 < DSR_MIN_TRIALS=54; DSR passes but on too few configs to trust (under-counts selection bias; DSR=1.0000)",
       "pbo_message": "PBO=0.8000 (threshold <= 0.4), n_splits=70, n_variants=4",
-      "evaluated_at": "2026-10-13T14:57:06+00:00"
+      "evaluated_at": "2026-11-05T04:40:19+00:00"
     },
     {
       "strategy_name": "defined_risk_option_spread",
@@ -674,7 +674,7 @@
       "max_drawdown": 0.681525413337981,
       "dsr_message": "FAILED: search too narrow \u2014 n_trials=4 < DSR_MIN_TRIALS=54; DSR passes but on too few configs to trust (under-counts selection bias; DSR=1.0000)",
       "pbo_message": "PBO=0.3571 (threshold <= 0.4), n_splits=70, n_variants=4",
-      "evaluated_at": "2026-10-13T14:57:09+00:00"
+      "evaluated_at": "2026-11-05T04:40:23+00:00"
     },
     {
       "strategy_name": "defined_risk_option_spread",
@@ -685,7 +685,7 @@
       "max_drawdown": 0.8185144892083793,
       "dsr_message": "FAILED: search too narrow \u2014 n_trials=4 < DSR_MIN_TRIALS=54; DSR passes but on too few configs to trust (under-counts selection bias; DSR=1.0000)",
       "pbo_message": "PBO=0.4286 (threshold <= 0.4), n_splits=70, n_variants=4",
-      "evaluated_at": "2026-10-13T14:57:12+00:00"
+      "evaluated_at": "2026-11-05T04:40:27+00:00"
     },
     {
       "strategy_name": "defined_risk_option_spread",
@@ -696,7 +696,7 @@
       "max_drawdown": 0.873115389867554,
       "dsr_message": "FAILED: search too narrow \u2014 n_trials=4 < DSR_MIN_TRIALS=54; DSR passes but on too few configs to trust (under-counts selection bias; DSR=1.0000)",
       "pbo_message": "PBO=0.1714 (threshold <= 0.4), n_splits=70, n_variants=4",
-      "evaluated_at": "2026-10-13T14:57:15+00:00"
+      "evaluated_at": "2026-11-05T04:40:31+00:00"
     },
     {
       "strategy_name": "defined_risk_option_spread",
@@ -707,7 +707,7 @@
       "max_drawdown": 0.9659085096995587,
       "dsr_message": "FAILED: search too narrow \u2014 n_trials=4 < DSR_MIN_TRIALS=54; DSR passes but on too few configs to trust (under-counts selection bias; DSR=1.0000)",
       "pbo_message": "PBO=0.3000 (threshold <= 0.4), n_splits=70, n_variants=4",
-      "evaluated_at": "2026-10-13T14:57:18+00:00"
+      "evaluated_at": "2026-11-05T04:40:35+00:00"
     },
     {
       "strategy_name": "volatility_breakout_options",
@@ -718,7 +718,7 @@
       "max_drawdown": 0.7230085888949088,
       "dsr_message": "FAILED: search too narrow \u2014 n_trials=4 < DSR_MIN_TRIALS=54; DSR passes but on too few configs to trust (under-counts selection bias; DSR=1.0000)",
       "pbo_message": "PBO=0.9143 (threshold <= 0.4), n_splits=70, n_variants=4",
-      "evaluated_at": "2026-10-13T14:57:22+00:00"
+      "evaluated_at": "2026-11-05T04:40:40+00:00"
     },
     {
       "strategy_name": "volatility_breakout_options",
@@ -729,7 +729,7 @@
       "max_drawdown": 0.4400935750449214,
       "dsr_message": "FAILED: search too narrow \u2014 n_trials=4 < DSR_MIN_TRIALS=54; DSR passes but on too few configs to trust (under-counts selection bias; DSR=1.0000)",
       "pbo_message": "PBO=0.3429 (threshold <= 0.4), n_splits=70, n_variants=4",
-      "evaluated_at": "2026-10-13T14:57:25+00:00"
+      "evaluated_at": "2026-11-05T04:40:45+00:00"
     },
     {
       "strategy_name": "volatility_breakout_options",
@@ -740,7 +740,7 @@
       "max_drawdown": 0.4405568154878878,
       "dsr_message": "FAILED: search too narrow \u2014 n_trials=4 < DSR_MIN_TRIALS=54; DSR passes but on too few configs to trust (under-counts selection bias; DSR=1.0000)",
       "pbo_message": "PBO=0.4143 (threshold <= 0.4), n_splits=70, n_variants=4",
-      "evaluated_at": "2026-10-13T14:57:29+00:00"
+      "evaluated_at": "2026-11-05T04:40:49+00:00"
     },
     {
       "strategy_name": "volatility_breakout_options",
@@ -751,7 +751,7 @@
       "max_drawdown": 0.6815047688737309,
       "dsr_message": "FAILED: search too narrow \u2014 n_trials=4 < DSR_MIN_TRIALS=54; DSR passes but on too few configs to trust (under-counts selection bias; DSR=1.0000)",
       "pbo_message": "PBO=0.1000 (threshold <= 0.4), n_splits=70, n_variants=4",
-      "evaluated_at": "2026-10-13T14:57:32+00:00"
+      "evaluated_at": "2026-11-05T04:40:54+00:00"
     },
     {
       "strategy_name": "volatility_breakout_options",
@@ -762,7 +762,7 @@
       "max_drawdown": 0.8272195736674025,
       "dsr_message": "FAILED: search too narrow \u2014 n_trials=4 < DSR_MIN_TRIALS=54; DSR passes but on too few configs to trust (under-counts selection bias; DSR=1.0000)",
       "pbo_message": "PBO=0.3571 (threshold <= 0.4), n_splits=70, n_variants=4",
-      "evaluated_at": "2026-10-13T14:57:36+00:00"
+      "evaluated_at": "2026-11-05T04:40:59+00:00"
     },
     {
       "strategy_name": "volatility_breakout_options",
@@ -773,7 +773,7 @@
       "max_drawdown": 0.0,
       "dsr_message": "FAILED: search too narrow \u2014 n_trials=4 < DSR_MIN_TRIALS=54; DSR passes but on too few configs to trust (under-counts selection bias; DSR=0.5000)",
       "pbo_message": "PBO=0.0000 (threshold <= 0.4), n_splits=70, n_variants=4",
-      "evaluated_at": "2026-10-13T14:57:40+00:00"
+      "evaluated_at": "2026-11-05T04:41:04+00:00"
     },
     {
       "strategy_name": "volatility_breakout_options",
@@ -784,7 +784,7 @@
       "max_drawdown": 0.0,
       "dsr_message": "FAILED: search too narrow \u2014 n_trials=4 < DSR_MIN_TRIALS=54; DSR passes but on too few configs to trust (under-counts selection bias; DSR=0.5000)",
       "pbo_message": "PBO=0.0000 (threshold <= 0.4), n_splits=70, n_variants=4",
-      "evaluated_at": "2026-10-13T14:57:44+00:00"
+      "evaluated_at": "2026-11-05T04:41:09+00:00"
     },
     {
       "strategy_name": "volatility_breakout_options",
@@ -795,7 +795,7 @@
       "max_drawdown": 0.6220033454735635,
       "dsr_message": "FAILED: search too narrow \u2014 n_trials=4 < DSR_MIN_TRIALS=54; DSR passes but on too few configs to trust (under-counts selection bias; DSR=1.0000)",
       "pbo_message": "PBO=0.3714 (threshold <= 0.4), n_splits=70, n_variants=4",
-      "evaluated_at": "2026-10-13T14:57:48+00:00"
+      "evaluated_at": "2026-11-05T04:41:14+00:00"
     },
     {
       "strategy_name": "volatility_breakout_options",
@@ -806,7 +806,7 @@
       "max_drawdown": 0.5307784853293067,
       "dsr_message": "FAILED: search too narrow \u2014 n_trials=4 < DSR_MIN_TRIALS=54; DSR passes but on too few configs to trust (under-counts selection bias; DSR=1.0000)",
       "pbo_message": "PBO=0.0286 (threshold <= 0.4), n_splits=70, n_variants=4",
-      "evaluated_at": "2026-10-13T14:57:51+00:00"
+      "evaluated_at": "2026-11-05T04:41:19+00:00"
     },
     {
       "strategy_name": "volatility_breakout_options",
@@ -817,7 +817,7 @@
       "max_drawdown": 0.46387842027639453,
       "dsr_message": "FAILED: search too narrow \u2014 n_trials=4 < DSR_MIN_TRIALS=54; DSR passes but on too few configs to trust (under-counts selection bias; DSR=1.0000)",
       "pbo_message": "PBO=0.4571 (threshold <= 0.4), n_splits=70, n_variants=4",
-      "evaluated_at": "2026-10-13T14:57:56+00:00"
+      "evaluated_at": "2026-11-05T04:41:24+00:00"
     }
   ],
   "inherits_futures_trend_verdict_rejected": [

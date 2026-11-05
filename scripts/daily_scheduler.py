@@ -59,6 +59,7 @@ _JOBS: list[tuple[int, int, str]] = [
     (16, 15, "model_retrain"),         # after the equity close, before MCX EOD
     (16, 30, "intraday_retrain"),
     (20, 0,  "premium_monitor_update"),  # NSE bhavcopy is out by ~18:30 IST
+    (20, 10, "bse_premium_monitor_update"),  # BSE F&O bhavcopy is out by ~16:45 IST
     (23, 25, "mcx_eod_square_off"),    # commodity EOD — MCX close at 23:30
 ]
 
@@ -457,58 +458,89 @@ def run_mcx_eod_square_off() -> None:
         logger.error("mcx_eod_square_off failed: %s", exc)
 
 
-def run_premium_monitor_update() -> None:
-    """REPORTING ONLY. Fetches today's NSE F&O bhavcopy (free, public), computes
-    each index's OWN implied vol and the resulting vol-selling premium (implied
-    minus realized), and persists it so GET /research/premium-status has a
-    fresh reading without a human re-running the backtest scripts by hand.
+def _run_premium_monitor_update(exchange: str) -> None:
+    """REPORTING ONLY. Fetches today's F&O bhavcopy (free, public) for the given
+    exchange, computes each index's OWN implied vol and the resulting vol-selling
+    premium (implied minus realized), and persists it so GET /research/premium-
+    status has a fresh reading without a human re-running the backtest scripts
+    by hand.
+
+    exchange="nse" covers NIFTY/BANKNIFTY/FINNIFTY/MIDCPNIFTY from NSE's F&O
+    bhavcopy; exchange="bse" covers SENSEX/BANKEX from BSE's F&O bhavcopy
+    (research/bse_index_premium.py). Both write into the SAME index_vol_premium
+    table via the same compute_reading / save_index_premium path, so a BSE day
+    and an NSE day are computed identically.
 
     See audit_results/2026-09-19/per-index-strategy-fit and trading_platform/
     research/index_premium.py: return tracks this premium almost one-for-one,
     and it has decayed since 2024. Nothing here reads or writes any order,
     position, or entry-gate state -- it is purely an observability job, the
     same class as daily_ai_review, not eod_square_off."""
-    logger.info("JOB: premium_monitor_update — recomputing per-index vol premium from NSE bhavcopy")
-    try:
-        from trading_platform.data.persistence import TradingDatabase
+    from trading_platform.data.persistence import TradingDatabase
+    from trading_platform.research.index_premium import atm_rows, compute_reading, iv30_for_day
+
+    if exchange == "bse":
+        from trading_platform.research.bse_index_premium import (
+            BSE_INDICES as indices, fetch_bse_zip as fetch, parse_bse_index_options as parse,
+        )
+    else:
         from trading_platform.research.index_premium import (
-            INDICES, atm_rows, compute_reading, fetch_zip, iv30_for_day, parse_index_options,
+            INDICES as indices, fetch_zip as fetch, parse_index_options as parse,
         )
 
-        today = _now_ist().date()
-        raw = fetch_zip(today)
-        if raw is None:
-            logger.info("premium_monitor_update: no bhavcopy for %s (holiday, or not yet published) — skipping", today)
-            return
-        readings = iv30_for_day(atm_rows(today, parse_index_options(raw)))
-        if not readings:
-            logger.warning("premium_monitor_update: bhavcopy fetched but no usable index rows for %s", today)
-            return
+    today = _now_ist().date()
+    raw = fetch(today)
+    if raw is None:
+        logger.info("%s premium_monitor_update: no bhavcopy for %s (holiday, or not yet published) — skipping",
+                    exchange.upper(), today)
+        return
+    readings = iv30_for_day(atm_rows(today, parse(raw)))
+    if not readings:
+        logger.warning("%s premium_monitor_update: bhavcopy fetched but no usable index rows for %s",
+                       exchange.upper(), today)
+        return
 
-        db = TradingDatabase()
-        for idx in INDICES:
-            if idx not in readings:
-                continue
-            iv30, spot = readings[idx]
-            # History THIS monitor has itself recorded (spot recovered from
-            # the option chain via put-call parity) -- no separate price-feed
-            # dependency.
-            history = db.recent_index_premium(idx, limit=90)
-            prior_spots = [(r["trade_date"], r["spot"]) for r in history if r["spot"]]
-            prior_premiums = [r["premium"] for r in history if r["premium"] is not None]
-            realized, premium, trailing_median = compute_reading(
-                today, iv30, spot, prior_spots, prior_premiums,
-            )
-            db.save_index_premium(today, idx, spot, iv30, realized, premium, trailing_median)
-            logger.info(
-                "premium_monitor_update: %-10s spot=%.1f IV30=%.2f%% RV20=%s premium=%s trailing60d=%s",
-                idx, spot, iv30,
-                f"{realized:.2f}%" if realized is not None else "n/a (building history)",
-                f"{premium:+.2f}pts" if premium is not None else "n/a",
-                f"{trailing_median:+.2f}pts" if trailing_median is not None else "n/a (building history)",
-            )
+    db = TradingDatabase()
+    for idx in indices:
+        if idx not in readings:
+            continue
+        iv30, spot = readings[idx]
+        # History THIS monitor has itself recorded (spot recovered from
+        # the option chain via put-call parity) -- no separate price-feed
+        # dependency.
+        history = db.recent_index_premium(idx, limit=90)
+        prior_spots = [(r["trade_date"], r["spot"]) for r in history if r["spot"]]
+        prior_premiums = [r["premium"] for r in history if r["premium"] is not None]
+        realized, premium, trailing_median = compute_reading(
+            today, iv30, spot, prior_spots, prior_premiums,
+        )
+        db.save_index_premium(today, idx, spot, iv30, realized, premium, trailing_median)
+        logger.info(
+            "%s premium_monitor_update: %-10s spot=%.1f IV30=%.2f%% RV20=%s premium=%s trailing60d=%s",
+            exchange.upper(), idx, spot, iv30,
+            f"{realized:.2f}%" if realized is not None else "n/a (building history)",
+            f"{premium:+.2f}pts" if premium is not None else "n/a",
+            f"{trailing_median:+.2f}pts" if trailing_median is not None else "n/a (building history)",
+        )
+
+
+def run_premium_monitor_update() -> None:
+    """NSE per-index vol premium (NIFTY/BANKNIFTY/FINNIFTY/MIDCPNIFTY)."""
+    logger.info("JOB: premium_monitor_update — recomputing per-index vol premium from NSE bhavcopy")
+    try:
+        _run_premium_monitor_update("nse")
     except Exception as exc:
         logger.error("premium_monitor_update failed: %s", exc, exc_info=True)
+
+
+def run_bse_premium_monitor_update() -> None:
+    """BSE per-index vol premium (SENSEX/BANKEX). Same REPORTING-ONLY job as
+    the NSE one; writes into the same index_vol_premium table."""
+    logger.info("JOB: bse_premium_monitor_update — recomputing per-index vol premium from BSE bhavcopy")
+    try:
+        _run_premium_monitor_update("bse")
+    except Exception as exc:
+        logger.error("bse_premium_monitor_update failed: %s", exc, exc_info=True)
 
 
 def _retrain_bars() -> tuple[dict, str] | None:
@@ -796,6 +828,7 @@ _JOB_FNS = {
     "model_retrain": run_model_retrain,
     "intraday_retrain": run_intraday_retrain,
     "premium_monitor_update": run_premium_monitor_update,
+    "bse_premium_monitor_update": run_bse_premium_monitor_update,
     "mcx_eod_square_off": run_mcx_eod_square_off,
 }
 

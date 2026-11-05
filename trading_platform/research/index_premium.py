@@ -82,13 +82,20 @@ def urls_for(d: date) -> list[str]:
     return [new, old] if d >= UDIFF_CUTOVER else [old, new]
 
 
-def fetch_zip(d: date, retries: int = 3) -> bytes | None:
-    """Bytes of the day's bhavcopy zip, or None when NSE has no file (holiday)."""
-    for url in urls_for(d):
+def fetch_urls(urls: list[str], referer: str, retries: int = 3) -> bytes | None:
+    """Shared HTTP core: try each URL in turn with the browser UA + the given
+    Referer and the NSE-style 403/429 retry/backoff. Returns the first URL's
+    bytes on success, None when every URL is a 404 (holiday / no file), and
+    raises RuntimeError only when a URL keeps failing for a non-404 reason.
+
+    Factored out of fetch_zip so research/bse_index_premium.py can reuse the
+    exact anti-bot header + backoff behaviour against BSE's download host
+    without duplicating it."""
+    for url in urls:
         for attempt in range(retries):
             try:
                 req = urllib.request.Request(
-                    url, headers={"User-Agent": _UA, "Referer": "https://www.nseindia.com/"})
+                    url, headers={"User-Agent": _UA, "Referer": referer})
                 with urllib.request.urlopen(req, timeout=60) as resp:
                     return resp.read()
             except urllib.error.HTTPError as exc:
@@ -101,12 +108,22 @@ def fetch_zip(d: date, retries: int = 3) -> bytes | None:
             except Exception:
                 time.sleep(2 * (attempt + 1))
         else:
-            raise RuntimeError(f"NSE fetch failed repeatedly for {d} ({url})")
+            raise RuntimeError(f"fetch failed repeatedly for {url}")
     return None
 
 
-def parse_index_options(raw_zip: bytes) -> list[dict]:
-    """Index-option rows from either bhavcopy format, normalised."""
+def fetch_zip(d: date, retries: int = 3) -> bytes | None:
+    """Bytes of the day's bhavcopy zip, or None when NSE has no file (holiday)."""
+    return fetch_urls(urls_for(d), "https://www.nseindia.com/", retries)
+
+
+def parse_index_options(raw_zip: bytes, indices: tuple[str, ...] = INDICES) -> list[dict]:
+    """Index-option rows from either bhavcopy format, normalised.
+
+    `indices` is the set of underlyings to keep (default: the NSE INDICES).
+    BSE's F&O UDiFF bhavcopy uses the identical column schema and the same
+    FinInstrmTp=IDO code for index options, so research/bse_index_premium.py
+    reuses this parser unchanged, passing indices=("SENSEX","BANKEX")."""
     zf = zipfile.ZipFile(io.BytesIO(raw_zip))
     lines = zf.read(zf.namelist()[0]).decode("utf-8", "replace").splitlines()
     if not lines:
@@ -130,7 +147,7 @@ def parse_index_options(raw_zip: bytes) -> list[dict]:
                 lot, und = 0, 0.0
         except (KeyError, ValueError):
             continue
-        if sym in INDICES and ot in ("CE", "PE") and px > 0:
+        if sym in indices and ot in ("CE", "PE") and px > 0:
             out.append(dict(sym=sym, exp=exp, k=strike, ot=ot, px=px, vol=vol, oi=oi, lot=lot, und=und))
     return out
 
