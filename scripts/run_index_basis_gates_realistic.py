@@ -18,8 +18,11 @@ research_index_basis.py's screen passed under a flat 0.05-0.10% cost. This:
 """
 from __future__ import annotations
 
+import argparse
+import json
 import logging
 import sys
+import time
 from datetime import date
 from itertools import product
 from pathlib import Path
@@ -32,7 +35,7 @@ for p in (str(REPO), str(REPO / "scripts")):
     if p not in sys.path:
         sys.path.insert(0, p)
 
-from research_index_basis import fetch  # noqa: E402
+from research_index_basis import PAIRS  # noqa: E402
 from trading_platform.backtesting.basis_execution_cost import BasisCostModel  # noqa: E402
 from trading_platform.validation.gates import GateEvaluator  # noqa: E402
 
@@ -46,6 +49,86 @@ ROUNDTRIP = COST.roundtrip_cost_fraction(LEG_NOTIONAL)
 
 HORIZONS = (2, 3, 5)
 HI_PCTL = (60, 67, 75)              # 'rich basis' entry threshold (executable side)
+
+_CACHE = REPO / "data" / "research_cache" / "index_basis_series.json"
+
+
+def _load_cache() -> dict:
+    if not _CACHE.exists():
+        return {}
+    raw = json.loads(_CACHE.read_text(encoding="utf-8"))
+    out = {}
+    for label, (dates, spot, fut) in raw.items():
+        out[label] = ([date.fromisoformat(x) for x in dates],
+                      {date.fromisoformat(k): v for k, v in spot.items()},
+                      {date.fromisoformat(k): v for k, v in fut.items()})
+    return out
+
+
+def _save_cache(data: dict) -> None:
+    _CACHE.parent.mkdir(parents=True, exist_ok=True)
+    serial = {
+        label: ([x.isoformat() for x in dates],
+                {k.isoformat(): v for k, v in spot.items()},
+                {k.isoformat(): v for k, v in fut.items()})
+        for label, (dates, spot, fut) in data.items()
+    }
+    _CACHE.write_text(json.dumps(serial), encoding="utf-8")
+
+
+def cached_fetch(refresh: bool = False, retries: int = 6) -> dict:
+    """Fetch each (spot, future) pair INDEPENDENTLY, caching to disk as each one
+    lands, so the gate is reproducible and does not depend on winning the live
+    candle-API race in one shot. A pair already cached is not re-pulled. NIFTY
+    alone (270 days) is enough for the go/no-go; a missing BANKNIFTY just means
+    fewer trials. Pass --refresh to re-pull everything."""
+    import dataclasses
+    from trading_platform.config import load_settings
+    from trading_platform.data.angel_one_history import AngelOneHistoricalDataProvider
+    from trading_platform.data.angel_one_instruments import AngelOneInstrumentMasterProvider
+    from trading_platform.domain.enums import Exchange
+    from datetime import datetime, timedelta
+
+    cache = {} if refresh else _load_cache()
+    for label, _ in PAIRS:
+        if label in cache and len(cache[label][0]) >= 40:
+            logger.info("  %-10s cached (%d days)", label, len(cache[label][0]))
+
+    s = load_settings()
+    master = AngelOneInstrumentMasterProvider(s).load_cached()
+    provider = AngelOneHistoricalDataProvider(s)
+    template = next(iter(master.instruments.values()))
+    to_dt = datetime.now(); from_dt = to_dt - timedelta(days=400)
+
+    for label, spot_tok in PAIRS:
+        if label in cache and len(cache[label][0]) >= 40:
+            continue
+        for attempt in range(1, retries + 1):
+            try:
+                spot_inst = dataclasses.replace(template, token=spot_tok, exchange=Exchange("NSE"), symbol=label)
+                fut_inst = master.select_future(label, to_dt.date())
+                spot_bars = provider.get_candles(spot_inst, from_dt, to_dt, "ONE_DAY")
+                fut_bars = provider.get_candles(fut_inst, from_dt, to_dt, "ONE_DAY")
+                spot = {b.timestamp.date(): b.close for b in spot_bars}
+                fut = {b.timestamp.date(): b.close for b in fut_bars}
+                dates = sorted(set(spot) & set(fut))
+                if len(dates) >= 40:
+                    cache[label] = (dates, spot, fut)
+                    _save_cache(cache)
+                    logger.info("  %-10s fetched + cached (%d days, future %s)",
+                                label, len(dates), fut_inst.symbol)
+                    break
+                logger.info("  %-10s only %d overlapping days — skipping", label, len(dates))
+                break
+            except Exception as exc:
+                wait = min(90.0, 15.0 * attempt)
+                logger.info("  %-10s attempt %d/%d rate-limited (%s) — retry in %.0fs",
+                            label, attempt, retries, str(exc)[:50], wait)
+                time.sleep(wait)
+    usable = {k: v for k, v in cache.items() if len(v[0]) >= 40}
+    if not usable:
+        raise RuntimeError("no index-basis pair could be fetched (candle API contended)")
+    return usable
 
 
 def variant_trades(data: dict, horizon: int, hi_pctl: float) -> dict:
@@ -83,13 +166,16 @@ def _sharpe(arr: np.ndarray, horizon: int) -> float:
 
 
 def main() -> int:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--refresh", action="store_true", help="re-pull candles, ignore the cache")
+    args = ap.parse_args()
     logger.info("Realistic two-leg round-trip cost = %.3f%% of notional "
                 "(futures %.3f%% + cash/ETF %.3f%%)",
                 ROUNDTRIP * 100,
                 COST.futures_leg_fraction(LEG_NOTIONAL) * 100,
                 COST.cash_leg_fraction(LEG_NOTIONAL) * 100)
     logger.info("Fetching NIFTY/BANKNIFTY spot + near-month futures ...")
-    data = fetch()
+    data = cached_fetch(refresh=args.refresh)
 
     variants = []
     for horizon, hi in product(HORIZONS, HI_PCTL):
