@@ -48,6 +48,13 @@ from trading_platform.research.strategy_validator import (
     validate_option_strategy,
     validate_strategy,
 )
+from trading_platform.data.market_store import MarketDataStore
+
+# Phase 2: the historical daily-bar CSV lookup is routed through the unified
+# MarketDataStore (single source of truth for where market data lives). The
+# store's csv_path_for resolves deep-else-plain exactly as before, so the
+# validator reads identical bars; validate_strategy remains file-based.
+_STORE = MarketDataStore()
 
 logging.basicConfig(level=logging.WARNING, format="%(message)s")
 
@@ -60,11 +67,7 @@ DEFAULT_STRATEGIES = list(SINGLE_INSTRUMENT_STRATEGIES) + list(OPTION_STRATEGIES
 
 
 def _csv_path(symbol: str) -> Path | None:
-    deep = Path(f"data/historical/{symbol}__ONE_DAY_deep.csv")
-    if deep.exists():
-        return deep
-    plain = Path(f"data/historical/{symbol}__ONE_DAY.csv")
-    return plain if plain.exists() else None
+    return _STORE.csv_path_for(symbol)
 
 
 def _load_existing_results() -> list[dict]:

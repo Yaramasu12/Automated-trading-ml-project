@@ -558,6 +558,236 @@ CREATE INDEX IF NOT EXISTS idx_tuning_status    ON tuning_suggestions (status, c
 CREATE INDEX IF NOT EXISTS idx_hypotheses_status ON strategy_hypotheses (status, created_at DESC);
 """
 
+# ---------------------------------------------------------------------------
+# Phase 2 market-data store — ADDITIVE schema (unified, DB-backed EOD store).
+#
+# These six tables are the Phase-2 market-data architecture: a single place
+# validation/retraining can read daily bars, option quotes and modeled index
+# IV from, instead of scattered CSVs and live Angel One pulls. They are
+# PURELY ADDITIVE — no existing table (index_vol_premium, ticks,
+# option_chain_snapshots, trades, …) is altered or dropped, and the live
+# short-vol order path is untouched (it keeps reading index_vol_premium via
+# runtime._premium_snapshot_for). Populated ONLY from the free NSE/BSE
+# bhavcopy (ingest/) and the historical-CSV backfill — ZERO Angel One, which
+# is the whole point of decoupling. Modeled values (implied_vol, atm_iv30)
+# are labeled (iv_method / method) and kept in columns separate from the
+# raw traded close/settle, so a modeled IV is never conflated with a price.
+# ---------------------------------------------------------------------------
+
+_PG_MARKET_DDL = """
+CREATE TABLE IF NOT EXISTS instrument_master (
+    instrument_id   TEXT        PRIMARY KEY,
+    exchange        TEXT        NOT NULL,
+    segment         TEXT        NOT NULL,
+    underlying      TEXT,
+    instrument_type TEXT        NOT NULL,
+    tckr_symbol     TEXT        NOT NULL,
+    expiry          DATE,
+    strike          DOUBLE PRECISION,
+    option_type     TEXT,
+    lot_size        INTEGER,
+    tick_size       DOUBLE PRECISION,
+    first_seen      DATE,
+    last_seen       DATE,
+    UNIQUE (exchange, segment, tckr_symbol, expiry, strike, option_type)
+);
+
+CREATE TABLE IF NOT EXISTS eod_ohlcv (
+    trade_date    DATE        NOT NULL,
+    instrument_id TEXT        NOT NULL,
+    open          DOUBLE PRECISION,
+    high          DOUBLE PRECISION,
+    low           DOUBLE PRECISION,
+    close         DOUBLE PRECISION,
+    settle        DOUBLE PRECISION,
+    volume        DOUBLE PRECISION,
+    oi            DOUBLE PRECISION,
+    delivery_qty  DOUBLE PRECISION,
+    vwap          DOUBLE PRECISION,
+    source        TEXT,
+    is_adjusted   BOOLEAN     NOT NULL DEFAULT FALSE,
+    ingested_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (trade_date, instrument_id)
+);
+
+CREATE TABLE IF NOT EXISTS eod_option_quote (
+    trade_date    DATE        NOT NULL,
+    instrument_id TEXT        NOT NULL,
+    underlying    TEXT        NOT NULL,
+    expiry        DATE,
+    strike        DOUBLE PRECISION,
+    option_type   TEXT,
+    open          DOUBLE PRECISION,
+    high          DOUBLE PRECISION,
+    low           DOUBLE PRECISION,
+    close         DOUBLE PRECISION,
+    settle        DOUBLE PRECISION,
+    volume        DOUBLE PRECISION,
+    oi            DOUBLE PRECISION,
+    change_oi     DOUBLE PRECISION,
+    underlying_px DOUBLE PRECISION,
+    implied_vol   DOUBLE PRECISION,
+    iv_method     TEXT,
+    source        TEXT,
+    ingested_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (trade_date, instrument_id)
+);
+
+CREATE TABLE IF NOT EXISTS index_atm_iv30 (
+    trade_date   DATE        NOT NULL,
+    index_symbol TEXT        NOT NULL,
+    spot_parity  DOUBLE PRECISION,
+    spot_close   DOUBLE PRECISION,
+    atm_iv30     DOUBLE PRECISION,
+    method       TEXT        NOT NULL DEFAULT 'bhavcopy_b76_totvar_interp',
+    source       TEXT,
+    ingested_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (trade_date, index_symbol)
+);
+
+CREATE TABLE IF NOT EXISTS index_spot (
+    trade_date   DATE        NOT NULL,
+    index_symbol TEXT        NOT NULL,
+    open         DOUBLE PRECISION,
+    high         DOUBLE PRECISION,
+    low          DOUBLE PRECISION,
+    close        DOUBLE PRECISION,
+    source       TEXT,
+    ingested_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (trade_date, index_symbol)
+);
+
+CREATE TABLE IF NOT EXISTS ingestion_runs (
+    id               BIGSERIAL   PRIMARY KEY,
+    source           TEXT        NOT NULL,
+    trade_date       DATE        NOT NULL,
+    state            TEXT        NOT NULL,
+    lease_owner      TEXT,
+    lease_expires_at TIMESTAMPTZ,
+    rows             INTEGER,
+    detail           TEXT,
+    created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (source, trade_date)
+);
+"""
+
+_PG_MARKET_INDEXES = """
+CREATE INDEX IF NOT EXISTS idx_eod_ohlcv_instr     ON eod_ohlcv (instrument_id, trade_date DESC);
+CREATE INDEX IF NOT EXISTS idx_eod_optq_underlying ON eod_option_quote (underlying, expiry, trade_date DESC);
+CREATE INDEX IF NOT EXISTS idx_instr_master_lookup ON instrument_master (tckr_symbol, segment);
+CREATE INDEX IF NOT EXISTS idx_index_spot_sym      ON index_spot (index_symbol, trade_date DESC);
+CREATE INDEX IF NOT EXISTS idx_index_iv30_sym      ON index_atm_iv30 (index_symbol, trade_date DESC);
+"""
+
+# eod_ohlcv is monthly-chunked per the Phase-2 spec; the other two EOD
+# hypertables share the monthly chunk (one trade_date per instrument per day,
+# so a daily default would make thousands of tiny chunks).
+_PG_MARKET_HYPERTABLES = """
+SELECT create_hypertable('eod_ohlcv',        'trade_date', chunk_time_interval => INTERVAL '1 month', if_not_exists => TRUE, migrate_data => TRUE);
+SELECT create_hypertable('eod_option_quote', 'trade_date', chunk_time_interval => INTERVAL '1 month', if_not_exists => TRUE, migrate_data => TRUE);
+SELECT create_hypertable('index_spot',       'trade_date', chunk_time_interval => INTERVAL '1 month', if_not_exists => TRUE, migrate_data => TRUE);
+"""
+
+# SQLite mirror of the Phase-2 market-data tables (tests / local dev).
+_SL_MARKET_INIT = """
+CREATE TABLE IF NOT EXISTS instrument_master (
+    instrument_id   TEXT PRIMARY KEY,
+    exchange        TEXT NOT NULL,
+    segment         TEXT NOT NULL,
+    underlying      TEXT,
+    instrument_type TEXT NOT NULL,
+    tckr_symbol     TEXT NOT NULL,
+    expiry          TEXT,
+    strike          REAL,
+    option_type     TEXT,
+    lot_size        INTEGER,
+    tick_size       REAL,
+    first_seen      TEXT,
+    last_seen       TEXT,
+    UNIQUE (exchange, segment, tckr_symbol, expiry, strike, option_type)
+);
+CREATE TABLE IF NOT EXISTS eod_ohlcv (
+    trade_date    TEXT NOT NULL,
+    instrument_id TEXT NOT NULL,
+    open          REAL,
+    high          REAL,
+    low           REAL,
+    close         REAL,
+    settle        REAL,
+    volume        REAL,
+    oi            REAL,
+    delivery_qty  REAL,
+    vwap          REAL,
+    source        TEXT,
+    is_adjusted   INTEGER NOT NULL DEFAULT 0,
+    ingested_at   TEXT,
+    PRIMARY KEY (trade_date, instrument_id)
+);
+CREATE TABLE IF NOT EXISTS eod_option_quote (
+    trade_date    TEXT NOT NULL,
+    instrument_id TEXT NOT NULL,
+    underlying    TEXT NOT NULL,
+    expiry        TEXT,
+    strike        REAL,
+    option_type   TEXT,
+    open          REAL,
+    high          REAL,
+    low           REAL,
+    close         REAL,
+    settle        REAL,
+    volume        REAL,
+    oi            REAL,
+    change_oi     REAL,
+    underlying_px REAL,
+    implied_vol   REAL,
+    iv_method     TEXT,
+    source        TEXT,
+    ingested_at   TEXT,
+    PRIMARY KEY (trade_date, instrument_id)
+);
+CREATE TABLE IF NOT EXISTS index_atm_iv30 (
+    trade_date   TEXT NOT NULL,
+    index_symbol TEXT NOT NULL,
+    spot_parity  REAL,
+    spot_close   REAL,
+    atm_iv30     REAL,
+    method       TEXT NOT NULL DEFAULT 'bhavcopy_b76_totvar_interp',
+    source       TEXT,
+    ingested_at  TEXT,
+    PRIMARY KEY (trade_date, index_symbol)
+);
+CREATE TABLE IF NOT EXISTS index_spot (
+    trade_date   TEXT NOT NULL,
+    index_symbol TEXT NOT NULL,
+    open         REAL,
+    high         REAL,
+    low          REAL,
+    close        REAL,
+    source       TEXT,
+    ingested_at  TEXT,
+    PRIMARY KEY (trade_date, index_symbol)
+);
+CREATE TABLE IF NOT EXISTS ingestion_runs (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    source           TEXT NOT NULL,
+    trade_date       TEXT NOT NULL,
+    state            TEXT NOT NULL,
+    lease_owner      TEXT,
+    lease_expires_at TEXT,
+    rows             INTEGER,
+    detail           TEXT,
+    created_at       TEXT NOT NULL,
+    updated_at       TEXT NOT NULL,
+    UNIQUE (source, trade_date)
+);
+CREATE INDEX IF NOT EXISTS idx_eod_ohlcv_instr     ON eod_ohlcv (instrument_id, trade_date DESC);
+CREATE INDEX IF NOT EXISTS idx_eod_optq_underlying ON eod_option_quote (underlying, expiry, trade_date DESC);
+CREATE INDEX IF NOT EXISTS idx_instr_master_lookup ON instrument_master (tckr_symbol, segment);
+CREATE INDEX IF NOT EXISTS idx_index_spot_sym      ON index_spot (index_symbol, trade_date DESC);
+CREATE INDEX IF NOT EXISTS idx_index_iv30_sym      ON index_atm_iv30 (index_symbol, trade_date DESC);
+"""
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -659,8 +889,11 @@ class TradingDatabase:
                 # hypertables, and column migrations (each non-fatal).
                 statements = (
                     [s.strip() for s in _PG_DDL.strip().split(";")]
+                    + [s.strip() for s in _PG_MARKET_DDL.strip().split(";")]
                     + [s.strip() for s in _PG_INDEXES.strip().split(";")]
+                    + [s.strip() for s in _PG_MARKET_INDEXES.strip().split(";")]
                     + [s.strip() for s in _PG_HYPERTABLES.strip().split(";")]
+                    + [s.strip() for s in _PG_MARKET_HYPERTABLES.strip().split(";")]
                     + [
                         "ALTER TABLE trades ADD COLUMN IF NOT EXISTS ts TIMESTAMPTZ DEFAULT now()",
                         "ALTER TABLE trades ADD COLUMN IF NOT EXISTS feature_vector vector(7)",
@@ -715,12 +948,40 @@ class TradingDatabase:
             cur = conn.cursor()
             try:
                 yield cur
-                conn.commit()
+                # Inside a bulk_writes() block, defer the commit to the block's
+                # end — one fsync instead of one per statement, which is the
+                # difference between a few seconds and many minutes for a
+                # 200k-row CSV backfill under journal_mode=DELETE.
+                if getattr(self, "_bulk_depth", 0) == 0:
+                    conn.commit()
             except Exception:
                 conn.rollback()
                 raise
             finally:
                 cur.close()
+
+    @contextmanager
+    def bulk_writes(self) -> Generator:
+        """Group many writes into a single transaction (large backfill/ingest
+        speedup). SQLite only — defers per-statement commits to one commit at
+        block end; Postgres already batches pooled writes efficiently, so it
+        is a no-op there. Single-threaded use only (the backfill/ingest
+        scripts), matching the depth counter's non-thread-local scope."""
+        if self._mode != "sqlite":
+            yield
+            return
+        conn = self._sqlite_conn()
+        self._bulk_depth = getattr(self, "_bulk_depth", 0) + 1
+        try:
+            yield
+            self._bulk_depth -= 1
+            if self._bulk_depth == 0:
+                conn.commit()
+        except Exception:
+            self._bulk_depth = max(0, getattr(self, "_bulk_depth", 1) - 1)
+            if self._bulk_depth == 0:
+                conn.rollback()
+            raise
 
     @property
     def backend(self) -> str:
@@ -769,7 +1030,7 @@ class TradingDatabase:
 
     def _init_sqlite(self) -> None:
         with self._cursor() as cur:
-            for stmt in _SL_INIT.strip().split(";"):
+            for stmt in (_SL_INIT.strip() + "\n" + _SL_MARKET_INIT.strip()).split(";"):
                 stmt = stmt.strip()
                 if stmt:
                     cur.execute(stmt)
@@ -1298,6 +1559,417 @@ class TradingDatabase:
             rows = self._rows(cur, cur.fetchall())
         for row in rows:
             row["metadata"] = self._json_field(row.get("metadata"), default={})
+        return rows
+
+    # ------------------------------------------------------------------
+    # Phase 2 market-data store (instrument_master / eod_ohlcv /
+    # eod_option_quote / index_atm_iv30 / index_spot). ADDITIVE, DB-backed,
+    # populated only from NSE/BSE bhavcopy + the historical-CSV backfill.
+    # Every write is per-day idempotent (upsert on the natural key) so an
+    # ingestion re-run or a backfill replay never double-counts. Raw traded
+    # prices are stored verbatim; modeled IV lives in its own labeled column.
+    # ------------------------------------------------------------------
+
+    _INGESTION_RUN_IN_PROGRESS_STATE = "RUNNING"
+
+    def _d(self, d) -> Any:
+        """Bind a date for the active backend (date object vs ISO string)."""
+        if d is None:
+            return None
+        if self._mode == "postgres":
+            return d
+        return d.isoformat() if hasattr(d, "isoformat") else str(d)
+
+    def upsert_instrument(
+        self,
+        *,
+        instrument_id: str,
+        exchange: str,
+        segment: str,
+        instrument_type: str,
+        tckr_symbol: str,
+        underlying: str | None = None,
+        expiry: date | None = None,
+        strike: float | None = None,
+        option_type: str | None = None,
+        lot_size: int | None = None,
+        tick_size: float | None = None,
+        seen_date: date | None = None,
+    ) -> str:
+        """Insert or touch a dimension row. first_seen/last_seen widen to span
+        every date the instrument has been observed (so re-ingesting an older
+        day never clobbers a newer last_seen, and vice versa)."""
+        sd = self._d(seen_date)
+        common = (
+            instrument_id, exchange, segment, underlying, instrument_type,
+            tckr_symbol, self._d(expiry), strike, option_type, lot_size, tick_size, sd, sd,
+        )
+        if self._mode == "postgres":
+            sql = """INSERT INTO instrument_master
+                     (instrument_id, exchange, segment, underlying, instrument_type,
+                      tckr_symbol, expiry, strike, option_type, lot_size, tick_size,
+                      first_seen, last_seen)
+                     VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                     ON CONFLICT (instrument_id) DO UPDATE SET
+                       underlying = COALESCE(EXCLUDED.underlying, instrument_master.underlying),
+                       lot_size   = COALESCE(EXCLUDED.lot_size,   instrument_master.lot_size),
+                       tick_size  = COALESCE(EXCLUDED.tick_size,  instrument_master.tick_size),
+                       first_seen = LEAST(COALESCE(instrument_master.first_seen, EXCLUDED.first_seen), EXCLUDED.first_seen),
+                       last_seen  = GREATEST(COALESCE(instrument_master.last_seen, EXCLUDED.last_seen), EXCLUDED.last_seen)"""
+        else:
+            sql = """INSERT INTO instrument_master
+                     (instrument_id, exchange, segment, underlying, instrument_type,
+                      tckr_symbol, expiry, strike, option_type, lot_size, tick_size,
+                      first_seen, last_seen)
+                     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+                     ON CONFLICT(instrument_id) DO UPDATE SET
+                       underlying = COALESCE(excluded.underlying, underlying),
+                       lot_size   = COALESCE(excluded.lot_size,   lot_size),
+                       tick_size  = COALESCE(excluded.tick_size,  tick_size),
+                       first_seen = MIN(COALESCE(first_seen, excluded.first_seen), excluded.first_seen),
+                       last_seen  = MAX(COALESCE(last_seen, excluded.last_seen), excluded.last_seen)"""
+        with self._cursor() as cur:
+            cur.execute(sql, common)
+        return instrument_id
+
+    def upsert_eod_ohlcv(
+        self,
+        *,
+        trade_date: date,
+        instrument_id: str,
+        open: float | None = None,
+        high: float | None = None,
+        low: float | None = None,
+        close: float | None = None,
+        settle: float | None = None,
+        volume: float | None = None,
+        oi: float | None = None,
+        delivery_qty: float | None = None,
+        vwap: float | None = None,
+        source: str | None = None,
+        is_adjusted: bool = False,
+    ) -> None:
+        now = datetime.now(timezone.utc).isoformat()
+        vals = (
+            self._d(trade_date), instrument_id, open, high, low, close, settle,
+            volume, oi, delivery_qty, vwap, source,
+            is_adjusted if self._mode == "postgres" else int(bool(is_adjusted)), now,
+        )
+        if self._mode == "postgres":
+            sql = """INSERT INTO eod_ohlcv
+                     (trade_date, instrument_id, open, high, low, close, settle,
+                      volume, oi, delivery_qty, vwap, source, is_adjusted, ingested_at)
+                     VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                     ON CONFLICT (trade_date, instrument_id) DO UPDATE SET
+                       open=EXCLUDED.open, high=EXCLUDED.high, low=EXCLUDED.low,
+                       close=EXCLUDED.close, settle=EXCLUDED.settle, volume=EXCLUDED.volume,
+                       oi=EXCLUDED.oi, delivery_qty=EXCLUDED.delivery_qty, vwap=EXCLUDED.vwap,
+                       source=EXCLUDED.source, is_adjusted=EXCLUDED.is_adjusted,
+                       ingested_at=EXCLUDED.ingested_at"""
+        else:
+            sql = """INSERT INTO eod_ohlcv
+                     (trade_date, instrument_id, open, high, low, close, settle,
+                      volume, oi, delivery_qty, vwap, source, is_adjusted, ingested_at)
+                     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                     ON CONFLICT(trade_date, instrument_id) DO UPDATE SET
+                       open=excluded.open, high=excluded.high, low=excluded.low,
+                       close=excluded.close, settle=excluded.settle, volume=excluded.volume,
+                       oi=excluded.oi, delivery_qty=excluded.delivery_qty, vwap=excluded.vwap,
+                       source=excluded.source, is_adjusted=excluded.is_adjusted,
+                       ingested_at=excluded.ingested_at"""
+        with self._cursor() as cur:
+            cur.execute(sql, vals)
+
+    def upsert_eod_option_quote(
+        self,
+        *,
+        trade_date: date,
+        instrument_id: str,
+        underlying: str,
+        expiry: date | None = None,
+        strike: float | None = None,
+        option_type: str | None = None,
+        open: float | None = None,
+        high: float | None = None,
+        low: float | None = None,
+        close: float | None = None,
+        settle: float | None = None,
+        volume: float | None = None,
+        oi: float | None = None,
+        change_oi: float | None = None,
+        underlying_px: float | None = None,
+        implied_vol: float | None = None,
+        iv_method: str | None = None,
+        source: str | None = None,
+    ) -> None:
+        now = datetime.now(timezone.utc).isoformat()
+        vals = (
+            self._d(trade_date), instrument_id, underlying, self._d(expiry), strike,
+            option_type, open, high, low, close, settle, volume, oi, change_oi,
+            underlying_px, implied_vol, iv_method, source, now,
+        )
+        if self._mode == "postgres":
+            sql = """INSERT INTO eod_option_quote
+                     (trade_date, instrument_id, underlying, expiry, strike, option_type,
+                      open, high, low, close, settle, volume, oi, change_oi,
+                      underlying_px, implied_vol, iv_method, source, ingested_at)
+                     VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                     ON CONFLICT (trade_date, instrument_id) DO UPDATE SET
+                       underlying=EXCLUDED.underlying, expiry=EXCLUDED.expiry,
+                       strike=EXCLUDED.strike, option_type=EXCLUDED.option_type,
+                       open=EXCLUDED.open, high=EXCLUDED.high, low=EXCLUDED.low,
+                       close=EXCLUDED.close, settle=EXCLUDED.settle, volume=EXCLUDED.volume,
+                       oi=EXCLUDED.oi, change_oi=EXCLUDED.change_oi,
+                       underlying_px=EXCLUDED.underlying_px, implied_vol=EXCLUDED.implied_vol,
+                       iv_method=EXCLUDED.iv_method, source=EXCLUDED.source,
+                       ingested_at=EXCLUDED.ingested_at"""
+        else:
+            sql = """INSERT INTO eod_option_quote
+                     (trade_date, instrument_id, underlying, expiry, strike, option_type,
+                      open, high, low, close, settle, volume, oi, change_oi,
+                      underlying_px, implied_vol, iv_method, source, ingested_at)
+                     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                     ON CONFLICT(trade_date, instrument_id) DO UPDATE SET
+                       underlying=excluded.underlying, expiry=excluded.expiry,
+                       strike=excluded.strike, option_type=excluded.option_type,
+                       open=excluded.open, high=excluded.high, low=excluded.low,
+                       close=excluded.close, settle=excluded.settle, volume=excluded.volume,
+                       oi=excluded.oi, change_oi=excluded.change_oi,
+                       underlying_px=excluded.underlying_px, implied_vol=excluded.implied_vol,
+                       iv_method=excluded.iv_method, source=excluded.source,
+                       ingested_at=excluded.ingested_at"""
+        with self._cursor() as cur:
+            cur.execute(sql, vals)
+
+    def upsert_index_atm_iv30(
+        self,
+        *,
+        trade_date: date,
+        index_symbol: str,
+        spot_parity: float | None = None,
+        spot_close: float | None = None,
+        atm_iv30: float | None = None,
+        method: str = "bhavcopy_b76_totvar_interp",
+        source: str | None = None,
+    ) -> None:
+        now = datetime.now(timezone.utc).isoformat()
+        vals = (self._d(trade_date), index_symbol, spot_parity, spot_close,
+                atm_iv30, method, source, now)
+        if self._mode == "postgres":
+            sql = """INSERT INTO index_atm_iv30
+                     (trade_date, index_symbol, spot_parity, spot_close, atm_iv30,
+                      method, source, ingested_at)
+                     VALUES (%s,%s,%s,%s,%s,%s,%s,%s)
+                     ON CONFLICT (trade_date, index_symbol) DO UPDATE SET
+                       spot_parity=EXCLUDED.spot_parity, spot_close=EXCLUDED.spot_close,
+                       atm_iv30=EXCLUDED.atm_iv30, method=EXCLUDED.method,
+                       source=EXCLUDED.source, ingested_at=EXCLUDED.ingested_at"""
+        else:
+            sql = """INSERT INTO index_atm_iv30
+                     (trade_date, index_symbol, spot_parity, spot_close, atm_iv30,
+                      method, source, ingested_at)
+                     VALUES (?,?,?,?,?,?,?,?)
+                     ON CONFLICT(trade_date, index_symbol) DO UPDATE SET
+                       spot_parity=excluded.spot_parity, spot_close=excluded.spot_close,
+                       atm_iv30=excluded.atm_iv30, method=excluded.method,
+                       source=excluded.source, ingested_at=excluded.ingested_at"""
+        with self._cursor() as cur:
+            cur.execute(sql, vals)
+
+    def upsert_index_spot(
+        self,
+        *,
+        trade_date: date,
+        index_symbol: str,
+        open: float | None = None,
+        high: float | None = None,
+        low: float | None = None,
+        close: float | None = None,
+        source: str | None = None,
+    ) -> None:
+        now = datetime.now(timezone.utc).isoformat()
+        vals = (self._d(trade_date), index_symbol, open, high, low, close, source, now)
+        if self._mode == "postgres":
+            sql = """INSERT INTO index_spot
+                     (trade_date, index_symbol, open, high, low, close, source, ingested_at)
+                     VALUES (%s,%s,%s,%s,%s,%s,%s,%s)
+                     ON CONFLICT (trade_date, index_symbol) DO UPDATE SET
+                       open=EXCLUDED.open, high=EXCLUDED.high, low=EXCLUDED.low,
+                       close=EXCLUDED.close, source=EXCLUDED.source,
+                       ingested_at=EXCLUDED.ingested_at"""
+        else:
+            sql = """INSERT INTO index_spot
+                     (trade_date, index_symbol, open, high, low, close, source, ingested_at)
+                     VALUES (?,?,?,?,?,?,?,?)
+                     ON CONFLICT(trade_date, index_symbol) DO UPDATE SET
+                       open=excluded.open, high=excluded.high, low=excluded.low,
+                       close=excluded.close, source=excluded.source,
+                       ingested_at=excluded.ingested_at"""
+        with self._cursor() as cur:
+            cur.execute(sql, vals)
+
+    # ---- market-data reads (used by MarketDataStore) ----
+
+    @staticmethod
+    def _as_date(v):
+        if isinstance(v, str):
+            try:
+                return date.fromisoformat(v[:10])
+            except ValueError:
+                return v
+        return v
+
+    def index_spot_closes(self, index_symbol: str) -> list[tuple]:
+        """[(trade_date, close)] ascending for one index — index_spot series."""
+        sql = self._p(
+            "SELECT trade_date, close FROM index_spot WHERE index_symbol = ? "
+            "AND close IS NOT NULL ORDER BY trade_date"
+        )
+        with self._cursor() as cur:
+            cur.execute(sql, (index_symbol,))
+            return [(self._as_date(r[0]), float(r[1])) for r in cur.fetchall()]
+
+    def eod_ohlcv_closes(self, tckr_symbol: str, segment: str = "CASH") -> list[tuple]:
+        """[(trade_date, close)] ascending for one cash/equity instrument."""
+        sql = self._p(
+            "SELECT eo.trade_date, eo.close FROM eod_ohlcv eo "
+            "JOIN instrument_master im ON eo.instrument_id = im.instrument_id "
+            "WHERE im.tckr_symbol = ? AND im.segment = ? AND eo.close IS NOT NULL "
+            "ORDER BY eo.trade_date"
+        )
+        with self._cursor() as cur:
+            cur.execute(sql, (tckr_symbol, segment))
+            return [(self._as_date(r[0]), float(r[1])) for r in cur.fetchall()]
+
+    def index_iv30_series(self, index_symbol: str) -> list[tuple]:
+        """[(trade_date, atm_iv30)] ascending — the modeled 30d IV series."""
+        sql = self._p(
+            "SELECT trade_date, atm_iv30 FROM index_atm_iv30 WHERE index_symbol = ? "
+            "AND atm_iv30 IS NOT NULL ORDER BY trade_date"
+        )
+        with self._cursor() as cur:
+            cur.execute(sql, (index_symbol,))
+            return [(self._as_date(r[0]), float(r[1])) for r in cur.fetchall()]
+
+    def option_quotes(
+        self,
+        underlying: str,
+        *,
+        expiry: date | None = None,
+        start: date | None = None,
+        end: date | None = None,
+        limit: int = 100000,
+    ) -> list[dict]:
+        clauses, params = ["underlying = ?"], [underlying]
+        if expiry is not None:
+            clauses.append("expiry = ?"); params.append(self._d(expiry))
+        if start is not None:
+            clauses.append("trade_date >= ?"); params.append(self._d(start))
+        if end is not None:
+            clauses.append("trade_date <= ?"); params.append(self._d(end))
+        where = " AND ".join(clauses)
+        sql = self._p(
+            f"SELECT * FROM eod_option_quote WHERE {where} "
+            f"ORDER BY trade_date, expiry, strike, option_type LIMIT ?"
+        )
+        with self._cursor() as cur:
+            cur.execute(sql, [*params, limit])
+            rows = self._rows(cur, cur.fetchall())
+        for r in rows:
+            r["trade_date"] = self._as_date(r.get("trade_date"))
+            r["expiry"] = self._as_date(r.get("expiry"))
+        return rows
+
+    # ---- ingestion_runs (checkpoint/lease, mirrors learning_runs) ----
+
+    def claim_ingestion_run(
+        self,
+        source: str,
+        trade_date: date,
+        *,
+        lease_owner: str,
+        lease_seconds: float = 1800.0,
+    ) -> dict | None:
+        """Atomically claim (source, trade_date) for ingestion. Returns the
+        claimed row if this caller may proceed, or None if it must not —
+        either the day already reached a terminal state (done/holiday/failed)
+        or another process holds a still-valid lease. An EXPIRED lease (the
+        claimer crashed) is reclaimable. Same claim-or-skip shape as
+        claim_learning_run — one INSERT ... ON CONFLICT DO NOTHING is the
+        idempotency mechanism."""
+        now = datetime.now(timezone.utc)
+        now_val = now if self._mode == "postgres" else now.isoformat()
+        td_val = self._d(trade_date)
+        lease_expires = now + timedelta(seconds=lease_seconds)
+        lease_val = lease_expires if self._mode == "postgres" else lease_expires.isoformat()
+
+        insert_sql = self._p(
+            "INSERT INTO ingestion_runs "
+            "(source, trade_date, state, lease_owner, lease_expires_at, created_at, updated_at) "
+            "VALUES (?,?,?,?,?,?,?) "
+            "ON CONFLICT (source, trade_date) DO NOTHING"
+        )
+        with self._cursor() as cur:
+            cur.execute(insert_sql, (
+                source, td_val, self._INGESTION_RUN_IN_PROGRESS_STATE,
+                lease_owner, lease_val, now_val, now_val,
+            ))
+            select_sql = self._p(
+                "SELECT * FROM ingestion_runs WHERE source=? AND trade_date=?"
+            )
+            cur.execute(select_sql, (source, td_val))
+            row = _row_to_dict(cur, cur.fetchone())
+            if row is None:
+                return None
+
+            existing_lease = self._parse_dt(row.get("lease_expires_at"))
+            lease_still_valid = bool(existing_lease and existing_lease > now)
+            is_running = row.get("state") == self._INGESTION_RUN_IN_PROGRESS_STATE
+
+            if not is_running:
+                return None  # terminal: done/holiday/failed for this day
+            if lease_still_valid and row.get("lease_owner") != lease_owner:
+                return None  # another process actively holds it
+
+            update_sql = self._p(
+                "UPDATE ingestion_runs SET lease_owner=?, lease_expires_at=?, updated_at=? "
+                "WHERE id=?"
+            )
+            cur.execute(update_sql, (lease_owner, lease_val, now_val, row["id"]))
+            row["lease_owner"] = lease_owner
+            row["lease_expires_at"] = lease_val
+            row["trade_date"] = self._as_date(row.get("trade_date"))
+            return row
+
+    def update_ingestion_run(
+        self,
+        run_id: int,
+        state: str,
+        *,
+        rows: int | None = None,
+        detail: str | None = None,
+    ) -> None:
+        """Advance a claimed run to a terminal state (DONE / HOLIDAY / FAILED)
+        or any non-RUNNING marker, recording row count and detail."""
+        now = datetime.now(timezone.utc)
+        now_val = now if self._mode == "postgres" else now.isoformat()
+        sql = self._p(
+            "UPDATE ingestion_runs SET state=?, rows=?, detail=?, updated_at=? WHERE id=?"
+        )
+        with self._cursor() as cur:
+            cur.execute(sql, (state, rows, detail, now_val, run_id))
+
+    def recent_ingestion_runs(self, source: str | None = None, limit: int = 50) -> list[dict]:
+        clauses, params = [], []
+        if source:
+            clauses.append("source = ?"); params.append(source)
+        where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+        sql = self._p(f"SELECT * FROM ingestion_runs {where} ORDER BY id DESC LIMIT ?")
+        with self._cursor() as cur:
+            cur.execute(sql, [*params, limit])
+            rows = self._rows(cur, cur.fetchall())
+        for r in rows:
+            r["trade_date"] = self._as_date(r.get("trade_date"))
         return rows
 
     # ------------------------------------------------------------------

@@ -223,3 +223,125 @@ SELECT create_retention_policy('features',
     hypertable => 'features',
     retention_period => '365 days',
     if_exists => TRUE);
+
+-- ──────────────────────────────────────────────
+-- Phase 2 market-data store (ADDITIVE; see persistence.py _PG_MARKET_DDL)
+--
+-- A unified, DB-backed EOD store so validation/retraining read daily bars,
+-- option quotes and modeled index IV from one place instead of scattered
+-- CSVs and live Angel One pulls. Purely additive: nothing above (ticks,
+-- option_chain_snapshots, the trading-schema tables incl. index_vol_premium)
+-- is altered or dropped, and the live short-vol order path is untouched.
+-- Each statement is independent (autocommit per statement convention), so an
+-- IF-NOT-EXISTS re-run / a missing extension never poisons the rest. NO
+-- retention policy: this is the durable historical record, not a rolling
+-- tick buffer. Modeled IV is kept in its own labeled column, never conflated
+-- with the raw traded close/settle.
+-- ──────────────────────────────────────────────
+
+CREATE TABLE IF NOT EXISTS instrument_master (
+    instrument_id   TEXT        PRIMARY KEY,
+    exchange        TEXT        NOT NULL,
+    segment         TEXT        NOT NULL,
+    underlying      TEXT,
+    instrument_type TEXT        NOT NULL,
+    tckr_symbol     TEXT        NOT NULL,
+    expiry          DATE,
+    strike          DOUBLE PRECISION,
+    option_type     TEXT,
+    lot_size        INTEGER,
+    tick_size       DOUBLE PRECISION,
+    first_seen      DATE,
+    last_seen       DATE,
+    UNIQUE (exchange, segment, tckr_symbol, expiry, strike, option_type)
+);
+CREATE INDEX IF NOT EXISTS idx_instr_master_lookup ON instrument_master (tckr_symbol, segment);
+
+CREATE TABLE IF NOT EXISTS eod_ohlcv (
+    trade_date    DATE        NOT NULL,
+    instrument_id TEXT        NOT NULL,
+    open          DOUBLE PRECISION,
+    high          DOUBLE PRECISION,
+    low           DOUBLE PRECISION,
+    close         DOUBLE PRECISION,
+    settle        DOUBLE PRECISION,
+    volume        DOUBLE PRECISION,
+    oi            DOUBLE PRECISION,
+    delivery_qty  DOUBLE PRECISION,
+    vwap          DOUBLE PRECISION,
+    source        TEXT,
+    is_adjusted   BOOLEAN     NOT NULL DEFAULT FALSE,
+    ingested_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (trade_date, instrument_id)
+);
+SELECT create_hypertable('eod_ohlcv', 'trade_date',
+    chunk_time_interval => INTERVAL '1 month', if_not_exists => TRUE);
+CREATE INDEX IF NOT EXISTS idx_eod_ohlcv_instr ON eod_ohlcv (instrument_id, trade_date DESC);
+
+CREATE TABLE IF NOT EXISTS eod_option_quote (
+    trade_date    DATE        NOT NULL,
+    instrument_id TEXT        NOT NULL,
+    underlying    TEXT        NOT NULL,
+    expiry        DATE,
+    strike        DOUBLE PRECISION,
+    option_type   TEXT,
+    open          DOUBLE PRECISION,
+    high          DOUBLE PRECISION,
+    low           DOUBLE PRECISION,
+    close         DOUBLE PRECISION,
+    settle        DOUBLE PRECISION,
+    volume        DOUBLE PRECISION,
+    oi            DOUBLE PRECISION,
+    change_oi     DOUBLE PRECISION,
+    underlying_px DOUBLE PRECISION,
+    implied_vol   DOUBLE PRECISION,
+    iv_method     TEXT,
+    source        TEXT,
+    ingested_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (trade_date, instrument_id)
+);
+SELECT create_hypertable('eod_option_quote', 'trade_date',
+    chunk_time_interval => INTERVAL '1 month', if_not_exists => TRUE);
+CREATE INDEX IF NOT EXISTS idx_eod_optq_underlying ON eod_option_quote (underlying, expiry, trade_date DESC);
+
+CREATE TABLE IF NOT EXISTS index_atm_iv30 (
+    trade_date   DATE        NOT NULL,
+    index_symbol TEXT        NOT NULL,
+    spot_parity  DOUBLE PRECISION,
+    spot_close   DOUBLE PRECISION,
+    atm_iv30     DOUBLE PRECISION,
+    method       TEXT        NOT NULL DEFAULT 'bhavcopy_b76_totvar_interp',
+    source       TEXT,
+    ingested_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (trade_date, index_symbol)
+);
+CREATE INDEX IF NOT EXISTS idx_index_iv30_sym ON index_atm_iv30 (index_symbol, trade_date DESC);
+
+CREATE TABLE IF NOT EXISTS index_spot (
+    trade_date   DATE        NOT NULL,
+    index_symbol TEXT        NOT NULL,
+    open         DOUBLE PRECISION,
+    high         DOUBLE PRECISION,
+    low          DOUBLE PRECISION,
+    close        DOUBLE PRECISION,
+    source       TEXT,
+    ingested_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (trade_date, index_symbol)
+);
+SELECT create_hypertable('index_spot', 'trade_date',
+    chunk_time_interval => INTERVAL '1 month', if_not_exists => TRUE);
+CREATE INDEX IF NOT EXISTS idx_index_spot_sym ON index_spot (index_symbol, trade_date DESC);
+
+CREATE TABLE IF NOT EXISTS ingestion_runs (
+    id               BIGSERIAL   PRIMARY KEY,
+    source           TEXT        NOT NULL,
+    trade_date       DATE        NOT NULL,
+    state            TEXT        NOT NULL,
+    lease_owner      TEXT,
+    lease_expires_at TIMESTAMPTZ,
+    rows             INTEGER,
+    detail           TEXT,
+    created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (source, trade_date)
+);

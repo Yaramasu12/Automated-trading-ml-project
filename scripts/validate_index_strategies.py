@@ -43,8 +43,15 @@ from trading_platform.backtesting.short_vol_backtest import (  # noqa: E402
     load_daily_closes,
 )
 from trading_platform.strategies.short_vol import ShortVolStrategy  # noqa: E402
+from trading_platform.data.market_store import MarketDataStore  # noqa: E402
 
 HIST = REPO / "data" / "historical"
+
+# Phase 2: validation reads bars + modeled IV through the unified, DB-backed
+# MarketDataStore (DB-first, identical CSV fallback) instead of touching the
+# historical CSVs directly. Until the DB is populated this falls back to the
+# exact same files and produces the exact same verdicts.
+_STORE = MarketDataStore(hist_dir=HIST)
 # Current real contract specs (lot from NSE bhavcopy NewBrdLotQty / the live
 # instrument master; strike interval from the NSE contract specs).
 SPECS = {
@@ -67,18 +74,17 @@ TRADING_DAYS = 252.0
 
 
 def load_bars(idx: str) -> list[DailyBar]:
-    """Underlying closes: Angel One candles where we have them, else the
-    put-call-parity spot recovered from the option chain itself."""
-    deep, pipe = HIST / f"{idx}__ONE_DAY_deep.csv", HIST / f"{idx}__ONE_DAY_pipeline.csv"
-    if deep.exists():
-        by_day = {b.day: b for b in load_daily_closes(deep)}
-        if pipe.exists():
-            by_day.update({b.day: b for b in load_daily_closes(pipe)})
-        return [by_day[d] for d in sorted(by_day)]
-    return load_daily_closes(HIST / f"{idx}__PARITY_SPOT_deep.csv")
+    """Underlying closes via the unified MarketDataStore (DB-first, with a CSV
+    fallback that reproduces the old deep+pipeline / parity-spot resolution
+    byte-for-byte): Angel One candles where we have them, else the put-call-
+    parity spot recovered from the option chain itself."""
+    return _STORE.daily_closes(idx)
 
 
 def load_iv(path: Path) -> dict[date, float]:
+    """India-VIX control input (a raw ONE_DAY series used AS the IV). Kept CSV-
+    based — this is the original validation input, not the modeled own-chain
+    IV30 the store serves via iv30()."""
     return {b.day: b.close for b in load_daily_closes(path)}
 
 
@@ -229,11 +235,11 @@ def main() -> int:
             report("NIFTY control A: India VIX as IV (the original validation input)", "NIFTY",
                    bars, load_iv(vix_path), pool, out, skew=args.skew, since=since)
         for idx in idxs:
-            ivp = HIST / f"{idx}__IV30_deep.csv"
-            if not ivp.exists():
-                out.append(f"\n## {idx}: no IV history ({ivp.name} missing)\n")
+            iv = _STORE.iv30(idx)   # DB-first modeled own-chain IV30; CSV fallback
+            if not iv:
+                out.append(f"\n## {idx}: no IV history (IV30 series empty)\n")
                 continue
-            report(f"{idx}: own-chain ATM IV30", idx, load_bars(idx), load_iv(ivp), pool, out, skew=args.skew,
+            report(f"{idx}: own-chain ATM IV30", idx, load_bars(idx), iv, pool, out, skew=args.skew,
                    since=since, spreads=spreads)
     text = "\n".join(out)
     Path(args.out).parent.mkdir(parents=True, exist_ok=True)
