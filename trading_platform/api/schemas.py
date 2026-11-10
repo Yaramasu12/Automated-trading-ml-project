@@ -112,6 +112,25 @@ class DataStatusResponse(BaseModel):
     angel_one_configured: bool
 
 
+class DataHealthResponse(BaseModel):
+    """GET /data/health — Phase-5 market-data freshness/gap monitor.
+
+    Top-level fields are typed; each item in `entries` is left open (one per
+    (source, asset_class): latest trade_date, gap count, staleness, row
+    freshness and last successful/failed ingestion). ``extra='allow'`` keeps
+    this non-destructive.
+    """
+    model_config = ConfigDict(extra="allow")
+
+    as_of: str
+    max_stale_trading_days: int
+    stale: bool
+    stale_sources: dict = {}
+    alerts_written: list = []
+    entries: list = []
+    generated_at: str
+
+
 class HealthResponse(BaseModel):
     """GET /health — composite health snapshot.
 

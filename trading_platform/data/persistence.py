@@ -1624,6 +1624,14 @@ class TradingDatabase:
 
     _INGESTION_RUN_IN_PROGRESS_STATE = "RUNNING"
 
+    # Phase-5 /data/health: the Phase-2 market-data tables a freshness/gap check
+    # is allowed to read. A WHITELIST so market_source_health() can interpolate a
+    # table name into its SELECT without risking arbitrary SQL — the table arg is
+    # validated against this set, never used verbatim otherwise.
+    _MARKET_HEALTH_TABLES = frozenset({
+        "eod_ohlcv", "eod_option_quote", "index_atm_iv30", "index_spot",
+    })
+
     def _d(self, d) -> Any:
         """Bind a date for the active backend (date object vs ISO string)."""
         if d is None:
@@ -2099,6 +2107,71 @@ class TradingDatabase:
         for r in rows:
             r["trade_date"] = self._as_date(r.get("trade_date"))
         return rows
+
+    def last_ingestion_run_by_state(self, source: str, states) -> dict | None:
+        """Most recent ingestion_runs row for `source` whose state is in
+        `states` (e.g. the last DONE, or the last FAILED). Read-only; backs the
+        "last successful / last failed ingestion" fields of GET /data/health."""
+        states = [s for s in states]
+        if not states:
+            return None
+        placeholders = ",".join("?" for _ in states)
+        sql = self._p(
+            f"SELECT * FROM ingestion_runs WHERE source = ? AND state IN ({placeholders}) "
+            "ORDER BY id DESC LIMIT 1"
+        )
+        with self._cursor() as cur:
+            cur.execute(sql, [source, *states])
+            rows = self._rows(cur, cur.fetchall())
+        if not rows:
+            return None
+        r = rows[0]
+        r["trade_date"] = self._as_date(r.get("trade_date"))
+        return r
+
+    def market_source_health(self, table: str, source: str, *, since=None) -> dict:
+        """Read-only freshness snapshot for one (table, source) in the Phase-2
+        market-data store, backing GET /data/health.
+
+        Returns the distinct trade_dates present (ascending; only on/after
+        `since` when given), the total row count, the latest trade_date, the
+        rows written on that latest date, and the most recent ingested_at. Pure
+        SELECT — writes nothing. `table` is validated against
+        _MARKET_HEALTH_TABLES, so the name interpolated into the query is always
+        one of a fixed known set, never free caller input."""
+        if table not in self._MARKET_HEALTH_TABLES:
+            raise ValueError(f"unknown market-data table: {table!r}")
+        where = "source = ?"
+        params: list = [source]
+        if since is not None:
+            where += " AND trade_date >= ?"
+            params.append(self._d(since))
+        with self._cursor() as cur:
+            cur.execute(self._p(
+                f"SELECT DISTINCT trade_date FROM {table} WHERE {where} ORDER BY trade_date"
+            ), params)
+            trade_dates = [self._as_date(r[0]) for r in cur.fetchall()]
+            cur.execute(self._p(f"SELECT COUNT(*) FROM {table} WHERE {where}"), params)
+            total_rows = int((cur.fetchone() or [0])[0] or 0)
+            latest = trade_dates[-1] if trade_dates else None
+            rows_on_latest, last_ingested_at = 0, None
+            if latest is not None:
+                cur.execute(self._p(
+                    f"SELECT COUNT(*), MAX(ingested_at) FROM {table} "
+                    "WHERE source = ? AND trade_date = ?"
+                ), (source, self._d(latest)))
+                row = cur.fetchone() or (0, None)
+                rows_on_latest = int(row[0] or 0)
+                last_ingested_at = row[1]
+        return {
+            "table": table,
+            "source": source,
+            "trade_dates": trade_dates,
+            "total_rows": total_rows,
+            "latest_trade_date": latest,
+            "rows_on_latest": rows_on_latest,
+            "last_ingested_at": last_ingested_at,
+        }
 
     # ------------------------------------------------------------------
     # Risk events

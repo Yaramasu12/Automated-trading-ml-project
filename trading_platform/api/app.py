@@ -16,6 +16,7 @@ from trading_platform.api.schemas import (
     ArmLiveRequest,
     ComplianceStatusResponse,
     CountEventsResponse,
+    DataHealthResponse,
     DataStatusResponse,
     DbDailyPnlResponse,
     DbEquityCurveResponse,
@@ -315,6 +316,15 @@ def greeks(payload: dict):
 @app.get("/data/status", response_model=DataStatusResponse)
 def data_status():
     return runtime.data_status()
+
+
+@app.get("/data/health", response_model=DataHealthResponse)
+def data_health():
+    # Phase-5 market-data freshness/gap monitor over the Phase-2 store. Read-only
+    # except for the staleness->risk_events alert (the existing alert channel),
+    # de-duped to one row per stale source per UTC day. Unauthenticated like
+    # /health and /data/status so an external monitor can poll it.
+    return runtime.data_health()
 
 
 @app.get("/account/status", response_model=AccountStatusResponse)

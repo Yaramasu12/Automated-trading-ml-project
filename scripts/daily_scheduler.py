@@ -10,6 +10,11 @@ Runs scheduled jobs every trading day:
   15:40 IST  — Local-model post-market review + tuning suggestions (advisory only)
   16:15 IST  — Re-validate the return forecaster on fresh daily candles
   16:30 IST  — Re-validate the intraday forecaster on 5-minute candles
+  19:00 IST  — NSE EOD market-data ingest into the unified store (bhavcopy-only;
+               incremental via ingestion_runs claim-or-skip; ZERO Angel One)
+  19:05 IST  — BSE EOD market-data ingest (SENSEX/BANKEX; same, bhavcopy-only)
+  19:10 IST  — MCX EOD market-data ingest (registered; no-ops gracefully — MCX
+               is WAF-blocked here, so each day is recorded FAILED, never faked)
   20:00 IST  — Recompute the per-index vol-selling premium monitor (reporting
                only; NSE's bhavcopy is reliably published by ~18:30 IST)
   23:25 IST  — MCX EOD square-off
@@ -58,6 +63,9 @@ _JOBS: list[tuple[int, int, str]] = [
     (15, 40, "daily_ai_review"),       # after the P&L snapshot exists, local-model review
     (16, 15, "model_retrain"),         # after the equity close, before MCX EOD
     (16, 30, "intraday_retrain"),
+    (19, 0,  "nse_eod_ingest"),        # unified market-data store; bhavcopy out ~18:30
+    (19, 5,  "bse_eod_ingest"),        # BSE F&O bhavcopy, out earlier (~16:45)
+    (19, 10, "mcx_eod_ingest"),        # registered; no-ops gracefully (WAF-blocked)
     (20, 0,  "premium_monitor_update"),  # NSE bhavcopy is out by ~18:30 IST
     (20, 10, "bse_premium_monitor_update"),  # BSE F&O bhavcopy is out by ~16:45 IST
     (23, 25, "mcx_eod_square_off"),    # commodity EOD — MCX close at 23:30
@@ -818,6 +826,98 @@ def run_intraday_retrain() -> None:
             pass
 
 
+# ---------------------------------------------------------------------------
+# Phase-5: continuous EOD market-data ingestion into the unified store.
+#
+# bhavcopy-only — ZERO Angel One. The live feed is Angel One; these jobs only
+# hit the FREE public NSE/BSE/MCX bhavcopy endpoints, so they NEVER contend with
+# or starve the live feed. They run post-market (after the feed is already
+# stopped at 15:35), reusing scripts/ingest_market_data.run_source so a
+# scheduled catch-up is byte-identical to a manual run: resumable + incremental
+# via the ingestion_runs claim-or-skip lease (already-DONE days skip instantly),
+# per-day idempotent upserts, and a per-day fetch failure recorded FAILED in
+# ingestion_runs rather than raised. Each run_* wrapper additionally catches so
+# a failure is logged + recorded but never aborts the scheduler loop (mirrors
+# the premium_monitor jobs).
+# ---------------------------------------------------------------------------
+
+# Index underlyings + strike band for the scheduled EOD store ingest (matches
+# the Phase-4 chain-capture scoping). A one-time HISTORICAL backfill is the
+# operator's separate scripts/ingest_market_data.py action — these daily jobs
+# only catch up the recent missing days.
+_NSE_INGEST_UNDERLYINGS = ["NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY"]
+_BSE_INGEST_UNDERLYINGS = ["SENSEX", "BANKEX"]
+_INGEST_STRIKE_BAND_PCT = 0.10  # ATM +/-10%
+# Calendar days back the daily catch-up scans. claim-or-skip means already-DONE
+# days are skipped with one cheap INSERT-conflict, so this only ever fetches the
+# genuinely-missing recent days (a short outage's worth), not a full backfill.
+_INGEST_CATCHUP_DAYS = 5
+
+
+def _run_eod_ingest(source: str, underlyings, strike_band_pct) -> dict:
+    """Shared body for the post-market bhavcopy EOD ingest jobs (NSE/BSE/MCX).
+
+    Delegates to scripts/ingest_market_data.run_source, which claims each
+    (source, trade_date) before any fetch and records DONE/HOLIDAY/FAILED per
+    day — so a fetch failure (including MCX's Akamai WAF block, which raises
+    MCXBlockedError) is caught there, recorded FAILED with the reason, and the
+    loop moves on without raising. ZERO Angel One: bhavcopy endpoints only."""
+    from trading_platform.data.persistence import TradingDatabase
+    from scripts.ingest_market_data import run_source
+
+    db = TradingDatabase()
+    today = _now_ist().date()
+    start = today - timedelta(days=_INGEST_CATCHUP_DAYS)
+    lease_owner = f"scheduler@{socket.gethostname()}:{os.getpid()}"
+    totals = run_source(
+        db, source, start, today,
+        lease_owner=lease_owner, lease_seconds=1800.0, delay=0.2, force=False,
+        underlyings=underlyings, strike_band_pct=strike_band_pct, skip_iv30=False,
+    )
+    logger.info("%s EOD ingest (%s..%s) totals: %s", source, start, today, totals)
+    return totals
+
+
+def run_nse_eod_ingest() -> None:
+    logger.info("JOB: nse_eod_ingest — incremental NSE bhavcopy EOD ingest "
+                "(bhavcopy-only, ZERO Angel One — no live-feed contention)")
+    try:
+        _run_eod_ingest("nse", _NSE_INGEST_UNDERLYINGS, _INGEST_STRIKE_BAND_PCT)
+    except Exception as exc:
+        logger.error("nse_eod_ingest failed (isolated — scheduler continues): %s",
+                     exc, exc_info=True)
+
+
+def run_bse_eod_ingest() -> None:
+    logger.info("JOB: bse_eod_ingest — incremental BSE bhavcopy EOD ingest "
+                "(SENSEX/BANKEX, bhavcopy-only, ZERO Angel One)")
+    try:
+        _run_eod_ingest("bse", _BSE_INGEST_UNDERLYINGS, _INGEST_STRIKE_BAND_PCT)
+    except Exception as exc:
+        logger.error("bse_eod_ingest failed (isolated — scheduler continues): %s",
+                     exc, exc_info=True)
+
+
+def run_mcx_eod_ingest() -> None:
+    """MCX commodity-futures EOD ingest. REGISTERED but expected to no-op here:
+    MCX fronts its site with an Akamai WAF that blocks the stdlib HTTP stack, so
+    the per-day fetch raises MCXBlockedError. run_source catches it, records the
+    day FAILED with the block reason, and moves on — the scheduler never crashes
+    and no data is ever fabricated. To actually populate MCX in production,
+    supply the JSON from a TLS-impersonating edge fetcher (see mcx_bhavcopy.py).
+    """
+    logger.info("JOB: mcx_eod_ingest — MCX bhavcopy EOD ingest (WAF-blocked here; "
+                "days recorded FAILED, never faked, scheduler never crashes)")
+    try:
+        totals = _run_eod_ingest("mcx", None, None)
+        if totals.get("failed"):
+            logger.info("mcx_eod_ingest: %d day(s) recorded FAILED (expected — "
+                        "MCX WAF block). No fabrication.", totals["failed"])
+    except Exception as exc:
+        logger.error("mcx_eod_ingest failed (isolated — scheduler continues): %s",
+                     exc, exc_info=True)
+
+
 _JOB_FNS = {
     "instrument_refresh": run_instrument_refresh,
     "start_feed": run_start_feed,
@@ -830,6 +930,9 @@ _JOB_FNS = {
     "premium_monitor_update": run_premium_monitor_update,
     "bse_premium_monitor_update": run_bse_premium_monitor_update,
     "mcx_eod_square_off": run_mcx_eod_square_off,
+    "nse_eod_ingest": run_nse_eod_ingest,
+    "bse_eod_ingest": run_bse_eod_ingest,
+    "mcx_eod_ingest": run_mcx_eod_ingest,
 }
 
 # Section 21B: "Run CPU/GPU-heavy training away from the order/exit loop

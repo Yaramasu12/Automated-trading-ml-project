@@ -4519,6 +4519,31 @@ class TradingRuntime:
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }
 
+    def data_health(self) -> dict:
+        """Phase-5 market-data freshness/gap report over the Phase-2 store, per
+        (source, asset_class). READ-ONLY apart from the EXISTING alert channel:
+        when a source is stale beyond DATA_STALENESS_MAX_DAYS trading days it
+        writes a `risk_events` row (de-duped to one per source per UTC day), so
+        staleness surfaces where every other platform alert already does. Never
+        fetches, never backfills, never fabricates a reading."""
+        from trading_platform.data.data_health import compute_data_health
+        try:
+            return compute_data_health(self.db, write_alert=True)
+        except Exception as exc:
+            note_swallowed("data_health", exc)
+            # Shape-complete so the typed response model still serializes.
+            return {
+                "as_of": datetime.now(timezone.utc).date().isoformat(),
+                "max_stale_trading_days": 0,
+                "stale": False,
+                "stale_sources": {},
+                "alerts_written": [],
+                "entries": [],
+                "generated_at": datetime.now(timezone.utc).isoformat(),
+                "status": "error",
+                "error": str(exc)[:200],
+            }
+
     def latest_monitor_digest(self) -> dict | None:
         """Most recent entry from the 24/7 runtime monitor loop, or None before
         the first tick / when the monitor is disabled."""
