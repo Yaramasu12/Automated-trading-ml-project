@@ -216,16 +216,45 @@ def parse_udiff_bhavcopy(raw_zip: bytes, exchange: str) -> ParsedBhavcopy:
 # ─── persistence ───────────────────────────────────────────────────────────
 
 def persist_bhavcopy(db, parsed: ParsedBhavcopy, *, source: str,
-                     trade_date: date | None = None) -> dict[str, int]:
+                     trade_date: date | None = None,
+                     underlyings: set[str] | frozenset[str] | tuple[str, ...] | None = None,
+                     strike_band_pct: float | None = None,
+                     skip_iv30: bool = False) -> dict[str, int]:
     """Idempotently upsert a parsed bhavcopy into the Phase-2 tables. Returns
     per-table row counts. Re-running the same day overwrites in place (every
-    write is an upsert on the natural key), so it is safe to resume/backfill."""
+    write is an upsert on the natural key), so it is safe to resume/backfill.
+
+    Phase 4 (fidelity backfill): the three keyword filters below are OPT-IN and
+    default to the pre-Phase-4 behaviour (write every parsed row, recover IV30).
+    They exist only to make a multi-year FULL-CHAIN index-option backfill
+    tractable — a single NSE F&O bhavcopy day carries ~40k option rows, and the
+    short-vol backtester only ever touches strikes within a few percent of ATM:
+
+      * ``underlyings`` — if given, persist only rows whose TckrSymb is in this
+        set (e.g. the six index underlyings). Cash/future rows for other symbols
+        are skipped too, so only the requested chains land.
+      * ``strike_band_pct`` — if given, persist only option strikes within this
+        fraction of the row's own traded underlying price (e.g. 0.10 = ATM ±10%).
+        Rows with no underlying_px are kept (cannot band them). Never applied to
+        the futures/cash rows.
+      * ``skip_iv30`` — if True, do NOT recover/write the modeled index_atm_iv30.
+        The Phase-4 backfill wants RAW traded option quotes only; leaving IV30 out
+        keeps the modeled-IV series sourced from its existing CSV/DB exactly as
+        before, so model-mode validation stays byte-identical.
+
+    NONE of these touch the raw columns of a row that IS written — they only
+    decide which rows are written. implied_vol on every option row stays NULL
+    (raw only), exactly as before.
+    """
     td = trade_date or parsed.trade_date
     if td is None:
         return {"instruments": 0, "eod_ohlcv": 0, "eod_option_quote": 0, "index_atm_iv30": 0}
     counts = {"instruments": 0, "eod_ohlcv": 0, "eod_option_quote": 0, "index_atm_iv30": 0}
+    want = {u.upper() for u in underlyings} if underlyings is not None else None
 
     for rec in parsed.ohlcv:
+        if want is not None and (rec.tckr_symbol or "").upper() not in want:
+            continue
         db.upsert_instrument(
             instrument_id=rec.instrument_id, exchange=rec.exchange, segment=rec.segment,
             instrument_type=rec.instrument_type, tckr_symbol=rec.tckr_symbol,
@@ -241,6 +270,12 @@ def persist_bhavcopy(db, parsed: ParsedBhavcopy, *, source: str,
         counts["eod_ohlcv"] += 1
 
     for q in parsed.options:
+        if want is not None and (q.underlying or "").upper() not in want:
+            continue
+        if (strike_band_pct is not None and q.underlying_px and q.underlying_px > 0
+                and q.strike is not None
+                and abs(q.strike - q.underlying_px) > strike_band_pct * q.underlying_px):
+            continue
         db.upsert_instrument(
             instrument_id=q.instrument_id, exchange=q.exchange, segment="FO",
             instrument_type="OPT", tckr_symbol=q.tckr_symbol, underlying=q.underlying,
@@ -261,7 +296,7 @@ def persist_bhavcopy(db, parsed: ParsedBhavcopy, *, source: str,
 
     # Modeled per-index 30-day ATM IV, via the SAME research pipeline the live
     # premium monitor and the historical IV builder use (one implementation).
-    if parsed.index_option_rows:
+    if parsed.index_option_rows and not skip_iv30:
         rows = atm_rows(td, parsed.index_option_rows)
         for idx, (iv30, spot_parity) in iv30_for_day(rows).items():
             db.upsert_index_atm_iv30(

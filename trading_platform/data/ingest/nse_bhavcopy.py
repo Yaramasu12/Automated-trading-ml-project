@@ -25,14 +25,22 @@ def fetch(d: date, retries: int = 3) -> bytes | None:
 
 
 def ingest_day(db, d: date, *, raw_zip: bytes | None = None,
-               source: str = SOURCE) -> dict[str, int] | None:
+               source: str = SOURCE, underlyings=None,
+               strike_band_pct: float | None = None,
+               skip_iv30: bool = False) -> dict[str, int] | None:
     """Fetch (unless raw_zip is supplied), parse and persist one day.
 
     Returns per-table row counts, or None when NSE has no file for the day
     (holiday). Per-day idempotent via the upserts in persist_bhavcopy.
+
+    ``underlyings`` / ``strike_band_pct`` / ``skip_iv30`` are the opt-in Phase-4
+    scoping filters forwarded verbatim to persist_bhavcopy (see its docstring);
+    omitted, the full day is persisted exactly as before.
     """
     raw = raw_zip if raw_zip is not None else fetch(d)
     if raw is None:
         return None
     parsed = parse_udiff_bhavcopy(raw, EXCHANGE)
-    return persist_bhavcopy(db, parsed, source=source, trade_date=d)
+    return persist_bhavcopy(db, parsed, source=source, trade_date=d,
+                            underlyings=underlyings, strike_band_pct=strike_band_pct,
+                            skip_iv30=skip_iv30)

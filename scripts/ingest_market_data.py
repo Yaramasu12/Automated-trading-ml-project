@@ -48,7 +48,9 @@ def _daterange(start: date, end: date):
 
 
 def run_source(db, name: str, start: date, end: date, *, lease_owner: str,
-               lease_seconds: float, delay: float, force: bool) -> dict:
+               lease_seconds: float, delay: float, force: bool,
+               underlyings=None, strike_band_pct: float | None = None,
+               skip_iv30: bool = False) -> dict:
     mod = SOURCES[name]
     totals = {"done": 0, "holiday": 0, "skipped": 0, "failed": 0, "rows": 0}
     for d in _daterange(start, end):
@@ -68,7 +70,15 @@ def run_source(db, name: str, start: date, end: date, *, lease_owner: str,
         if delay:
             time.sleep(delay)
         try:
-            counts = mod.ingest_day(db, d)
+            # One transaction per day (one fsync) instead of one commit per
+            # upsert — turns a full-chain index backfill from ~3600 commits/day
+            # into one. No-op on Postgres (the deployed backend), so the live
+            # ingestion container's semantics are unchanged; the network fetch
+            # inside ingest_day runs before any write, so no SQLite write lock
+            # is held across it.
+            with db.bulk_writes():
+                counts = mod.ingest_day(db, d, underlyings=underlyings,
+                                        strike_band_pct=strike_band_pct, skip_iv30=skip_iv30)
         except Exception as exc:  # noqa: BLE001
             totals["failed"] += 1
             if run_id is not None:
@@ -103,6 +113,17 @@ def main() -> int:
     ap.add_argument("--delay", type=float, default=0.2, help="per-request sleep, seconds")
     ap.add_argument("--force", action="store_true",
                     help="re-ingest even days already marked DONE/HOLIDAY")
+    # Phase-4 full-chain backfill scoping (all opt-in; omitted = full day, unchanged):
+    ap.add_argument("--underlyings", nargs="*",
+                    help="persist only these TckrSymb (e.g. the index underlyings)")
+    ap.add_argument("--strike-band-pct", type=float, default=None,
+                    help="persist only option strikes within this fraction of ATM "
+                         "(e.g. 0.10 = underlying_px +/-10%%)")
+    ap.add_argument("--skip-iv30", action="store_true",
+                    help="do NOT recover/write modeled index_atm_iv30 (raw quotes only)")
+    ap.add_argument("--db-path",
+                    help="write to this SQLite file instead of the default/DATABASE_URL "
+                         "(keeps a Phase-4 raw-quote backfill isolated from the live DB)")
     args = ap.parse_args()
 
     if args.date:
@@ -113,12 +134,16 @@ def main() -> int:
         start, end = date.fromisoformat(args.start), date.fromisoformat(args.end)
 
     names = ("nse", "bse", "mcx") if args.source == "all" else (args.source,)
-    db = TradingDatabase()
-    print(f"ingest backend={db.backend} sources={names} window={start}..{end}", flush=True)
+    db = TradingDatabase(db_path=Path(args.db_path)) if args.db_path else TradingDatabase()
+    print(f"ingest backend={db.backend} sources={names} window={start}..{end} "
+          f"underlyings={args.underlyings} strike_band_pct={args.strike_band_pct} "
+          f"skip_iv30={args.skip_iv30} db_path={args.db_path}", flush=True)
     grand = {}
     for name in names:
         t = run_source(db, name, start, end, lease_owner=args.lease_owner,
-                       lease_seconds=args.lease_seconds, delay=args.delay, force=args.force)
+                       lease_seconds=args.lease_seconds, delay=args.delay, force=args.force,
+                       underlyings=args.underlyings, strike_band_pct=args.strike_band_pct,
+                       skip_iv30=args.skip_iv30)
         grand[name] = t
         print(f"[{name}] totals: {t}", flush=True)
     print(f"ingestion complete: {grand}", flush=True)

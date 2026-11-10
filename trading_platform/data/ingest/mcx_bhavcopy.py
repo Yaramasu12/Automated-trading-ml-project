@@ -200,14 +200,25 @@ def fetch(d: date, retries: int = 3) -> dict | None:
     raise MCXBlockedError(f"MCX bhavcopy fetch failed for {d}: {last_exc}")
 
 
-def ingest_day(db, d: date, *, raw_json=None, source: str = SOURCE) -> dict[str, int] | None:
+def ingest_day(db, d: date, *, raw_json=None, source: str = SOURCE,
+               underlyings=None, strike_band_pct: float | None = None,
+               skip_iv30: bool = False) -> dict[str, int] | None:
     """Fetch (unless raw_json is supplied), parse and persist one MCX day.
 
     Returns per-table row counts, or None when MCX has no data for the day.
     Per-day idempotent via the upserts in persist_bhavcopy (shared Phase-2
-    path). Only FUTCOM commodity futures are persisted."""
+    path). Only FUTCOM commodity futures are persisted.
+
+    ``underlyings`` / ``strike_band_pct`` / ``skip_iv30`` are accepted for a
+    uniform ingest interface with the NSE/BSE modules (the orchestrator forwards
+    them to every source). MCX has no options and only FUTCOM futures here, so
+    strike_band_pct/skip_iv30 are no-ops; underlyings, if given, would restrict
+    which commodity symbols persist — Phase-4 index backfills never pass the
+    index set to this source."""
     raw = raw_json if raw_json is not None else fetch(d)
     if raw is None:
         return None
     parsed = parse_mcx_bhavcopy(raw)
-    return persist_bhavcopy(db, parsed, source=source, trade_date=d)
+    return persist_bhavcopy(db, parsed, source=source, trade_date=d,
+                            underlyings=underlyings, strike_band_pct=strike_band_pct,
+                            skip_iv30=skip_iv30)

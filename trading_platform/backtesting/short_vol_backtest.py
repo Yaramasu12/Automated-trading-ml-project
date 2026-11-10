@@ -147,6 +147,67 @@ def load_daily_closes(path: Path | str) -> list[DailyBar]:
     return out
 
 
+# ─── Traded-leg quote book (Phase 4) ──────────────────────────────────────────
+
+@dataclass
+class TradedQuoteBook:
+    """Point-in-time index of REAL traded EOD option quotes, for the
+    ``leg_pricing='traded'`` backtest mode (Phase 4).
+
+    Built once from ``eod_option_quote`` rows (via MarketDataStore / the DB) and
+    passed into ShortVolBacktester. A leg is priced ONLY from its own
+    ``trade_date`` row — the key includes trade_date, so there is no lookahead:
+    asking for a price on day D can never return a quote from day D+1. Holds
+    plain dicts so it pickles cheaply if a caller runs the sweep across
+    processes.
+
+    The traded mark is the official EOD SETTLEMENT price (``settle``) when
+    present and positive, else the traded ``close`` — never the modeled
+    implied_vol, which is a separate column and is never read here.
+    """
+    # (trade_date, underlying, expiry, strike_key, option_type) -> traded price
+    prices: dict = field(default_factory=dict)
+    # (underlying, trade_date) -> sorted tuple of expiries quoted that day
+    expiries_by_day: dict = field(default_factory=dict)
+
+    @staticmethod
+    def _k(strike) -> float:
+        # 23350 and 23350.0 must map to one key; keep a half-point strike distinct.
+        return round(float(strike), 2)
+
+    @classmethod
+    def from_rows(cls, rows) -> "TradedQuoteBook":
+        prices: dict = {}
+        exps: dict = {}
+        for r in rows:
+            td, exp = r.get("trade_date"), r.get("expiry")
+            strike, ot = r.get("strike"), (r.get("option_type") or "").upper()
+            und = (r.get("underlying") or "").upper()
+            if td is None or exp is None or strike is None or ot not in ("CE", "PE"):
+                continue
+            px = r.get("settle")
+            if px is None or px <= 0:
+                px = r.get("close")
+            if px is None or px <= 0:
+                continue
+            prices[(td, und, exp, cls._k(strike), ot)] = float(px)
+            exps.setdefault((und, td), set()).add(exp)
+        return cls(prices=prices,
+                   expiries_by_day={k: tuple(sorted(v)) for k, v in exps.items()})
+
+    def expiries_on(self, underlying: str, trade_date: date) -> tuple:
+        return self.expiries_by_day.get((underlying.upper(), trade_date), ())
+
+    def price(self, trade_date: date, underlying: str, expiry: date,
+              strike: float, option_type: str) -> float | None:
+        return self.prices.get(
+            (trade_date, underlying.upper(), expiry, self._k(strike),
+             (option_type or "").upper()))
+
+    def __len__(self) -> int:
+        return len(self.prices)
+
+
 # ─── Simulation ──────────────────────────────────────────────────────────────
 
 @dataclass
@@ -169,6 +230,15 @@ class ShortVolTrade:
     # _leg_turnovers() and _charges()'s own docstring.
     entry_sell_gross_points: float = 0.0
     entry_buy_gross_points: float = 0.0
+    # Phase 4 (traded-leg mode). expiry = the real listed expiry this trade's
+    # legs were priced against from eod_option_quote; None in model mode.
+    # entry_modeled / exit_modeled are True when AT LEAST ONE leg had no traded
+    # quote that day and fell back to a Black-Scholes model mark — so a reader
+    # can see exactly which trades' credit/close rested on model fallback rather
+    # than a real traded price. Always False in the default model mode.
+    expiry: date | None = None
+    entry_modeled: bool = False
+    exit_modeled: bool = False
 
     @property
     def held_days(self) -> int:
@@ -185,6 +255,20 @@ class ShortVolBacktestResult:
     equity_curve: list[tuple[date, float]] = field(default_factory=list)
     trades: list[ShortVolTrade] = field(default_factory=list)
     skipped_reasons: dict[str, int] = field(default_factory=dict)
+    # Phase 4: which pricing mode produced this result, and the traded-vs-modeled
+    # leg coverage accounting (counted over every leg TRANSACTED — entry + exit —
+    # not the daily mark-to-market). In model mode these stay at the defaults.
+    leg_pricing: str = "model"
+    traded_legs: int = 0
+    modeled_legs: int = 0
+
+    @property
+    def traded_coverage(self) -> float:
+        """Fraction of transacted legs (entry+exit) priced from a REAL traded
+        quote rather than a Black-Scholes model fallback. 0.0 when no legs were
+        priced (e.g. model mode, or no trades)."""
+        total = self.traded_legs + self.modeled_legs
+        return (self.traded_legs / total) if total else 0.0
 
     @property
     def trade_pnls(self) -> list[float]:
@@ -242,6 +326,8 @@ class ShortVolBacktester:
         wing_pct: float | None = None,       # None = fixed INDEX_SPECS wing (default)
         skew_per_10pct: float = 0.25,        # smile steepness used to mark/close legs
         entry_filter=None,                   # optional callable(date) -> bool gating NEW entries
+        leg_pricing: str = "model",          # 'model' (default, unchanged) | 'traded'
+        quote_book: "TradedQuoteBook | None" = None,  # real traded quotes for 'traded' mode
     ) -> None:
         spec = INDEX_SPECS.get(underlying.upper(), INDEX_SPECS["NIFTY"])
         self.underlying = underlying.upper()
@@ -276,6 +362,68 @@ class ShortVolBacktester:
         # a genuinely different premium source, not a parameter tweak.
         self.structure = (structure or "condor").lower()
         self.strategy = strategy or ShortVolStrategy()
+        # Phase 4 — traded-leg pricing. 'traded' prices each leg from the real
+        # eod_option_quote settle/close for (trade_date, underlying, expiry,
+        # strike, CE/PE) via the quote_book, falling back to the model leg when
+        # a quote is absent (labeled). 'model' (default) leaves every pricing
+        # path below byte-identical to before Phase 4.
+        self.leg_pricing = (leg_pricing or "model").lower()
+        self._book = quote_book
+        # The listed expiry the CURRENT open trade's legs are priced against
+        # (traded mode only); set when a trade opens, cleared when it closes.
+        self._cur_expiry: date | None = None
+
+    def _traded_mode(self) -> bool:
+        return self.leg_pricing == "traded" and self._book is not None
+
+    def _choose_expiry(self, entry_day: date, hold_days: int) -> date | None:
+        """Pick the real listed expiry a trade entered on `entry_day` and held
+        ~`hold_days` TRADING days would actually be struck into: the quoted
+        expiry (present in the book for this underlying on this day) nearest to
+        the hold horizon in calendar terms (hold_days * 7/5). Prefers an expiry
+        on/after entry_day. Returns None when the book has no quote for this
+        underlying that day (caller then prices the whole trade as model)."""
+        exps = self._book.expiries_on(self.underlying, entry_day)
+        if not exps:
+            return None
+        target_cal = max(1, round(hold_days * 7 / 5))
+        future = [e for e in exps if e >= entry_day]
+        cands = future or list(exps)
+        return min(cands, key=lambda e: abs((e - entry_day).days - target_cal))
+
+    def _price_leg(self, trade_date: date, leg, spot: float, atm_iv: float,
+                   t_years: float) -> tuple[float, bool]:
+        """(price, was_traded) for one leg on `trade_date`. Traded mode: the
+        real quote for the current trade's expiry/strike/type if present
+        (positive), else the Black-Scholes model leg (was_traded=False). Model
+        mode never calls this."""
+        exp = self._cur_expiry
+        if exp is not None:
+            q = self._book.price(trade_date, self.underlying, exp, leg.strike,
+                                 leg.option_type.value)
+            if q is not None and q > 0:
+                return q, True
+        iv = smile_iv(atm_iv, spot, leg.strike, leg.option_type, self.skew_per_10pct)
+        return black_scholes(spot, leg.strike, t_years, iv, leg.option_type), False
+
+    def _price_structure(self, trade_date: date, legs, spot: float, atm_iv: float,
+                         t_years: float) -> tuple[float, int, int]:
+        """(signed_value, n_traded, n_modeled) for a structure in traded mode.
+
+        signed_value = Σ(+price if the leg is SOLD else -price) — identical in
+        meaning to `_structure_value` (cost to CLOSE / credit RECEIVED share the
+        same per-leg sign), so the run()-loop arithmetic is unchanged; only the
+        per-leg price source differs."""
+        signed = 0.0
+        nt = nm = 0
+        for leg in legs:
+            px, traded = self._price_leg(trade_date, leg, spot, atm_iv, t_years)
+            signed += px if leg.side == Side.SELL else -px
+            if traded:
+                nt += 1
+            else:
+                nm += 1
+        return signed, nt, nm
 
     def _wing_at(self, spot: float) -> float:
         if self.wing_pct is None:
@@ -285,13 +433,20 @@ class ShortVolBacktester:
 
     # -- structure valuation ------------------------------------------------
 
-    def _structure_value(self, legs, spot: float, atm_iv: float, t_years: float) -> float:
+    def _structure_value(self, legs, spot: float, atm_iv: float, t_years: float,
+                         *, trade_date: date | None = None) -> float:
         """Cost to CLOSE the structure, in index points (positive = we pay).
 
         Short legs must be bought back, long legs sold — so this is
         sum(short marks) - sum(long marks), each priced at its own skew-
         adjusted IV.
+
+        Phase 4: in traded mode the per-leg marks come from the real quote book
+        (model fallback when a quote is missing). `trade_date` is ignored in the
+        default model mode, so that path stays byte-identical.
         """
+        if self._traded_mode():
+            return self._price_structure(trade_date, legs, spot, atm_iv, t_years)[0]
         value = 0.0
         for leg in legs:
             iv = smile_iv(atm_iv, spot, leg.strike, leg.option_type, self.skew_per_10pct)
@@ -303,7 +458,8 @@ class ShortVolBacktester:
         """Spread paid crossing every leg once, in points."""
         return self.spread_points * len(legs)
 
-    def _leg_turnovers(self, legs, spot: float, atm_iv: float, t_years: float) -> tuple[float, float]:
+    def _leg_turnovers(self, legs, spot: float, atm_iv: float, t_years: float,
+                       *, trade_date: date | None = None) -> tuple[float, float]:
         """Gross per-leg premium, in index points, split by the leg's own
         SELL/BUY side: (sell_side_gross, buy_side_gross).
 
@@ -317,12 +473,20 @@ class ShortVolBacktester:
         premium was non-trivial relative to the shorts'. Mirrors
         _structure_value's per-leg pricing exactly, just keeping the two
         sides separate instead of netting them.
+
+        Phase 4: traded mode draws each leg's gross premium from the real quote
+        book (model fallback when absent); `trade_date` is ignored in model mode
+        so STT/turnover accounting stays byte-identical there.
         """
         sell_gross = 0.0
         buy_gross = 0.0
+        traded = self._traded_mode()
         for leg in legs:
-            iv = smile_iv(atm_iv, spot, leg.strike, leg.option_type, self.skew_per_10pct)
-            px = black_scholes(spot, leg.strike, t_years, iv, leg.option_type)
+            if traded:
+                px, _ = self._price_leg(trade_date, leg, spot, atm_iv, t_years)
+            else:
+                iv = smile_iv(atm_iv, spot, leg.strike, leg.option_type, self.skew_per_10pct)
+                px = black_scholes(spot, leg.strike, t_years, iv, leg.option_type)
             if leg.side == Side.SELL:
                 sell_gross += px
             else:
@@ -386,6 +550,8 @@ class ShortVolBacktester:
             },
             starting_capital=self.starting_capital,
         )
+        result.leg_pricing = self.leg_pricing
+        self._cur_expiry = None   # no open trade yet (traded-mode leg pricing)
         # long_straddle/strangle (added 2026-09-08) BUY every leg — no credit
         # is ever received, so the whole rest of this method's P&L convention
         # ("credit received minus cost to close, capped loss = wing - credit")
@@ -416,7 +582,8 @@ class ShortVolBacktester:
                 held = i - open_entry_idx
                 dte_left = max(0, self.hold_days - held)
                 t_left = dte_left / TRADING_DAYS
-                structure_value = self._structure_value(open_legs, bar.close, vix / 100.0, t_left)
+                structure_value = self._structure_value(open_legs, bar.close, vix / 100.0, t_left,
+                                                         trade_date=bar.day)
                 spread = self._leg_spread_cost(open_legs)
 
                 if is_long_vol:
@@ -481,7 +648,7 @@ class ShortVolBacktester:
                     # same for every structure, short or long-only, since it
                     # only ever reads each leg's own recorded side.
                     exit_sell_gross, exit_buy_gross = self._leg_turnovers(
-                        open_legs, bar.close, vix / 100.0, t_left,
+                        open_legs, bar.close, vix / 100.0, t_left, trade_date=bar.day,
                     )
                     total_sell_turnover = open_trade.entry_sell_gross_points + exit_buy_gross
                     total_buy_turnover = open_trade.entry_buy_gross_points + exit_sell_gross
@@ -492,9 +659,18 @@ class ShortVolBacktester:
                     open_trade.pnl = pnl
                     open_trade.charges = charges
                     open_trade.exit_reason = reason
+                    # Phase 4: count the EXIT legs as traded-vs-modeled and label
+                    # whether this close rested on any model-fallback leg.
+                    if self._traded_mode():
+                        _, exit_nt, exit_nm = self._price_structure(
+                            bar.day, open_legs, bar.close, vix / 100.0, t_left)
+                        result.traded_legs += exit_nt
+                        result.modeled_legs += exit_nm
+                        open_trade.exit_modeled = exit_nm > 0
                     equity += pnl
                     result.trades.append(open_trade)
                     open_trade, open_legs = None, None
+                    self._cur_expiry = None
                     unrealized = 0.0
 
             # ---- consider a new entry ----------------------------------
@@ -514,7 +690,26 @@ class ShortVolBacktester:
                     structure=self.structure,
                 )
                 if decision.enter and decision.legs and decision.lots > 0:
-                    if is_long_vol:
+                    t_entry = self.hold_days / TRADING_DAYS
+                    # Phase 4: traded mode prices the ENTRY credit/debit from the
+                    # real quote book for the listed expiry nearest the hold
+                    # horizon (model fallback per missing leg). The entry
+                    # DECISION (strikes, lots, VRP gate) is unchanged — only the
+                    # credit each leg is actually worth comes from traded prices.
+                    chosen_expiry = None
+                    entry_modeled = False
+                    entry_nt = entry_nm = 0
+                    if self._traded_mode():
+                        chosen_expiry = self._choose_expiry(bar.day, self.hold_days)
+                        self._cur_expiry = chosen_expiry
+                        signed, entry_nt, entry_nm = self._price_structure(
+                            bar.day, decision.legs, bar.close, vix / 100.0, t_entry)
+                        entry_modeled = entry_nm > 0
+                        if is_long_vol:
+                            entry_amount = -signed + self._leg_spread_cost(decision.legs)
+                        else:
+                            entry_amount = signed - self._leg_spread_cost(decision.legs)
+                    elif is_long_vol:
                         # decision.net_credit is negative-by-convention for a
                         # debit structure (see short_vol.py::decide()) — flip
                         # sign to get the actual amount paid, then add the
@@ -524,7 +719,7 @@ class ShortVolBacktester:
                         entry_amount = decision.net_credit - self._leg_spread_cost(decision.legs)
                     if entry_amount > 0:
                         entry_sell_gross, entry_buy_gross = self._leg_turnovers(
-                            decision.legs, bar.close, vix / 100.0, self.hold_days / TRADING_DAYS,
+                            decision.legs, bar.close, vix / 100.0, t_entry, trade_date=bar.day,
                         )
                         open_trade = ShortVolTrade(
                             entry_day=bar.day,
@@ -540,10 +735,16 @@ class ShortVolBacktester:
                             max_loss_points=entry_amount if is_long_vol else wing_now - entry_amount,
                             entry_sell_gross_points=entry_sell_gross,
                             entry_buy_gross_points=entry_buy_gross,
+                            expiry=chosen_expiry,
+                            entry_modeled=entry_modeled,
                         )
                         open_legs = decision.legs
                         open_entry_idx = i
+                        if self._traded_mode():
+                            result.traded_legs += entry_nt
+                            result.modeled_legs += entry_nm
                     else:
+                        self._cur_expiry = None   # no trade opened; drop the tentative expiry
                         reason_key = "debit too small vs spread cost" if is_long_vol else "credit below spread cost"
                         result.skipped_reasons[reason_key] = result.skipped_reasons.get(reason_key, 0) + 1
                 else:

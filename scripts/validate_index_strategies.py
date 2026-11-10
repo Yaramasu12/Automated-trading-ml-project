@@ -39,6 +39,7 @@ if str(REPO) not in sys.path:
 from trading_platform.backtesting.short_vol_backtest import (  # noqa: E402
     DailyBar,
     ShortVolBacktester,
+    TradedQuoteBook,
     evaluate_short_vol_gates,
     load_daily_closes,
 )
@@ -89,12 +90,14 @@ def load_iv(path: Path) -> dict[date, float]:
 
 
 def _one(args):
-    idx, bars, iv, structure, hold, sd, vrp, spread, skew, wing_pct = args
+    (idx, bars, iv, structure, hold, sd, vrp, spread, skew, wing_pct,
+     leg_pricing, quote_book) = args
     spec = SPECS[idx]
     strat = ShortVolStrategy(sd=sd, min_vrp=vrp, kelly_fraction=0.30, risk_budget=0.05)
     bt = ShortVolBacktester(underlying=idx, hold_days=hold, structure=structure,
                             spread_points=spread, strategy=strat, wing_pct=wing_pct,
-                            skew_per_10pct=skew)
+                            skew_per_10pct=skew, leg_pricing=leg_pricing,
+                            quote_book=quote_book)
     bt.lot_size, bt.strike_step = spec["lot"], spec["step"]
     res = bt.run(bars, iv)
     res.params.update({"structure": structure, "hold_days": hold, "sd": sd, "min_vrp": vrp,
@@ -102,11 +105,16 @@ def _one(args):
     return res
 
 
-def sweep(idx, bars, iv, *, spread=None, skew=0.25, pool=None, wing_pct=WING_PCT):
+def sweep(idx, bars, iv, *, spread=None, skew=0.25, pool=None, wing_pct=WING_PCT,
+          leg_pricing="model", quote_book=None):
     sp = SPECS[idx]["spread"] if spread is None else spread
-    jobs = [(idx, bars, iv, st, h, sd, v, sp, skew, wing_pct)
+    jobs = [(idx, bars, iv, st, h, sd, v, sp, skew, wing_pct, leg_pricing, quote_book)
             for st in STRUCTURES for h in HOLDS for sd in SDS for v in MIN_VRPS]
-    return list(pool.map(_one, jobs)) if pool else [_one(j) for j in jobs]
+    # Traded mode carries a per-index quote book (large, not worth pickling to
+    # every worker 54x); run it serially. Model mode keeps the process pool.
+    if leg_pricing == "traded" or pool is None:
+        return [_one(j) for j in jobs]
+    return list(pool.map(_one, jobs))
 
 
 def stats(res, years):
@@ -149,7 +157,8 @@ def premium_profile(idx, bars, iv):
             f"VRP<0 on {sum(1 for x in vrp if x[2] < 0) / n * 100:4.1f}%")
 
 
-def report(label, idx, bars, iv, pool, out, *, skew=0.25, spread=None, since=None, spreads=None):
+def report(label, idx, bars, iv, pool, out, *, skew=0.25, spread=None, since=None, spreads=None,
+           leg_pricing="model", quote_book=None):
     bars = [b for b in bars if b.day in iv and (since is None or b.day >= since)]
     if len(bars) < 250:
         out.append(f"\n## {label}: only {len(bars)} overlapping days -- too few to validate\n")
@@ -160,7 +169,19 @@ def report(label, idx, bars, iv, pool, out, *, skew=0.25, spread=None, since=Non
                f"skew={skew}, spread={SPECS[idx]['spread'] if spread is None else spread} pts/leg, "
                f"lot {SPECS[idx]['lot']}, step {SPECS[idx]['step']}, wing {WING_PCT*100:.2f}% of spot")
     out.append("premium: " + premium_profile(idx, bars, iv))
-    res = sweep(idx, bars, iv, pool=pool, skew=skew, spread=spread)
+    res = sweep(idx, bars, iv, pool=pool, skew=skew, spread=spread,
+                leg_pricing=leg_pricing, quote_book=quote_book)
+    # Phase 4: traded-vs-modeled leg coverage, aggregated over every trial's
+    # transacted legs (entry+exit). Tells the reader how much of this verdict
+    # rests on REAL traded prices vs Black-Scholes model fallback.
+    tl = sum(r.traded_legs for r in res)
+    ml = sum(r.modeled_legs for r in res)
+    cov = tl / (tl + ml) if (tl + ml) else 0.0
+    if leg_pricing == "traded":
+        out.append(f"leg pricing: **traded** | traded-leg coverage **{cov*100:.1f}%** "
+                   f"({tl:,} traded / {ml:,} modeled-fallback legs over all {len(res)} trials)")
+    else:
+        out.append(f"leg pricing: model (Black-Scholes off one daily ATM IV)")
     gates = evaluate_short_vol_gates(res, strategy_id=f"short_vol_{idx.lower()}")
     out.append("\n| structure | hold | best CAGR% | max DD% | Sharpe | trades | win% | (sd, min_vrp) |")
     out.append("|---|---|---|---|---|---|---|---|")
@@ -182,11 +203,12 @@ def report(label, idx, bars, iv, pool, out, *, skew=0.25, spread=None, since=Non
             out.append(f"  - {g.gate_name:16} {g.result.value.upper():5} {g.message}")
     out.append(f"  => all gates passed: **{gates.all_passed}**")
     if spreads:
-        spread_sensitivity(idx, best, bars, iv, out, spreads)
+        spread_sensitivity(idx, best, bars, iv, out, spreads,
+                           leg_pricing=leg_pricing, quote_book=quote_book)
     return best, gates, years
 
 
-def spread_sensitivity(idx, best, bars, iv, out, spreads):
+def spread_sensitivity(idx, best, bars, iv, out, spreads, *, leg_pricing="model", quote_book=None):
     """The winner re-run at several per-leg spreads. For thin-premium indices
     the spread ASSUMPTION can be the whole result (MIDCPNIFTY nets ~1 point of
     credit after 12 points of assumed friction), so it must be shown."""
@@ -197,13 +219,31 @@ def spread_sensitivity(idx, best, bars, iv, out, spreads):
     out.append("|---|---|---|---|---|---|")
     p = best.params
     for sp in spreads:
-        r = _one((idx, bars, iv, p["structure"], int(p["hold_days"]), p["sd"], p["min_vrp"], sp, 0.25, WING_PCT))
+        r = _one((idx, bars, iv, p["structure"], int(p["hold_days"]), p["sd"], p["min_vrp"], sp, 0.25, WING_PCT,
+                  leg_pricing, quote_book))
         st = stats(r, years)
         out.append(f"| {sp} | {st['cagr']:.2f} | {st['mdd']:.1f} | {st['sharpe']:.2f} | {st['n']} | {st['win']:.0f} |")
 
 
+def _quote_book_for(idx, since):
+    """Build a TradedQuoteBook for `idx` from the DB's eod_option_quote rows
+    (raw bhavcopy traded quotes). Reads the DB directly (not the CSV-ATM
+    fallback) so a traded-leg run is priced only from real per-contract chains;
+    an empty DB yields an empty book -> every leg falls back to model (coverage
+    0%, reported honestly)."""
+    db = _STORE.db
+    if db is None:
+        return TradedQuoteBook()
+    try:
+        rows = db.option_quotes(idx, start=since, limit=20_000_000)
+    except Exception as exc:  # pragma: no cover - env dependent
+        print(f"[warn] option_quotes read failed for {idx}: {exc}", flush=True)
+        rows = []
+    return TradedQuoteBook.from_rows(rows)
+
+
 def main() -> int:
-    global STRUCTURES, HOLDS, SDS, MIN_VRPS
+    global STRUCTURES, HOLDS, SDS, MIN_VRPS, _STORE
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--only", nargs="*", help="restrict to these indices")
     ap.add_argument("--nifty-control", action="store_true",
@@ -213,6 +253,15 @@ def main() -> int:
     ap.add_argument("--holds", nargs="*", type=int, help="override hold_days (e.g. 10 20)")
     ap.add_argument("--since", help="only use days on/after this ISO date (sub-period check)")
     ap.add_argument("--spreads", nargs="*", type=float, help="spread sensitivity points for the winner")
+    # Phase 4: price every leg from REAL traded eod_option_quote settle/close
+    # (model fallback + label when a quote is missing), instead of Black-Scholes
+    # model legs. Prints per-index traded-vs-modeled coverage alongside the gate.
+    ap.add_argument("--leg-pricing", choices=("model", "traded"), default="model",
+                    help="'traded' prices legs from real bhavcopy quotes (opt-in); "
+                         "'model' (default) is the existing Black-Scholes behaviour")
+    ap.add_argument("--db-path",
+                    help="read eod_option_quote from this SQLite file (the Phase-4 "
+                         "raw-quote backfill); bars/IV still come from the usual CSV/DB")
     ap.add_argument("--out", default=str(REPO / "audit_results" / "2026-09-19" / "index_strategy_fit.md"))
     ap.add_argument("--workers", type=int, default=6)
     args = ap.parse_args()
@@ -223,24 +272,33 @@ def main() -> int:
     since = date.fromisoformat(args.since) if args.since else None
     spreads = args.spreads
 
+    if args.db_path:
+        from trading_platform.data.persistence import TradingDatabase
+        _STORE = MarketDataStore(db=TradingDatabase(db_path=Path(args.db_path)), hist_dir=HIST)
+
     out: list[str] = ["# Per-index short-vol strategy fit (own-chain implied vol)\n",
                       "Generated by scripts/validate_index_strategies.py. See that file's docstring "
-                      "and short_vol_backtest.py's LIMITATIONS before reading any number here."]
+                      "and short_vol_backtest.py's LIMITATIONS before reading any number here.",
+                      f"\nleg pricing mode: **{args.leg_pricing}**"
+                      + (f" (traded quotes from {args.db_path})" if args.leg_pricing == "traded" and args.db_path else "")]
     idxs = [i for i in ("NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY", "SENSEX", "BANKEX")
             if not args.only or i in args.only]
     with ProcessPoolExecutor(max_workers=args.workers) as pool:
         if args.nifty_control:
             vix_path = HIST / "INDIAVIX__ONE_DAY_deep.csv"
             bars = load_bars("NIFTY")
+            qb = _quote_book_for("NIFTY", since) if args.leg_pricing == "traded" else None
             report("NIFTY control A: India VIX as IV (the original validation input)", "NIFTY",
-                   bars, load_iv(vix_path), pool, out, skew=args.skew, since=since)
+                   bars, load_iv(vix_path), pool, out, skew=args.skew, since=since,
+                   leg_pricing=args.leg_pricing, quote_book=qb)
         for idx in idxs:
             iv = _STORE.iv30(idx)   # DB-first modeled own-chain IV30; CSV fallback
             if not iv:
                 out.append(f"\n## {idx}: no IV history (IV30 series empty)\n")
                 continue
+            qb = _quote_book_for(idx, since) if args.leg_pricing == "traded" else None
             report(f"{idx}: own-chain ATM IV30", idx, load_bars(idx), iv, pool, out, skew=args.skew,
-                   since=since, spreads=spreads)
+                   since=since, spreads=spreads, leg_pricing=args.leg_pricing, quote_book=qb)
     text = "\n".join(out)
     Path(args.out).parent.mkdir(parents=True, exist_ok=True)
     Path(args.out).write_text(text, encoding="utf-8")
