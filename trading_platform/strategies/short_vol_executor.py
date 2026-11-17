@@ -827,7 +827,17 @@ class ShortVolExecutor:
         # the ATM-IV candle fetches stay under Angel One's throttle. Slots with an
         # open position are skipped for free (no fetch); once all are filled the
         # scan is a no-op. Positions hold for days, so staggered entry is fine.
-        max_per_scan = max(1, int(os.getenv("SHORTVOL_MAX_ENTRIES_PER_SCAN", "3")))
+        #
+        # The cap MUST cover every configured (underlying x expiry) slot, or the
+        # trailing underlyings are STARVED: with 4 approved underlyings and the
+        # old flat cap of 3, SENSEX (4th) never got evaluated while the first 3
+        # stayed unfilled (the normal thin-premium state) — a structural bug that
+        # excluded a validated edge from ever trading (found 2026-11-17). The
+        # candle throttle already paces the handful of fetches, so covering all
+        # slots is safe; an explicit SHORTVOL_MAX_ENTRIES_PER_SCAN can still raise
+        # it further but can no longer silently starve a configured edge.
+        n_slots = max(1, len(self.auto_underlyings)) * max(1, int(os.getenv("SHORTVOL_MAX_EXPIRIES", "1")))
+        max_per_scan = max(n_slots, int(os.getenv("SHORTVOL_MAX_ENTRIES_PER_SCAN", "3")))
         attempts = 0
         first = True
         for underlying in self.auto_underlyings:
