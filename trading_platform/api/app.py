@@ -305,7 +305,7 @@ def vol_surface_diagnostics(underlying: str):
     return runtime.vol_surface_diagnostics(underlying)
 
 
-@app.post("/derivatives/greeks")
+@app.post("/derivatives/greeks", dependencies=[_AuthDep])
 def greeks(payload: dict):
     try:
         return runtime.calculate_greeks(payload)
@@ -419,7 +419,7 @@ def model_selection(payload: dict):
     return runtime.model_selection(payload)
 
 
-@app.post("/portfolio/target-progress")
+@app.post("/portfolio/target-progress", dependencies=[_AuthDep])
 def target_progress(payload: dict):
     try:
         return runtime.target_progress(payload)
@@ -440,7 +440,7 @@ def target_progress_live() -> dict:
     return runtime.target_progress({})
 
 
-@app.post("/risk/supervisor-decision")
+@app.post("/risk/supervisor-decision", dependencies=[_AuthDep])
 def supervisor_decision(payload: dict):
     return runtime.supervisor_decision(payload)
 
@@ -655,7 +655,7 @@ def feed_ticks_batch(symbols: str = ""):
 _FEED_BATCH_MAX_SYMBOLS = 500
 
 
-@app.post("/feed/ticks/batch")
+@app.post("/feed/ticks/batch", dependencies=[_AuthDep])
 def feed_ticks_batch_post(payload: dict | None = None):
     """Return ticks for many symbols without relying on a very long URL."""
     payload = payload or {}

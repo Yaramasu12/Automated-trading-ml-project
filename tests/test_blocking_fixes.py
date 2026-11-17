@@ -224,6 +224,53 @@ class AuthIntegrationTests(unittest.TestCase):
         )
         self.assertEqual(r.status_code, 200)
 
+    def test_every_mutating_route_requires_auth(self):
+        """Regression guard (SEC-1): every state-changing route (POST/PUT/PATCH/
+        DELETE) must carry the require_auth dependency. A new mutating endpoint
+        added without ``dependencies=[_AuthDep]`` fails here instead of silently
+        shipping an unauthenticated control-plane hole. Intentionally-public
+        state-changing paths must be listed in ``public_mutating`` with a reason,
+        so exposing one is always a conscious, reviewed decision."""
+        from fastapi.routing import APIRoute
+        from trading_platform.api.app import app
+        from trading_platform.api.auth import require_auth
+
+        # Empty today: every mutating endpoint is authenticated. Add a path here
+        # only alongside a comment justifying why it is safe to expose unauthed.
+        public_mutating: set[str] = set()
+
+        def _has_auth(route: APIRoute) -> bool:
+            stack = [route.dependant]
+            seen: set[int] = set()
+            while stack:
+                dep = stack.pop()
+                if dep is None or id(dep) in seen:
+                    continue
+                seen.add(id(dep))
+                if getattr(dep, "call", None) is require_auth:
+                    return True
+                stack.extend(getattr(dep, "dependencies", []) or [])
+            return False
+
+        mutating = {"POST", "PUT", "PATCH", "DELETE"}
+        missing = []
+        for route in app.routes:
+            if not isinstance(route, APIRoute):
+                continue
+            route_methods = route.methods & mutating
+            if not route_methods:
+                continue
+            if route.path in public_mutating:
+                continue
+            if not _has_auth(route):
+                missing.append(f"{sorted(route_methods)} {route.path}")
+
+        self.assertEqual(
+            missing,
+            [],
+            "State-changing routes missing require_auth (SEC-1): " + ", ".join(missing),
+        )
+
 
 # ---------------------------------------------------------------------------
 # B4 + close-of-bar lookahead: SimulatedBrokerClient slippage

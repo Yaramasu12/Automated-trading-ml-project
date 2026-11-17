@@ -146,11 +146,17 @@ services:
       # gap as the LOCAL_LLM_* vars earlier).
       - ANGEL_ONE_CANDLE_MIN_INTERVAL=${ANGEL_ONE_CANDLE_MIN_INTERVAL:-0.35}
       - ANGEL_ONE_CANDLE_RETRIES=${ANGEL_ONE_CANDLE_RETRIES:-3}
-      # Set API_AUTH_TOKEN in your shell/CI secrets before running in production.
-      # Local dev: auth is disabled by default so the container starts without a token.
-      # Production: export API_AUTH_REQUIRED=true API_AUTH_TOKEN=<your-secret> before compose up.
+      # SEC-1: the control plane fails CLOSED by default. With API_AUTH_REQUIRED
+      # unset (now defaulting true) and no API_AUTH_TOKEN, the API refuses to
+      # start (clear ValueError from load_settings) instead of silently serving
+      # kill-switch / execution-mode / live-arming to anyone who can reach the
+      # published port (0.0.0.0:8100). Generate a token with
+      #   python -c "import secrets; print(secrets.token_urlsafe(48))"
+      # and set API_AUTH_TOKEN in your shell/.env before `compose up`.
+      # Local dev only: set API_AUTH_REQUIRED=false (leaving the token empty) to
+      # explicitly opt into the no-auth bypass.
       - API_AUTH_TOKEN=${API_AUTH_TOKEN:-}
-      - API_AUTH_REQUIRED=${API_AUTH_REQUIRED:-false}
+      - API_AUTH_REQUIRED=${API_AUTH_REQUIRED:-true}
       - API_CORS_ORIGINS=${API_CORS_ORIGINS:-http://localhost:5173,http://127.0.0.1:5173}
       - AUTO_START_AGENT=${AUTO_START_AGENT:-false}
       - AUTO_START_LIVE_FEED=${AUTO_START_LIVE_FEED:-false}
