@@ -69,6 +69,7 @@ class ShortVolStrategy:
         strike_step: int = 50,
         hold_days: int = 5,
         kelly_fraction: float | None = None,
+        floor_one_lot: bool | None = None,
     ) -> None:
         self.sd = sd if sd is not None else float(os.getenv("SHORTVOL_SD", "1.25"))
         self.wing_width = wing_width if wing_width is not None else float(os.getenv("SHORTVOL_WING", "300"))
@@ -87,6 +88,17 @@ class ShortVolStrategy:
         self.kelly_fraction = (
             kelly_fraction if kelly_fraction is not None
             else float(os.getenv("SHORTVOL_KELLY_FRACTION", "0.30"))
+        )
+        # Opt-in: when the entry gate clears and there IS a positive edge
+        # (f_kelly > 0) but fractional Kelly rounds to < 1 lot, take the minimum
+        # tradeable 1 lot instead of flooring to 0 — because you cannot bet a
+        # fractional lot, and skipping a +EV entry on a big-lot index is why the
+        # live book trades so rarely. STILL capped by the risk-budget lots (and,
+        # live, by the tail cap), so it never exceeds the risk limits. Default
+        # OFF — must be validated through the gates before it is turned on.
+        self.floor_one_lot = (
+            floor_one_lot if floor_one_lot is not None
+            else os.getenv("SHORTVOL_FLOOR_ONE_LOT", "false").strip().lower() in {"1", "true", "yes", "on"}
         )
 
     @staticmethod
@@ -143,6 +155,8 @@ class ShortVolStrategy:
         if f_kelly <= 0:
             return 0                          # no edge at this size -> don't trade
         lots = int((capital * f_kelly * self.kelly_fraction) / (max_loss * lot_size))
+        if self.floor_one_lot and lots < 1 and risk_cap_lots >= 1:
+            lots = 1   # +EV entry, but fractional Kelly < 1 lot — take the minimum
         return max(0, min(lots, risk_cap_lots))
 
     # ── signal ────────────────────────────────────────────────────────────────
