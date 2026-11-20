@@ -167,3 +167,37 @@ def swallowed_errors_by_component() -> dict[str, int]:
 def swallowed_error_count() -> int:
     """Total exceptions routed through note_swallowed() since process start."""
     return _SWALLOWED["count"]
+
+
+# OBS-2: the subset of note_swallowed() components where a swallow means a
+# money-path WRITE/EXEC fault — a position/exit/fill failed to PERSIST,
+# unresolved-order remediation failed to record its resolving event, or the
+# kill switch failed to restore on boot. These are "investigate now", unlike
+# the constant benign background swallows the runtime-monitor comment calls
+# out (absent news feed, AI-council stub fallbacks, vector memory, TCA
+# analytics, the fail-closed data fallback that SKIPS rather than persists).
+# Only these flip the top-line operational_status to DEGRADED; the full
+# per-component breakdown (swallowed_by_component) still shows everything.
+MONEY_PATH_CRITICAL_SWALLOW_COMPONENTS = frozenset({
+    "save_exit_plan",                   # exit plan failed to persist
+    "settle_expired.save_positions",    # post-settlement position write lost
+    "settle_expired.apply_fill",        # expiry settlement fill not applied
+    "square_off.save_risk_event",       # EOD square-off risk event unrecorded
+    "unresolved_remediation.append",    # resolving OMS event failed to write
+    "restore_state.rearm_exit_plan",    # an open position's exit not re-armed
+    "runtime.init.kill_switch_restore", # kill-switch state lost across restart
+})
+
+
+def critical_swallowed_error_count() -> int:
+    """Count of swallows from money-path-critical components (OBS-2).
+
+    Sticky until process restart on purpose: a failed write of money state is
+    an investigate-now condition, not a transient to auto-clear — the same
+    semantics as unresolved_orders in the operational snapshot. Resets when
+    the process restarts (the swallow counters are in-memory)."""
+    by_component = swallowed_errors_by_component()
+    return sum(
+        count for component, count in by_component.items()
+        if component in MONEY_PATH_CRITICAL_SWALLOW_COMPONENTS
+    )

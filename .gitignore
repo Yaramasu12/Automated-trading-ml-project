@@ -2,6 +2,19 @@
 .env
 .env.*
 !.env.example
+
+# SEC-5: private keys / certs must never be committed (this repo is PUBLIC).
+# deploy/README.md tells operators to create an SSH .pem; a private key or
+# broker cert dropped anywhere in the tree would otherwise be trackable.
+*.pem
+*.key
+*.p12
+*.pfx
+*.pkcs12
+id_rsa
+id_rsa.*
+id_ed25519
+id_ed25519.*
 .venv/
 venv/
 __pycache__/

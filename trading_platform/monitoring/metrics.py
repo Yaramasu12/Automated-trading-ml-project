@@ -46,6 +46,7 @@ class OperationalSnapshot:
     stale_market_data: bool
     unresolved_orders: int
     blocked_exits: int
+    critical_write_failures: int
     total_orders: int
     filled_orders: int
     rejected_orders: int
@@ -139,6 +140,7 @@ class OperationalMonitor:
         stale_market_data: bool = False,
         unresolved_orders: int = 0,
         blocked_exits: int = 0,
+        critical_write_failures: int = 0,
     ) -> OperationalSnapshot:
         now = datetime.now(timezone.utc)
         rejection_rate = self.rejected_orders / self.total_orders if self.total_orders else 0.0
@@ -155,8 +157,19 @@ class OperationalMonitor:
         # (ExitManager's own "may be STUCK OPEN" CRITICAL log). Both are
         # real operational faults, not merely stale-feed-shaped ones, so
         # they belong in the same DEGRADED signal.
+        #
+        # critical_write_failures (OBS-2): a swallow from a money-path WRITE
+        # component (logging_safety.MONEY_PATH_CRITICAL_SWALLOW_COMPONENTS) —
+        # a position/exit/fill that failed to persist, remediation that
+        # failed to record, or a lost kill-switch restore. Previously these
+        # only moved the runtime-monitor digest's severity (a separate
+        # channel); the top-line status a dashboard badge reads stayed
+        # HEALTHY. They are genuine integrity faults, so they degrade here
+        # too — the curated set excludes the benign background swallows that
+        # would otherwise pin the badge permanently red.
         elif (
             stale_market_data or unresolved_orders > 0 or blocked_exits > 0
+            or critical_write_failures > 0
             or rejection_rate > 0.10 or average_latency > 200
         ):
             status = "DEGRADED"
@@ -183,6 +196,7 @@ class OperationalMonitor:
             stale_market_data=stale_market_data,
             unresolved_orders=unresolved_orders,
             blocked_exits=blocked_exits,
+            critical_write_failures=critical_write_failures,
             total_orders=self.total_orders,
             filled_orders=self.filled_orders,
             rejected_orders=self.rejected_orders,

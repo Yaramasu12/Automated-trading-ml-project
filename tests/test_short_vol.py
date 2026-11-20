@@ -978,5 +978,47 @@ class TailLossCapTests(IvRankGateTests):
             self.assertIn("tail cap", tight["reason"])
 
 
+class SyntheticDataRefusalTests(unittest.TestCase):
+    """DATA-2: the money path must refuse to enter on fabricated history.
+
+    DecisionPipeline already fails closed (raises rather than returning
+    synthetic bars) whenever a real history_provider is configured, and
+    test_decision_pipeline.py locks every pipeline-level invariant. But the
+    ONE trader that actually submits orders — ShortVolExecutor.build() — has
+    its own second-layer gate (short_vol_executor.py: "Fail closed ... refuse
+    rather than trade on it") that no test guarded. Deleting that gate would
+    leave every pipeline test green while the executor sized a condor off
+    fake realized_vol/VRP. These two tests pin the gate itself.
+    """
+
+    def _executor(self, *, synthetic: bool):
+        # decision_pipeline double: _closes_and_spot() reads .close off each
+        # bar, then build() consults bars_were_synthetic(underlying).
+        dp = SimpleNamespace(
+            _fetch_bars=lambda u, s, d: [SimpleNamespace(close=24000.0 + i) for i in range(40)],
+            bars_were_synthetic=lambda u: synthetic,
+        )
+        rt = SimpleNamespace(
+            decision_pipeline=dp,
+            live_feed=None,  # tick resolution fails -> spot falls back to last close
+            instrument_master=SimpleNamespace(nearest_expiry=lambda *a, **k: None),
+            portfolio=SimpleNamespace(cash=1_000_000.0, equity=1_000_000.0, positions={}),
+        )
+        return ShortVolExecutor(rt)
+
+    def test_build_refuses_when_bars_are_synthetic(self):
+        out = self._executor(synthetic=True).build("NIFTY")
+        self.assertFalse(out["enter"])
+        self.assertIn("SYNTHETIC-DATA FALLBACK", out["reason"])
+        self.assertEqual(out["lots"], 0)
+
+    def test_build_passes_synthetic_gate_when_bars_are_real(self):
+        # Positive control: with real bars the synthetic gate must NOT fire.
+        # build() still stops later (the double resolves no expiry), but for a
+        # DIFFERENT reason — proving it got past the synthetic refusal.
+        out = self._executor(synthetic=False).build("NIFTY")
+        self.assertNotIn("SYNTHETIC-DATA FALLBACK", out.get("reason", ""))
+
+
 if __name__ == "__main__":
     unittest.main()

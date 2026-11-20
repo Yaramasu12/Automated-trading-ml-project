@@ -118,7 +118,12 @@ from trading_platform.api.regime_meta_service import RegimeMetaService
 from trading_platform.api.live_feed_service import LiveFeedService
 from trading_platform.api.price_service import PriceResolution, PriceResolutionService
 from trading_platform.api.ai_capabilities import ai_capabilities, log_capabilities_at_startup
-from trading_platform.logging_safety import note_swallowed, swallowed_errors_by_component, swallowed_error_count
+from trading_platform.logging_safety import (
+    note_swallowed,
+    swallowed_errors_by_component,
+    swallowed_error_count,
+    critical_swallowed_error_count,
+)
 from trading_platform.ai.meta_labeler import MetaLabeler
 from trading_platform.agents.model_gateway import LocalModelGateway
 from trading_platform.agents.supervisor import AgentCouncilSupervisor
@@ -4154,6 +4159,16 @@ class TradingRuntime:
             blocked_exits_count = int(self.blocked_exit_plans().get("count", 0))
         except Exception as exc:
             note_swallowed("monitoring_metrics.blocked_exits", exc)
+        # critical_write_failures (OBS-2): swallows from money-path WRITE
+        # components (a position/exit/fill that failed to persist, failed
+        # remediation, lost kill-switch restore) — these degrade the top-line
+        # status, unlike the benign background swallows. Curated set lives in
+        # logging_safety.MONEY_PATH_CRITICAL_SWALLOW_COMPONENTS.
+        critical_write_failures = 0
+        try:
+            critical_write_failures = critical_swallowed_error_count()
+        except Exception as exc:
+            note_swallowed("monitoring_metrics.critical_swallows", exc)
         return self.monitor.snapshot(
             execution_mode=self.execution_mode.value,
             live_armed=self.live_armed,
@@ -4161,6 +4176,7 @@ class TradingRuntime:
             unresolved_orders=unresolved_count,
             blocked_exits=blocked_exits_count,
             stale_market_data=stale_market_data,
+            critical_write_failures=critical_write_failures,
         ).to_dict()
 
     def monitoring_events(self, limit: int = 20) -> dict:
@@ -4606,11 +4622,15 @@ class TradingRuntime:
             "state": self.state_payload(),
             "broker_auth": broker_auth,
             "risk_limits": asdict(self.risk_engine.limits),
-            "operational_status": self.monitor.snapshot(
-                execution_mode=self.execution_mode.value,
-                live_armed=self.live_armed,
-                kill_switch_active=self.kill_switch_active,
-            ).status,
+            # OBS-2: reuse /monitoring/metrics' full status computation so the
+            # two surfaces can't disagree. The old inline snapshot() here
+            # passed no signals, so operational_status could only ever read
+            # HALTED (kill switch) or HEALTHY — it never went DEGRADED on
+            # stale data, unresolved orders, blocked exits or money-path write
+            # failures the way /monitoring/metrics already did. Guarded: a
+            # failure computing the rich status must not break /health (the
+            # compose healthcheck polls it), so fall back to the cheap one.
+            "operational_status": self._operational_status_for_health(),
             "scheduler": self.scheduler.stats,
             "event_bus": self.event_bus.summary(),
             "manual_approval": self.manual_approval_status(),
@@ -4627,9 +4647,27 @@ class TradingRuntime:
             # pointing anywhere. (Added to the metrics dict first by mistake;
             # /health builds this separate payload.)
             "swallowed_by_component": swallowed_errors_by_component(),
+            # OBS-2: the money-path-critical subset that drives operational_status
+            # to DEGRADED — points the operator straight at persistence/exec faults.
+            "critical_swallowed_errors": critical_swallowed_error_count(),
             "runtime_monitor": self.latest_monitor_digest(),
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }
+
+    def _operational_status_for_health(self) -> str:
+        """Full (money-path-aware) operational status for /health, reusing the
+        same computation /monitoring/metrics uses. Falls back to the cheap
+        kill-switch-only snapshot if the rich computation raises, so /health
+        (polled by the compose healthcheck) never fails on this field."""
+        try:
+            return self.monitoring_metrics()["status"]
+        except Exception as exc:
+            note_swallowed("health.operational_status", exc)
+            return self.monitor.snapshot(
+                execution_mode=self.execution_mode.value,
+                live_armed=self.live_armed,
+                kill_switch_active=self.kill_switch_active,
+            ).status
 
     def data_health(self) -> dict:
         """Phase-5 market-data freshness/gap report over the Phase-2 store, per
