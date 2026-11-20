@@ -171,6 +171,13 @@ services:
       - ENABLE_GOAL_GOVERNOR=${ENABLE_GOAL_GOVERNOR:-true}
       # PostgreSQL connection — auto-activates the PostgreSQL backend in TradingDatabase
       - DATABASE_URL=${DATABASE_URL:-postgresql://trading:trading_secret@timescaledb:5432/trading}
+      # PERSIST-1: fail CLOSED on the backend decision. With this explicit, a
+      # cleared/edited DATABASE_URL makes the API refuse to start (RuntimeError
+      # in runtime.py) instead of silently serving stale local SQLite — the
+      # exact 2026-09-09 split-brain (trades froze while the stack wrote to
+      # Timescale). To intentionally run SQLite, set REQUIRE_POSTGRES=false AND
+      # DATABASE_URL= together.
+      - REQUIRE_POSTGRES=${REQUIRE_POSTGRES:-true}
       - LOCAL_LLM_GATEWAY=${LOCAL_LLM_GATEWAY:-disabled}
       - LOCAL_LLM_RUNTIME=${LOCAL_LLM_RUNTIME:-stub}
       - LOCAL_LLM_BASE_URL=${LOCAL_LLM_BASE_URL:-http://localhost:11434}
@@ -257,6 +264,11 @@ services:
       # and the dashboard would still show zero rows forever, because it was
       # writing to a database nothing else ever reads.
       - DATABASE_URL=${DATABASE_URL:-postgresql://trading:trading_secret@timescaledb:5432/trading}
+      # PERSIST-1: same fail-closed backend guard as trading-api — the EOD
+      # ingest jobs above (nse/bse/mcx) write through TradingDatabase, so a
+      # cleared DATABASE_URL must fail loudly, not silently write to a local
+      # SQLite file nothing else reads (the 2026-09-07 daily_pnl-zero-rows bug).
+      - REQUIRE_POSTGRES=${REQUIRE_POSTGRES:-true}
       # 2026-10-13 audit: keep the scheduler's runtime consistent with
       # trading-api (edge gate + tail cap), and enforce the DSR search-breadth
       # floor on any gate evaluation it runs.

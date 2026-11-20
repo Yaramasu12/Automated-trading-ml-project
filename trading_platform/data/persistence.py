@@ -893,6 +893,25 @@ class TradingDatabase:
             self._init_postgres()
         else:
             self._mode = "sqlite"
+            # PERSIST-1: fail CLOSED on the backend decision at EVERY construction
+            # site, not just TradingRuntime. A bare TradingDatabase() in a
+            # scheduler job (EOD ingest, daily P&L) that silently fell back to a
+            # local SQLite file nothing else reads was the 2026-09-07 /
+            # 2026-09-09 split-brain (jobs "succeeded" writing to a dead DB;
+            # dashboard showed zero rows forever). When the backend was
+            # AUTO-resolved (no explicit db_path) and REQUIRE_POSTGRES is set, a
+            # SQLite result means DATABASE_URL was missing/cleared — raise instead
+            # of diverging. An explicit db_path (tests, tools, one-off scripts) is
+            # a deliberate SQLite request and is always honored.
+            if db_path is None and os.getenv("REQUIRE_POSTGRES", "").strip().lower() in {
+                "1", "true", "yes", "y", "on"
+            }:
+                raise RuntimeError(
+                    "REQUIRE_POSTGRES is set but DATABASE_URL did not resolve to a "
+                    "PostgreSQL backend (fell back to SQLite). Set "
+                    "DATABASE_URL=postgresql://... or unset REQUIRE_POSTGRES for a "
+                    "deliberately local/dev run."
+                )
             self.db_path = db_path or _DEFAULT_DB_PATH
             self.db_path.parent.mkdir(parents=True, exist_ok=True)
             self._local = threading.local()
