@@ -88,7 +88,7 @@ sidebar → **API Token** → paste the token from `trading.env`.
 |---|---|
 | Logs | `docker logs -f trading-api` |
 | Restart stack | `cd /opt/trading && docker compose restart` |
-| Deploy new code | rsync again, then `docker compose up -d --build` |
+| Deploy new code | rsync again, then **source the env first**: `cd /opt/trading && set -a && source deploy/trading.env && set +a && docker compose up -d --build` (or just re-run `sudo bash deploy/bootstrap.sh`) |
 | Manual backup | `sudo bash /opt/trading/deploy/backup.sh` |
 | Restore DB | `docker exec -i trading-timescaledb pg_restore -U trading -d trading --clean < pg_<stamp>.dump` |
 
@@ -112,6 +112,16 @@ Oracle Cloud free tier, or buy a 1-yr t4g.small savings plan (~40% off).
 - Only port 22 (from your IP) is open; dashboard/API are localhost + Tailscale.
 - `API_AUTH_REQUIRED=true` — generate a **fresh** token; the pre-July-2026
   token shipped inside old frontend bundles and must not be reused.
+- **Day-2 deploys MUST source the env.** A bare `docker compose up` does NOT
+  read `deploy/trading.env` — only `bootstrap.sh` (via `set -a; source`) does.
+  Without it, compose falls back to its defaults, which previously left the
+  control plane running with auth OFF after every redeploy. The compose
+  default is now fail-closed (`API_AUTH_REQUIRED=true`), so a forgotten
+  `source` makes the API **crash-loop on startup** ("API_AUTH_TOKEN is empty")
+  instead of silently serving an open control plane. If `trading-api` won't
+  stay up after a deploy, you forgot to `set -a && source deploy/trading.env
+  && set +a` (or just re-run `bootstrap.sh`). `docker compose restart` is safe
+  — it keeps the env the container was created with; only `up` re-reads it.
 - Angel One secrets exist only in `/opt/trading/deploy/trading.env` (chmod 600).
 - This deployment stays in PAPER mode; going LIVE still requires every gate
   (arming, confirmation phrase, readiness) — nothing here weakens that.
