@@ -248,6 +248,13 @@ class Settings:
     reconciliation_interval_seconds: int = field(default_factory=lambda: max(
         10, _env_int("RECONCILIATION_INTERVAL_SECONDS", 30)
     ))
+    # EXEC-1: how long a fill_unresolved/fill_price_missing flag may sit before
+    # the PAPER-mode remediation tick ages it out (appends fill_resolved so it
+    # stops pinning operational_status to DEGRADED). Recent flags inside the
+    # window are left alone to reach a terminal state on their own.
+    unresolved_remediation_grace_hours: float = field(default_factory=lambda: _env_float(
+        "UNRESOLVED_REMEDIATION_GRACE_HOURS", 6.0
+    ))
     enable_gamma_exposure_gate: bool = field(default_factory=lambda: _bool_env("ENABLE_GAMMA_EXPOSURE_GATE", False))
 
     # Market-hours option-chain snapshots -> per-underlying ATM IV history

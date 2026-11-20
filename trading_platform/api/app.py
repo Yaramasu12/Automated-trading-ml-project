@@ -959,6 +959,16 @@ def unresolved_orders(hours: float = 24.0, limit: int = 200):
     return runtime.unresolved_orders(hours=hours, limit=limit)
 
 
+@app.post("/execution/remediate-unresolved", dependencies=[_AuthDep])
+def remediate_unresolved():
+    """EXEC-1 (PAPER only): age out stale unresolved-order flags older than the
+    grace window by appending a fill_resolved event, so a transient
+    fill_unresolved/fill_price_missing no longer pins operational_status to
+    DEGRADED. No-op outside PAPER; never fabricates a fill or moves a position.
+    Also runs at startup and on the reconciliation loop."""
+    return runtime.remediate_unresolved_orders()
+
+
 # ---------------------------------------------------------------------------
 # Versioned API aliases matching the implementation blueprint
 # ---------------------------------------------------------------------------

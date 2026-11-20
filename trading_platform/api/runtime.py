@@ -1697,6 +1697,15 @@ class TradingRuntime:
         # real, persisted figure -- see the method's own comment.
         self._restore_or_seed_goal_governance_baseline()
 
+        # EXEC-1 restart-recovery (PAPER only, self-gated): clear any stale
+        # unresolved-order flags left pinning health DEGRADED from before the
+        # restart, now that positions are restored for the had_open_position
+        # context. No-op in LIVE/BACKTEST.
+        try:
+            self._run_unresolved_remediation_tick()
+        except Exception as exc:
+            note_swallowed("startup.unresolved_remediation", exc)
+
         # Found 2026-09-14 live: on Ganesh Chaturthi (a real exchange holiday
         # the calendar had misclassified as a trading day — since fixed,
         # see agent/market_hours.py's _HOLIDAYS), a routine redeploy for an
@@ -3759,7 +3768,11 @@ class TradingRuntime:
         while True:
             try:
                 await _aio.sleep(interval)
+                # LIVE position-drift reconciliation (kill-switch on drift) and
+                # PAPER unresolved-order remediation (age out stale flags) share
+                # this loop; each self-gates by mode, so exactly one does work.
                 await _aio.to_thread(self._run_reconciliation_tick)
+                await _aio.to_thread(self._run_unresolved_remediation_tick)
             except _aio.CancelledError:
                 break
             except Exception as exc:
@@ -3796,6 +3809,105 @@ class TradingRuntime:
         reason = f"broker position mismatch confirmed across 2 ticks: {summary}"
         logger.critical("RECONCILIATION: %s — setting kill switch", reason)
         self.set_kill_switch(True, reason=f"broker_reconciliation: {reason}")
+
+    @staticmethod
+    def _select_aged_unresolved(rows: list[dict], now: datetime, grace: timedelta) -> list[dict]:
+        """Pure selection: of the OMS unresolved rows, the ones older than the
+        grace window (and thus safe to age out). Rows with an unparseable or
+        in-grace timestamp are left alone. Factored out so it can be unit-tested
+        without constructing a runtime."""
+        selected: list[dict] = []
+        for row in rows:
+            raw = row.get("occurred_at")
+            try:
+                occurred = datetime.fromisoformat(raw) if raw else None
+            except (TypeError, ValueError):
+                occurred = None
+            if occurred is not None and (now - occurred) >= grace:
+                selected.append(row)
+        return selected
+
+    def _run_unresolved_remediation_tick(self) -> dict:
+        """EXEC-1 — PAPER-mode hygiene: age out stale unresolved-order flags.
+
+        The OMS log is append-only with no 'resolved' event type, so one
+        fill_unresolved / fill_price_missing row stays an order's newest event
+        forever and pins operational_status to DEGRADED
+        (monitoring/metrics.py: unresolved_orders > 0) until a human appends
+        something for that order_id. This closes that loop WITHOUT fabricating
+        a fill or touching any position: for every unresolved order older than
+        the grace window it appends one fill_resolved event
+        (resolution=aged_out), recording whether an open position still exists
+        purely for context.
+
+        Scope (explicit user decision): PAPER only. A LIVE unresolved order is a
+        real "a position may exist at the broker without local tracking" signal
+        and must stay a human decision — exactly like the position-drift tick,
+        which is likewise LIVE-gated but trips the kill switch there. BACKTEST
+        has no persistent OMS concern. So this never runs outside PAPER.
+        """
+        mode = self.execution_mode.value
+        if mode != "PAPER":
+            return {"skipped": True, "mode": mode, "resolved": 0, "scanned": 0}
+        now = datetime.now(timezone.utc)
+        grace_hours = float(getattr(self.settings, "unresolved_remediation_grace_hours", 6.0))
+        grace = timedelta(hours=grace_hours)
+        try:
+            # Look back a week so we also clear rows that already aged past the
+            # 24h health window; bounded by the limit so this stays cheap.
+            since = (now - timedelta(days=7)).isoformat()
+            rows = self.oms.unresolved_orders(since=since, limit=500)
+        except Exception as exc:
+            note_swallowed("unresolved_remediation.query", exc)
+            return {"skipped": False, "mode": mode, "resolved": 0, "scanned": 0, "error": str(exc)}
+
+        open_symbols = set(getattr(self.portfolio, "positions", {}) or {})
+        aged = self._select_aged_unresolved(rows, now, grace)
+        resolved = 0
+        for row in aged:
+            order_id = row.get("order_id")
+            if not order_id:
+                continue
+            symbol = row.get("symbol") or ""
+            try:
+                occurred = datetime.fromisoformat(row["occurred_at"])
+                aged_hours = round((now - occurred).total_seconds() / 3600.0, 2)
+            except (TypeError, ValueError, KeyError):
+                aged_hours = None
+            try:
+                self.oms.append(
+                    event_type="fill_resolved",
+                    order_id=order_id,
+                    symbol=symbol or None,
+                    rejection_reason="auto_aged_out",
+                    metadata={
+                        "resolution": "aged_out",
+                        "original_event": row.get("event_type"),
+                        "aged_hours": aged_hours,
+                        "grace_hours": grace_hours,
+                        "had_open_position": symbol in open_symbols,
+                        "note": (
+                            "PAPER auto-remediation: stale unresolved flag closed; "
+                            "no fill fabricated, no position changed"
+                        ),
+                    },
+                )
+                resolved += 1
+            except Exception as exc:
+                note_swallowed("unresolved_remediation.append", exc)
+
+        if resolved:
+            logger.info(
+                "unresolved remediation (PAPER): aged out %d stale unresolved-order flag(s) "
+                "older than %.1fh", resolved, grace_hours,
+            )
+        return {"skipped": False, "mode": mode, "resolved": resolved, "scanned": len(rows)}
+
+    def remediate_unresolved_orders(self) -> dict:
+        """On-demand / startup trigger for the PAPER unresolved-order
+        remediation (no-op outside PAPER). Surfaced at POST
+        /execution/remediate-unresolved and run once after restore_state()."""
+        return self._run_unresolved_remediation_tick()
 
     def _can_submit_live_orders(self) -> bool:
         return (
